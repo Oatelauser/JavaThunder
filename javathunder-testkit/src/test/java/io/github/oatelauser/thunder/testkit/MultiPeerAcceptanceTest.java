@@ -46,6 +46,7 @@ class MultiPeerAcceptanceTest {
                 s4.announceTo(t);
 
                 try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                        .transportFactory(Transports.fromSystemProperty())
                         .maxPeersPerTask(50).build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));

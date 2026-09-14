@@ -43,6 +43,7 @@ class LoopbackAcceptanceTest {
             try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
                 try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                        .transportFactory(Transports.fromSystemProperty())
                         .listenPort(17000 + random.nextInt(20000)).build()) {
 
                     DownloadTask task = client.download(generated.torrentFile(),
@@ -88,6 +89,7 @@ class LoopbackAcceptanceTest {
             try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
                 try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                        .transportFactory(Transports.fromSystemProperty())
                         .listenPort(17000 + random.nextInt(20000)).build()) {
 
                     DownloadTask task = client.download(generated.torrentFile(),

@@ -64,7 +64,8 @@ class LoopbackThroughputProbeTest {
             TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(generated.torrentFile()));
             try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                        .transportFactory(Transports.fromSystemProperty()).build()) {
                     t = System.nanoTime();
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
