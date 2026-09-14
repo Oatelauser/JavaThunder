@@ -12,6 +12,14 @@
 | 纯顺序写盘（128MB） | 736–814 MB/s |
 | 引擎单 Peer 回环下载（管线深度 8） | 29 MB/s |
 | 引擎单 Peer 回环下载（管线深度 32） | 35 MB/s |
+| 引擎 4 Peer 聚合（64MB，管线 32） | 39 MB/s（仅 +11%，见下） |
+
+### 多 Peer 扩展性数据点
+
+4 个并发 seeder 只带来 +11% 聚合吞吐——连接数维度可扩展，聚合吞吐被串行化点封顶。
+嫌疑按优先级：① StorageManager 单 FileChannel 的位置写在 Windows 上串行化（4 Peer 写同一文件
+共享一个句柄）；② PieceScheduler 全局锁（每块收发都进入同一 monitor）。定位与修复列入
+高并发加固待办，修复后用 `-DmultiPeer.mb=64` 复测 8/16 seeder 扩展曲线。
 
 ## 分析
 
