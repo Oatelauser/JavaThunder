@@ -136,6 +136,11 @@ public final class PieceScheduler {
         inFlight.remove(request);
     }
 
+    /** 该 Block 是否已有在途请求（endgame 判定/去重用）。 */
+    public synchronized boolean isInFlight(BlockRequest request) {
+        return inFlight.contains(request);
+    }
+
     /** endgame：本地所有缺失 Block 均已有在途请求。 */
     public synchronized boolean isEndgame(Bitfield local) {
         for (int i = 0; i < pieceCount; i++) {

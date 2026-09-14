@@ -72,13 +72,25 @@ public final class PeerConnection implements AutoCloseable {
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
             Handshake handshake = Handshake.decode(readFully(socket.getInputStream(), 68));
-            if (!Arrays.equals(handshake.infoHash(), infoHash)) {
-                throw new IOException("inbound peer announced a different info-hash");
+            return acceptWithHandshake(socket, handshake, infoHash, peerId);
+        } catch (IOException e) {
+            try {
+                socket.close();
+            } catch (IOException suppressed) {
+                e.addSuppressed(suppressed);
             }
+            throw e;
+        }
+    }
+
+    /** 入站连接（对端握手已由路由方预读并校验）。 */
+    public static PeerConnection acceptWithHandshake(Socket socket, Handshake remote,
+                                                      byte[] infoHash, byte[] peerId) throws IOException {
+        try {
             socket.getOutputStream().write(Handshake.encode(infoHash, peerId));
             socket.getOutputStream().flush();
             socket.setSoTimeout(READ_TIMEOUT_MILLIS);
-            return new PeerConnection(socket, handshake.peerId());
+            return new PeerConnection(socket, remote.peerId());
         } catch (IOException e) {
             try {
                 socket.close();
