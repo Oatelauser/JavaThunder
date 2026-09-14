@@ -61,6 +61,22 @@ public final class StorageManager implements AutoCloseable {
         return Arrays.equals(actual, meta.pieceHash(pieceIndex));
     }
 
+    /** 读取一个 Block（上传服务用）。 */
+    public byte[] readBlock(int pieceIndex, int begin, int length) throws IOException {
+        checkPieceIndex(pieceIndex);
+        if (begin < 0 || length <= 0 || begin + (long) length > pieceLengthOf(pieceIndex)) {
+            throw new IllegalArgumentException("read [" + begin + "," + (begin + length)
+                + ") outside piece " + pieceIndex + " of length " + pieceLengthOf(pieceIndex));
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(length);
+        while (buffer.hasRemaining()) {
+            if (channel.read(buffer, pieceOffset(pieceIndex) + begin + buffer.position()) < 0) {
+                throw new IOException("unexpected end of " + partFile + " serving piece " + pieceIndex);
+            }
+        }
+        return buffer.array();
+    }
+
     /** Piece 校验失败后清零该区间，供引擎重新调度下载。 */
     public void clearPiece(int pieceIndex) throws IOException {
         checkPieceIndex(pieceIndex);

@@ -144,6 +144,16 @@ class StorageManagerTest {
     }
 
     @Test
+    void readBlockReturnsWhatWasWritten() throws IOException {
+        byte[] content = content();
+        try (StorageManager storage = open(content)) {
+            storage.writeBlock(1, 128, Arrays.copyOfRange(content, 256 + 128, 256 + 192));
+            byte[] block = storage.readBlock(1, 128, 64);
+            assertArrayEquals(Arrays.copyOfRange(content, 256 + 128, 256 + 192), block);
+        }
+    }
+
+    @Test
     void finishRenamesPartToFinalName() throws IOException {
         byte[] content = content();
         try (StorageManager storage = open(content)) {
