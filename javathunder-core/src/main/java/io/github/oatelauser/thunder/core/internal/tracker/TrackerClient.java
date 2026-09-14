@@ -95,7 +95,11 @@ public final class TrackerClient {
     }
 
     private static int intOf(BencodeValue value, int fallback) {
-        return value instanceof BInteger i ? Math.toIntExact(i.value()) : fallback;
+        if (!(value instanceof BInteger i)) {
+            return fallback;
+        }
+        long v = i.value();
+        return (v >= 0 && v <= Integer.MAX_VALUE) ? (int) v : fallback;
     }
 
     private static List<InetSocketAddress> parsePeers(BencodeValue peers) {
@@ -111,7 +115,11 @@ public final class TrackerClient {
                 if (!(peer.get("ip") instanceof BString ip) || !(peer.get("port") instanceof BInteger port)) {
                     throw new TrackerException("peers entry requires ip and port");
                 }
-                result.add(new InetSocketAddress(ip.text(), Math.toIntExact(port.value())));
+                long portValue = port.value();
+                if (portValue < 0 || portValue > 65535) {
+                    throw new TrackerException("peers entry has invalid port: " + portValue);
+                }
+                result.add(new InetSocketAddress(ip.text(), (int) portValue));
             }
             return result;
         }

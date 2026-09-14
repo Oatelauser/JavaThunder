@@ -212,6 +212,19 @@ class TrackerClientTest {
     }
 
     @Test
+    void hostileHugeIntegersFallBackToDefaults() {
+        // 恶意/异常 tracker 返回超范围整数时不得抛 ArithmeticException
+        nextBody = Bencode.encode(new BDict(Map.of(
+            BString.of("interval"), new BInteger(Long.MAX_VALUE),
+            BString.of("complete"), new BInteger(-5))));
+
+        AnnounceResponse response = new TrackerClient().announce(announceUrl, startedRequest());
+
+        assertEquals(60, response.interval());
+        assertEquals(0, response.seeders());
+    }
+
+    @Test
     void peerIdsFollowBep20Convention() {
         String first = new String(PeerIds.generate(), StandardCharsets.US_ASCII);
         String second = new String(PeerIds.generate(), StandardCharsets.US_ASCII);
