@@ -42,13 +42,13 @@ public final class RateLimiter {
         return new RateLimiter(0, System::nanoTime);
     }
 
-    public boolean unlimited() {
+    public boolean isUnlimited() {
         return rateBytesPerSecond == 0;
     }
 
     /** 扣取 {@code bytes} 个令牌；不足则阻塞等待补充。可中断。 */
     public void acquire(int bytes) throws InterruptedException {
-        if (unlimited()) {
+        if (isUnlimited()) {
             return;
         }
         if (Thread.interrupted()) {
