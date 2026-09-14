@@ -36,12 +36,17 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <properties>
+    <surefire.excludedGroups>perf</surefire.excludedGroups>
+  </properties>
   <build>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
+          <excludedGroups>${surefire.excludedGroups}</excludedGroups>
           <systemPropertyVariables>
             <org.slf4j.simpleLogger.defaultLogLevel>debug</org.slf4j.simpleLogger.defaultLogLevel>
           </systemPropertyVariables>
