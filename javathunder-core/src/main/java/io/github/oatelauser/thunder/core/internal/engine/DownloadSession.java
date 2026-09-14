@@ -349,6 +349,9 @@ public final class DownloadSession {
             peers.remove(session.key);
             scheduler.peerDisconnected(session.key);
             releaseAssignment(session);
+            for (BlockRequest block : session.issued) {
+                scheduler.clearInFlight(block); // 该 Peer 的在途请求永远不会到达
+            }
         }
     }
 
@@ -406,6 +409,9 @@ public final class DownloadSession {
     private void refillRequests(PeerSession session) throws IOException {
         while (session.issued.size() < PIPELINE_DEPTH) {
             if (session.pending.isEmpty()) {
+                if (session.currentPiece >= 0) {
+                    return; // 当前 piece 的 block 已全部发出，等待响应
+                }
                 int piece = pickPieceFor(session);
                 if (piece < 0) {
                     return;
@@ -414,14 +420,15 @@ public final class DownloadSession {
                 activePieces.add(piece);
                 Set<BlockRequest> received = receivedBlocks.get(piece);
                 for (BlockRequest block : scheduler.blocksOf(piece)) {
-                    if (received == null || !received.contains(block)) {
+                    boolean alreadyReceived = received != null && received.contains(block);
+                    if (!alreadyReceived && !scheduler.isInFlight(block)) {
                         session.pending.addLast(block);
                     }
                 }
                 if (session.pending.isEmpty()) {
                     activePieces.remove(piece);
                     session.currentPiece = -1;
-                    continue; // 该 piece 全部在途（endgame 由其他 peer 重复请求）
+                    return; // 该 piece 的块已全部在途（其他 Peer 处理中）
                 }
             }
             BlockRequest block = session.pending.pollFirst();
@@ -454,7 +461,8 @@ public final class DownloadSession {
                 bestBusyAvailability = availability;
             }
         }
-        return bestFree >= 0 ? bestFree : bestBusy;
+        int picked = bestFree >= 0 ? bestFree : bestBusy;
+        return picked;
     }
 
     private boolean hasMissingBlock(int piece) {
