@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class DownloadSession {
 
     private static final Logger log = LoggerFactory.getLogger(DownloadSession.class);
-    private static final int PIPELINE_DEPTH = 8;
+    private static final int PIPELINE_DEPTH = 32;
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
     private static final int CONNECT_TIMEOUT_MILLIS = 8000;
 
