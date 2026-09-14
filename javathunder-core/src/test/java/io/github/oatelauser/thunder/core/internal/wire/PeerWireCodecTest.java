@@ -1,0 +1,188 @@
+package io.github.oatelauser.thunder.core.internal.wire;
+
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import java.nio.ByteBuffer;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+/**
+ * 期望帧字节按 BEP 3 的线格式手写（长度前缀大端 u32 + 消息 ID u8 + 载荷），
+ * 与实现相互独立。
+ */
+class PeerWireCodecTest {
+
+    private static ByteBuffer frame(int... bytes) {
+        byte[] data = new byte[bytes.length];
+        for (int i = 0; i < bytes.length; i++) {
+            data[i] = (byte) bytes[i];
+        }
+        return ByteBuffer.wrap(data);
+    }
+
+    @Nested
+    class HandshakeTest {
+
+        @Test
+        void encodesExactWireLayout() {
+            byte[] infoHash = new byte[20];
+            infoHash[0] = 1;
+            byte[] peerId = "-JT0001-handshake001".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+            byte[] wire = Handshake.encode(infoHash, peerId);
+
+            assertEquals(68, wire.length);
+            assertEquals(19, wire[0]);
+            assertEquals("BitTorrent protocol",
+                new String(wire, 1, 19, java.nio.charset.StandardCharsets.US_ASCII));
+            for (int i = 20; i < 28; i++) {
+                assertEquals(0, wire[i], "reserved bytes must be zero in phase 1");
+            }
+            assertEquals(infoHash[0], wire[28]);
+            assertEquals('-', wire[48]);
+            assertEquals('J', wire[49]);
+        }
+
+        @Test
+        void decodesRoundTrip() {
+            byte[] infoHash = new byte[20];
+            for (int i = 0; i < 20; i++) {
+                infoHash[i] = (byte) (0xA0 + i);
+            }
+            byte[] peerId = "-JT0001-handshake002".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+            Handshake handshake = Handshake.decode(Handshake.encode(infoHash, peerId));
+
+            assertArrayEquals(infoHash, handshake.infoHash());
+            assertArrayEquals(peerId, handshake.peerId());
+        }
+
+        @Test
+        void rejectsMalformedHandshakes() {
+            byte[] infoHash = new byte[20];
+            byte[] peerId = new byte[20];
+            assertThrows(PeerWireException.class, () -> Handshake.decode(new byte[67]));
+            byte[] badPstr = Handshake.encode(infoHash, peerId);
+            badPstr[5] = 'X'; // 破坏 "BitTorrent protocol"
+            assertThrows(PeerWireException.class, () -> Handshake.decode(badPstr));
+            byte[] badPstrlen = Handshake.encode(infoHash, peerId);
+            badPstrlen[0] = 18;
+            assertThrows(PeerWireException.class, () -> Handshake.decode(badPstrlen));
+        }
+    }
+
+    @Nested
+    class EncodeTest {
+
+        @Test
+        void keepAliveIsFourZeroBytes() {
+            assertArrayEquals(new byte[]{0, 0, 0, 0}, PeerWireCodec.encode(KeepAlive.INSTANCE));
+        }
+
+        @Test
+        void singleByteMessagesUseTheirIds() {
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 0}, PeerWireCodec.encode(Choke.INSTANCE));
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 1}, PeerWireCodec.encode(Unchoke.INSTANCE));
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 2}, PeerWireCodec.encode(Interested.INSTANCE));
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 3}, PeerWireCodec.encode(NotInterested.INSTANCE));
+        }
+
+        @Test
+        void haveCarriesBigEndianPieceIndex() {
+            assertArrayEquals(new byte[]{0, 0, 0, 5, 4, 0, 0, 0, 42},
+                PeerWireCodec.encode(new Have(42)));
+        }
+
+        @Test
+        void bitfieldIsOpaqueBytes() {
+            byte[] bits = {(byte) 0xC0, 0x00};
+            assertArrayEquals(new byte[]{0, 0, 0, 3, 5, (byte) 0xC0, 0x00},
+                PeerWireCodec.encode(new BitfieldMessage(bits)));
+        }
+
+        @Test
+        void requestAndCancelShareLayout() {
+            byte[] expected = {0, 0, 0, 13, 6, 0, 0, 1, 1, 0, 0, 2, 2, 0, 1, 0, 0};
+            assertArrayEquals(expected, PeerWireCodec.encode(new Request(257, 514, 65536)));
+            expected[4] = 8;
+            assertArrayEquals(expected, PeerWireCodec.encode(new Cancel(257, 514, 65536)));
+        }
+
+        @Test
+        void pieceCarriesBinaryBlock() {
+            byte[] block = {(byte) 0xFF, 0x00, 0x7A};
+            byte[] expected = {0, 0, 0, 12, 7, 0, 0, 3, 3, 0, 0, 0, 16, (byte) 0xFF, 0x00, 0x7A};
+            assertArrayEquals(expected, PeerWireCodec.encode(new PieceMessage(771, 16, block)));
+        }
+    }
+
+    @Nested
+    class DecodeTest {
+
+        @Test
+        void decodeRoundTripsEveryMessageType() {
+            PeerWireMessage[] samples = {
+                KeepAlive.INSTANCE, Choke.INSTANCE, Unchoke.INSTANCE,
+                Interested.INSTANCE, NotInterested.INSTANCE,
+                new Have(1023),
+                new BitfieldMessage(new byte[]{(byte) 0x80, 0x40}),
+                new Request(5, 4096, 16384),
+                new PieceMessage(5, 4096, new byte[]{1, 2, 3}),
+                new Cancel(6, 0, 16384),
+            };
+            for (PeerWireMessage sample : samples) {
+                assertEquals(sample, PeerWireCodec.decodeFrame(ByteBuffer.wrap(PeerWireCodec.encode(sample))));
+            }
+        }
+
+        @Test
+        void decodeFrameConsumesExactlyOneFrameAndLeavesPositionAfterIt() {
+            byte[] frame = PeerWireCodec.encode(new Have(9));
+            ByteBuffer buf = ByteBuffer.allocate(frame.length + 1);
+            buf.put(frame).put((byte) 0xEE); // 附加字节属于"下一帧"
+            buf.flip();
+            assertEquals(new Have(9), PeerWireCodec.decodeFrame(buf));
+            assertEquals(1, buf.remaining());
+        }
+
+        @Test
+        void rejectsUnknownMessageId() {
+            assertThrows(PeerWireException.class, () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 9)));
+        }
+
+        @Test
+        void rejectsOversizedLengthPrefix() {
+            // 声明 4MB 帧：远超 16KiB 块的合法上限，防内存炸弹
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0x00, 0x40, 0x00, 0x00, 7)));
+        }
+
+        @Test
+        void rejectsTruncatedPayload() {
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 4, 0, 0)));
+        }
+
+        @Test
+        void rejectsHaveWithWrongPayloadSize() {
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 6, 4, 0, 0, 0, 1, 0)));
+        }
+
+        @Test
+        void rejectsRequestWithWrongPayloadSize() {
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 13, 6, 0, 0, 0, 1, 0, 0, 2, 2, 0, 1, 0)));
+        }
+
+        @Test
+        void rejectsPiecePayloadShorterThanHeader() {
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 7, 0, 0, 0, 1)));
+        }
+    }
+}
