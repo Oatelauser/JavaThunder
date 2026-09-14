@@ -6,7 +6,9 @@ import io.github.oatelauser.thunder.api.ProgressSnapshot;
 import io.github.oatelauser.thunder.api.TaskListener;
 import io.github.oatelauser.thunder.api.TaskState;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
-import io.github.oatelauser.thunder.core.internal.peer.PeerConnection;
+import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
+import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
+import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
 import io.github.oatelauser.thunder.core.internal.ratelimit.RateLimiter;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
 import io.github.oatelauser.thunder.core.internal.storage.ResumeException;
@@ -33,13 +35,10 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
@@ -48,20 +47,21 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 单个种子的下载会话：tracker 轮询、Peer 连接池、请求管线、校验落盘、断点续存、
- * choking 与事件分发。全部后台线程为虚拟线程（ADR-0001）。
+ * 单个种子的下载会话（推送模型，ADR-0003）：连接与消息由 {@link PeerTransport} 回调驱动，
+ * 磁盘写与校验在虚拟线程 worker 上执行（Selector 线程零阻塞的前提）。
  */
 public final class DownloadSession {
 
     private static final Logger log = LoggerFactory.getLogger(DownloadSession.class);
     private static final int PIPELINE_DEPTH = 32;
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
-    private static final int CONNECT_TIMEOUT_MILLIS = 8000;
 
     public record SessionConfig(int maxPeers, int listenPort,
                                 RateLimiter globalDownload, RateLimiter globalUpload) {
@@ -70,6 +70,7 @@ public final class DownloadSession {
     private final TorrentMetadata meta;
     private final DownloadOptions options;
     private final SessionConfig config;
+    private final PeerTransport transport;
     private final TrackerClient trackerClient;
     private final byte[] peerId;
     private final Executor eventExecutor;
@@ -79,6 +80,7 @@ public final class DownloadSession {
     private final ChokingManager choking;
     private final Random random = new Random();
     private final long startedAtMillis = System.currentTimeMillis();
+    private final ExecutorService blockWorkers = Executors.newVirtualThreadPerTaskExecutor();
 
     private final Bitfield local;
     private final CompletableFuture<DownloadResult> future = new CompletableFuture<>();
@@ -98,11 +100,12 @@ public final class DownloadSession {
     private volatile long uploadRate;
 
     public DownloadSession(TorrentMetadata meta, DownloadOptions options, SessionConfig config,
-                           TrackerClient trackerClient, Executor eventExecutor, byte[] peerId)
-        throws IOException {
+                           PeerTransport transport, TrackerClient trackerClient,
+                           Executor eventExecutor, byte[] peerId) throws IOException {
         this.meta = meta;
         this.options = options;
         this.config = config;
+        this.transport = transport;
         this.trackerClient = trackerClient;
         this.eventExecutor = eventExecutor;
         this.peerId = peerId.clone();
@@ -173,6 +176,7 @@ public final class DownloadSession {
             storage.close();
         } catch (IOException ignored) {
         }
+        blockWorkers.shutdownNow();
         if (deleteData) {
             try {
                 Files.deleteIfExists(storage.partFile());
@@ -312,93 +316,99 @@ public final class DownloadSession {
                 }
                 continue;
             }
-            String key = key(address);
-            if (peers.size() >= config.maxPeers() || peers.containsKey(key)) {
+            if (peers.size() >= config.maxPeers() || peers.containsKey(key(address))) {
                 continue;
             }
-            try {
-                PeerConnection connection =
-                    PeerConnection.connect(address, meta.infoHash(), peerId, CONNECT_TIMEOUT_MILLIS);
-                PeerSession session = new PeerSession(key, connection, meta.pieceCount());
-                peers.put(key, session);
-                Thread.ofVirtual().name("javathunder-peer-" + key).start(() -> runPeer(session));
-            } catch (IOException e) {
-                log.debug("connect to {} failed: {}", key, e.toString());
-            }
+            transport.connect(address, meta.infoHash(), transportHandler);
         }
     }
 
-    private void runPeer(PeerSession session) {
-        try (PeerConnection ignored = session.connection) {
-            if (localCardinality() > 0) {
-                session.connection.write(new BitfieldMessage(localBytes()));
-            }
-            session.connection.write(Interested.INSTANCE);
-            while (running.get() && (state == TaskState.DOWNLOADING || state == TaskState.SEEDING)) {
-                if (state == TaskState.DOWNLOADING && !session.peerChokingUs) {
-                    refillRequests(session);
-                }
-                PeerWireMessage message = session.connection.read();
-                handleMessage(session, message);
-            }
-        } catch (IOException | RuntimeException e) {
-            log.debug("peer {} disconnected: {}", session.key, e.toString());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt(); // 关闭中（限速等待被中断）
-        } finally {
-            peers.remove(session.key);
-            scheduler.peerDisconnected(session.key);
-            releaseAssignment(session);
-            for (BlockRequest block : session.issued) {
-                scheduler.clearInFlight(block); // 该 Peer 的在途请求永远不会到达
-            }
+    private final TransportHandler transportHandler = new TransportHandler() {
+        @Override
+        public void onConnected(PeerChannel channel) {
+            DownloadSession.this.onConnected(channel);
         }
-    }
 
-    /** 入站连接（路由方已预读握手）。 */
-    public void handleInbound(Socket socket, Handshake remoteHandshake) {
-        if (!running.get() || !Arrays.equals(remoteHandshake.infoHash(), meta.infoHash())) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-            }
+        @Override
+        public void onConnectFailed(InetSocketAddress address, Throwable cause) {
+            log.debug("connect to {} failed: {}", address, cause.toString());
+        }
+    };
+
+    /** 出站/入站连接就绪（transport 在其连接线程上回调）。 */
+    private void onConnected(PeerChannel channel) {
+        if (!running.get() || state != TaskState.DOWNLOADING && state != TaskState.SEEDING) {
+            channel.close();
             return;
         }
-        try {
-            PeerConnection connection =
-                PeerConnection.acceptWithHandshake(socket, remoteHandshake, meta.infoHash(), peerId);
-            InetSocketAddress address = connection.remoteAddress();
-            String key = address.getAddress() == null
-                ? address.getHostString() + ":" + address.getPort() : key(address);
-            if (peers.containsKey(key)) {
-                connection.close();
-                return;
-            }
-            PeerSession session = new PeerSession(key, connection, meta.pieceCount());
-            peers.put(key, session);
-            Thread.ofVirtual().name("javathunder-peer-" + key).start(() -> runPeer(session));
-        } catch (IOException e) {
-            log.debug("inbound peer rejected: {}", e.toString());
+        String key = key(channel.remoteAddress());
+        if (peers.containsKey(key)) {
+            channel.close();
+            return;
         }
+        PeerSession session = new PeerSession(key, channel, meta.pieceCount());
+        PeerSession existing = peers.putIfAbsent(key, session);
+        if (existing != null) {
+            channel.close();
+            return;
+        }
+        channel.setMessageListener(message -> handleMessage(session, message));
+        channel.setCloseListener(cause -> peerClosed(session));
+        if (localCardinality() > 0) {
+            channel.write(new BitfieldMessage(localBytes()));
+        }
+        channel.write(Interested.INSTANCE);
+        log.debug("peer {} connected", key);
     }
 
-    private void handleMessage(PeerSession session, PeerWireMessage message)
-        throws IOException, InterruptedException {
+    private void peerClosed(PeerSession session) {
+        peers.remove(session.key);
+        scheduler.peerDisconnected(session.key);
+        synchronized (session) {
+            releaseAssignment(session);
+            for (BlockRequest block : session.issued) {
+                scheduler.clearInFlight(block);
+            }
+        }
+        log.debug("peer {} disconnected", session.key);
+    }
+
+    private void handleMessage(PeerSession session, PeerWireMessage message) {
         switch (message) {
             case Choke c -> {
                 session.peerChokingUs = true;
-                releaseAssignment(session);
+                synchronized (session) {
+                    releaseAssignment(session);
+                }
             }
-            case Unchoke u -> session.peerChokingUs = false;
+            case Unchoke u -> {
+                session.peerChokingUs = false;
+                if (state == TaskState.DOWNLOADING) {
+                    blockWorkers.execute(() -> {
+                        synchronized (session) {
+                            refillRequests(session);
+                        }
+                    });
+                }
+            }
             case Interested i -> session.remoteInterested = true;
             case NotInterested n -> session.remoteInterested = false;
-            case Have h -> scheduler.peerHave(session.key, h.pieceIndex());
+            case Have h -> {
+                scheduler.peerHave(session.key, h.pieceIndex());
+                if (state == TaskState.DOWNLOADING) {
+                    blockWorkers.execute(() -> {
+                        synchronized (session) {
+                            refillRequests(session);
+                        }
+                    });
+                }
+            }
             case BitfieldMessage b -> {
                 session.remote = Bitfield.fromBytes(b.bits(), meta.pieceCount());
                 scheduler.peerConnected(session.key, session.remote);
             }
             case Request r -> serveUpload(session, r);
-            case PieceMessage p -> onPieceData(session, p);
+            case PieceMessage p -> blockWorkers.execute(() -> processBlock(session, p));
             case Cancel c -> {
             }
             case KeepAlive k -> {
@@ -406,7 +416,7 @@ public final class DownloadSession {
         }
     }
 
-    private void refillRequests(PeerSession session) throws IOException {
+    private void refillRequests(PeerSession session) {
         while (session.issued.size() < PIPELINE_DEPTH) {
             if (session.pending.isEmpty()) {
                 if (session.currentPiece >= 0) {
@@ -435,7 +445,7 @@ public final class DownloadSession {
             if (block == null) {
                 return;
             }
-            session.connection.write(new Request(block.pieceIndex(), block.begin(), block.length()));
+            session.channel.write(new Request(block.pieceIndex(), block.begin(), block.length()));
             scheduler.markInFlight(block);
             session.issued.add(block);
         }
@@ -461,8 +471,7 @@ public final class DownloadSession {
                 bestBusyAvailability = availability;
             }
         }
-        int picked = bestFree >= 0 ? bestFree : bestBusy;
-        return picked;
+        return bestFree >= 0 ? bestFree : bestBusy;
     }
 
     private boolean hasMissingBlock(int piece) {
@@ -487,36 +496,56 @@ public final class DownloadSession {
         }
     }
 
-    private void onPieceData(PeerSession session, PieceMessage message)
-        throws IOException, InterruptedException {
-        int piece = message.pieceIndex();
-        if (piece < 0 || piece >= meta.pieceCount()) {
-            return;
-        }
-        BlockRequest block = new BlockRequest(piece, message.begin(), message.block().length);
-        if (localHas(piece) || receivedBlocks.get(piece) != null
-            && receivedBlocks.get(piece).contains(block)) {
+    /** 磁盘写、校验与补发请求都在 worker 虚拟线程上（事件循环零阻塞的前提）。 */
+    private void processBlock(PeerSession session, PieceMessage message) {
+        synchronized (session) {
+            int piece = message.pieceIndex();
+            if (piece < 0 || piece >= meta.pieceCount()) {
+                return;
+            }
+            BlockRequest block = new BlockRequest(piece, message.begin(), message.block().length);
+            Set<BlockRequest> received = receivedBlocks.get(piece);
+            if (localHas(piece) || received != null && received.contains(block)) {
+                session.issued.remove(block);
+                scheduler.clearInFlight(block);
+                return; // 重复投递
+            }
+            try {
+                config.globalDownload().acquire(message.block().length);
+                storage.writeBlock(piece, message.begin(), message.block());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (IOException e) {
+                fail(e);
+                return;
+            }
             session.issued.remove(block);
             scheduler.clearInFlight(block);
-            return; // 重复投递（endgame），忽略
-        }
-        config.globalDownload().acquire(message.block().length);
-        storage.writeBlock(piece, message.begin(), message.block());
-        session.issued.remove(block);
-        scheduler.clearInFlight(block);
-        downloaded.addAndGet(message.block().length);
-        choking.recordReceived(session.key, message.block().length);
-        receivedBlocks.computeIfAbsent(piece, k -> ConcurrentHashMap.newKeySet()).add(block);
-        if (receivedBlocks.get(piece).size() == scheduler.blocksOf(piece).size()) {
-            receivedBlocks.remove(piece);
-            activePieces.remove(piece);
-            releaseAssignment(session);
-            onPieceComplete(piece, session);
+            downloaded.addAndGet(message.block().length);
+            choking.recordReceived(session.key, message.block().length);
+            receivedBlocks.computeIfAbsent(piece, k -> ConcurrentHashMap.newKeySet()).add(block);
+            if (receivedBlocks.get(piece).size() == scheduler.blocksOf(piece).size()) {
+                receivedBlocks.remove(piece);
+                activePieces.remove(piece);
+                releaseAssignment(session);
+                onPieceComplete(piece, session);
+                refillRequests(session); // 立即指派下一个 piece
+            } else {
+                refillRequests(session);
+            }
         }
     }
 
-    private void onPieceComplete(int piece, PeerSession source) throws IOException {
-        if (storage.verifyPiece(piece)) {
+    private void onPieceComplete(int piece, PeerSession source) {
+        boolean verified;
+        try {
+            verified = storage.verifyPiece(piece);
+        } catch (IOException e) {
+            fail(e);
+            return;
+        }
+        if (verified) {
             localSet(piece);
             saveResumeQuietly();
             for (TaskListener listener : listeners) {
@@ -533,14 +562,16 @@ public final class DownloadSession {
                 complete();
             }
         } else {
-            storage.clearPiece(piece);
+            try {
+                storage.clearPiece(piece);
+            } catch (IOException e) {
+                fail(e);
+                return;
+            }
             int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
             log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
             if (bad >= MAX_BAD_PIECES_PER_PEER) {
-                try {
-                    source.connection.close(); // 恶意/损坏数据源，断开
-                } catch (IOException ignored) {
-                }
+                source.channel.close(); // 恶意/损坏数据源
             }
         }
     }
@@ -574,36 +605,31 @@ public final class DownloadSession {
         if (session.weChokingThem || !localHas(request.pieceIndex())) {
             return;
         }
-        try {
-            byte[] block = storage.readBlock(request.pieceIndex(), request.begin(), request.length());
-            config.globalUpload().acquire(block.length);
-            session.connection.write(
-                new PieceMessage(request.pieceIndex(), request.begin(), block));
-            uploaded.addAndGet(block.length);
-            choking.recordSent(session.key, block.length);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (IOException | IllegalArgumentException e) {
-            log.debug("cannot serve block to {}: {}", session.key, e.toString());
-        }
+        blockWorkers.execute(() -> {
+            try {
+                byte[] block = storage.readBlock(request.pieceIndex(), request.begin(), request.length());
+                config.globalUpload().acquire(block.length);
+                session.channel.write(
+                    new PieceMessage(request.pieceIndex(), request.begin(), block));
+                uploaded.addAndGet(block.length);
+                choking.recordSent(session.key, block.length);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | IllegalArgumentException e) {
+                log.debug("cannot serve block to {}: {}", session.key, e.toString());
+            }
+        });
     }
 
     private void broadcast(PeerWireMessage message) {
         for (PeerSession session : peers.values()) {
-            try {
-                session.connection.write(message);
-            } catch (IOException e) {
-                log.debug("broadcast to {} failed: {}", session.key, e.toString());
-            }
+            session.channel.write(message);
         }
     }
 
     private void closeAllPeers() {
         for (PeerSession session : peers.values()) {
-            try {
-                session.connection.close();
-            } catch (IOException ignored) {
-            }
+            session.channel.close();
         }
         peers.clear();
     }
@@ -633,11 +659,7 @@ public final class DownloadSession {
                 boolean shouldUnchoke = unchoked.contains(session.key);
                 if (session.weChokingThem == shouldUnchoke) {
                     session.weChokingThem = !shouldUnchoke;
-                    try {
-                        session.connection.write(shouldUnchoke ? Unchoke.INSTANCE : Choke.INSTANCE);
-                    } catch (IOException e) {
-                        log.debug("choke write to {} failed: {}", session.key, e.toString());
-                    }
+                    session.channel.write(shouldUnchoke ? Unchoke.INSTANCE : Choke.INSTANCE);
                 }
             }
             tick++;
@@ -693,6 +715,11 @@ public final class DownloadSession {
 
     public Path partFile() {
         return storage.partFile();
+    }
+
+    /** 供 DefaultTorrentClient 出站连接与入站路由使用。 */
+    public TransportHandler transportHandler() {
+        return transportHandler;
     }
 
     private double availability() {
@@ -767,10 +794,10 @@ public final class DownloadSession {
             : address.getHostString()) + ":" + address.getPort();
     }
 
-    /** 单个 Peer 的会话状态，仅被该 Peer 的虚拟线程读写（remote 除外）。 */
+    /** 单个 Peer 的会话状态。pending/issued/currentPiece 由持有者线程在 session 监视器下访问。 */
     private static final class PeerSession {
         final String key;
-        final PeerConnection connection;
+        final PeerChannel channel;
         final ArrayDeque<BlockRequest> pending = new ArrayDeque<>();
         final Set<BlockRequest> issued = ConcurrentHashMap.newKeySet();
         volatile Bitfield remote;
@@ -779,9 +806,9 @@ public final class DownloadSession {
         volatile boolean remoteInterested;
         int currentPiece = -1;
 
-        PeerSession(String key, PeerConnection connection, int pieceCount) {
+        PeerSession(String key, PeerChannel channel, int pieceCount) {
             this.key = key;
-            this.connection = connection;
+            this.channel = channel;
             this.remote = new Bitfield(pieceCount);
         }
     }

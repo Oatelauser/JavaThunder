@@ -101,6 +101,12 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
+    /** 用已完成握手的 socket 包装连接（入站路由路径用）。 */
+    public static PeerConnection established(Socket socket, byte[] remotePeerId) throws IOException {
+        socket.setSoTimeout(READ_TIMEOUT_MILLIS);
+        return new PeerConnection(socket, remotePeerId);
+    }
+
     /** 阻塞读一帧；EOF 抛 IOException。 */
     public PeerWireMessage read() throws IOException {
         byte[] header = readFully(in, 4);
