@@ -366,6 +366,22 @@ public final class NioTransport implements PeerTransport {
             scheduleFlush();
         }
 
+        @Override
+        public void write(java.util.List<PeerWireMessage> messages) {
+            if (closed || messages.isEmpty()) {
+                return;
+            }
+            int capacity = messages.size() * 17; // request/keepalive 级小帧的保守上界
+            java.io.ByteArrayOutputStream encoded = new java.io.ByteArrayOutputStream(capacity);
+            for (PeerWireMessage message : messages) {
+                encoded.writeBytes(PeerWireCodec.encode(message));
+            }
+            synchronized (writeQueue) {
+                writeQueue.add(ByteBuffer.wrap(encoded.toByteArray()));
+            }
+            scheduleFlush();
+        }
+
         void scheduleFlush() {
             if (closed || flushScheduled.compareAndSet(false, true)) {
                 if (closed) {

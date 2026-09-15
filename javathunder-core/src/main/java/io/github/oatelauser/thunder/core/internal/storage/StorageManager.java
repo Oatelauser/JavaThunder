@@ -55,13 +55,32 @@ public final class StorageManager implements AutoCloseable {
         channelFor(pieceIndex).write(ByteBuffer.wrap(block), pieceOffset(pieceIndex) + begin);
     }
 
-    /** 整 Piece 一次顺序写（引擎按件组装后的落盘路径，优于散写 Block）。 */
-    public void writePiece(int pieceIndex, byte[] data) throws IOException {
-        if (data.length != pieceLengthOf(pieceIndex)) {
-            throw new IllegalArgumentException("piece " + pieceIndex + " expects "
-                + pieceLengthOf(pieceIndex) + " bytes, got " + data.length);
+    /** 整 Piece 的块序列 gather 直写（引擎零拷贝组装路径：块引用即缓冲区）。 */
+    public void writePieceBuffers(int pieceIndex, ByteBuffer[] buffers) throws IOException {
+        int expected = pieceLengthOf(pieceIndex);
+        long total = 0;
+        for (ByteBuffer buffer : buffers) {
+            total += buffer.remaining();
         }
-        channelFor(pieceIndex).write(ByteBuffer.wrap(data), pieceOffset(pieceIndex));
+        if (total != expected) {
+            throw new IllegalArgumentException("piece " + pieceIndex + " expects "
+                + expected + " bytes, got " + total);
+        }
+        FileChannel channel = channelFor(pieceIndex);
+        // gather 写基于通道自身 position：设位 + 通道监视器防并发串位（池内 4 通道仍并行）
+        synchronized (channel) {
+            channel.position(pieceOffset(pieceIndex));
+            while (true) {
+                long remaining = 0;
+                for (ByteBuffer buffer : buffers) {
+                    remaining += buffer.remaining();
+                }
+                if (remaining == 0) {
+                    return;
+                }
+                channel.write(buffers, 0, buffers.length);
+            }
+        }
     }
 
     /** 读回整个 Piece 计算 SHA-1，与种子的分片哈希比对。 */

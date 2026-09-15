@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -425,14 +426,15 @@ public final class DownloadSession {
     }
 
     private void refillRequests(PeerSession session) {
-        while (session.issued.size() < PIPELINE_DEPTH) {
+        java.util.ArrayList<PeerWireMessage> batch = new java.util.ArrayList<>();
+        while (session.issued.size() + batch.size() < PIPELINE_DEPTH) {
             if (session.pending.isEmpty()) {
                 if (session.currentPiece >= 0) {
-                    return; // 当前 piece 的 block 已全部发出，等待响应
+                    break; // 当前 piece 的 block 已全部发出，等待响应
                 }
                 int piece = pickPieceFor(session);
                 if (piece < 0) {
-                    return;
+                    break;
                 }
                 session.currentPiece = piece;
                 activePieces.add(piece);
@@ -446,16 +448,19 @@ public final class DownloadSession {
                 if (session.pending.isEmpty()) {
                     activePieces.remove(piece);
                     session.currentPiece = -1;
-                    return; // 该 piece 的块已全部在途（其他 Peer 处理中）
+                    break; // 该 piece 的块已全部在途（其他 Peer 处理中）
                 }
             }
             BlockRequest block = session.pending.pollFirst();
             if (block == null) {
-                return;
+                break;
             }
-            session.channel.write(new Request(block.pieceIndex(), block.begin(), block.length()));
+            batch.add(new Request(block.pieceIndex(), block.begin(), block.length()));
             scheduler.markInFlight(block);
             session.issued.add(block);
+        }
+        if (!batch.isEmpty()) {
+            session.channel.write(batch); // 单缓冲一次刷出
         }
     }
 
@@ -542,11 +547,17 @@ public final class DownloadSession {
             }
             if (assembler == null) {
                 PieceAssembler created = new PieceAssembler(storage.pieceLengthOf(piece),
-                    scheduler.blocksOf(piece).size());
+                    scheduler.blocksOf(piece));
                 PieceAssembler raced = assemblers.putIfAbsent(piece, created);
                 assembler = raced != null ? raced : created;
             }
-            System.arraycopy(message.block(), 0, assembler.data, message.begin(), message.block().length);
+            int slot = assembler.slotOf(message.begin(), message.block().length);
+            if (slot < 0) {
+                session.issued.remove(block);
+                scheduler.clearInFlight(block);
+                return; // 未请求过的块（恶意/迟到），忽略
+            }
+            assembler.blocks[slot] = message.block(); // 零拷贝：块引用即组装
             assembler.received.add(block);
             session.issued.remove(block);
             scheduler.clearInFlight(block);
@@ -566,16 +577,30 @@ public final class DownloadSession {
         }
     }
 
-    /** 齐件：哈希 → 整件顺序落盘 → 位图/事件/广播 → 指派下一件。 */
+    /** 齐件：块序列顺序喂摘要 → gather 落盘 → 位图/事件/广播 → 指派下一件。 */
     private void finishPiece(PieceAssembler assembler, int piece, PeerSession source) {
         synchronized (source) {
             if (localHas(piece)) {
                 verifyingPieces.remove(piece);
                 return; // 已被其他路径完成
             }
-            if (MessageDigest.isEqual(sha1(assembler.data), meta.pieceHash(piece))) {
+            byte[] hash;
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-1");
+                for (byte[] block : assembler.blocks) {
+                    digest.update(block);
+                }
+                hash = digest.digest();
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalStateException("JVM without SHA-1", e);
+            }
+            if (MessageDigest.isEqual(hash, meta.pieceHash(piece))) {
                 try {
-                    storage.writePiece(piece, assembler.data);
+                    ByteBuffer[] buffers = new ByteBuffer[assembler.blocks.length];
+                    for (int i = 0; i < buffers.length; i++) {
+                        buffers[i] = ByteBuffer.wrap(assembler.blocks[i]);
+                    }
+                    storage.writePieceBuffers(piece, buffers);
                 } catch (IOException e) {
                     verifyingPieces.remove(piece);
                     fail(e);
@@ -609,14 +634,6 @@ public final class DownloadSession {
                 }
                 refillRequests(source);
             }
-        }
-    }
-
-    private static byte[] sha1(byte[] data) {
-        try {
-            return MessageDigest.getInstance("SHA-1").digest(data);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("JVM without SHA-1", e);
         }
     }
 
@@ -857,15 +874,35 @@ public final class DownloadSession {
         }
     }
 
-    /** 在内存中按偏移组装一个 Piece：容忍乱序，齐件后一次哈希 + 顺序落盘。 */
+    /** 在内存中按块槽位零拷贝组装：解码块直接挂引用，齐件后顺序喂摘要 + gather 落盘。 */
     private static final class PieceAssembler {
-        final byte[] data;
+        final byte[][] blocks;
+        final int[] blockLengths;
+        final int pieceLength;
         final Set<BlockRequest> received = ConcurrentHashMap.newKeySet();
         final int expectedBlocks;
 
-        PieceAssembler(int pieceLength, int expectedBlocks) {
-            this.data = new byte[pieceLength];
-            this.expectedBlocks = expectedBlocks;
+        PieceAssembler(int pieceLength, List<BlockRequest> blocksOfPiece) {
+            this.pieceLength = pieceLength;
+            this.expectedBlocks = blocksOfPiece.size();
+            this.blocks = new byte[expectedBlocks][];
+            this.blockLengths = new int[expectedBlocks];
+            for (BlockRequest block : blocksOfPiece) {
+                int slot = block.begin() / PieceScheduler.BLOCK_SIZE;
+                blockLengths[slot] = block.length();
+            }
+        }
+
+        /** 槽位校验：begin/length 必须与该槽的请求对齐（协议上对端只回我们请求过的块）。 */
+        int slotOf(int begin, int length) {
+            if (begin % PieceScheduler.BLOCK_SIZE != 0) {
+                return -1;
+            }
+            int slot = begin / PieceScheduler.BLOCK_SIZE;
+            if (slot >= blockLengths.length || blockLengths[slot] != length) {
+                return -1;
+            }
+            return slot;
         }
     }
 }
