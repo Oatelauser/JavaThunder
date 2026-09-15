@@ -92,6 +92,8 @@ public final class DownloadSession {
     private final ConcurrentHashMap<String, Integer> badPiecesByPeer = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, PieceAssembler> assemblers = new ConcurrentHashMap<>();
     private final Set<Integer> activePieces = ConcurrentHashMap.newKeySet();
+    /** 齐件待校验：从选中器隐藏，防止本地位图落定前被重新选中（重复请求→丢弃→饥饿）。 */
+    private final Set<Integer> verifyingPieces = ConcurrentHashMap.newKeySet();
     /** 组装器内存上限：min(64MB/pieceLength, maxPeers, 64) 个并发件。 */
     private final int maxActivePieces;
     private final AtomicLong downloaded = new AtomicLong();
@@ -463,7 +465,7 @@ public final class DownloadSession {
         int bestBusy = -1;
         int bestBusyAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {
-            if (localHas(i) || !session.remote.has(i) || !hasMissingBlock(i)) {
+            if (localHas(i) || verifyingPieces.contains(i) || !session.remote.has(i) || !hasMissingBlock(i)) {
                 continue;
             }
             int availability = scheduler.availability(i);
@@ -553,11 +555,13 @@ public final class DownloadSession {
             if (assembler.received.size() == assembler.expectedBlocks) {
                 assemblers.remove(piece, assembler);
                 activePieces.remove(piece);
+                verifyingPieces.add(piece); // 本地位图落定前不可再被选中
                 releaseAssignment(session);
+                refillRequests(session); // 立即指派下一件——不等齐件校验/落盘（worker 并行做）
                 PieceAssembler done = assembler;
                 blockWorkers.execute(() -> finishPiece(done, piece, session));
-            } else {
-                refillRequests(session);
+            } else if (session.issued.size() < PIPELINE_DEPTH / 2) {
+                refillRequests(session); // 低水位补发，避免逐块进入监视器
             }
         }
     }
@@ -566,16 +570,19 @@ public final class DownloadSession {
     private void finishPiece(PieceAssembler assembler, int piece, PeerSession source) {
         synchronized (source) {
             if (localHas(piece)) {
+                verifyingPieces.remove(piece);
                 return; // 已被其他路径完成
             }
             if (MessageDigest.isEqual(sha1(assembler.data), meta.pieceHash(piece))) {
                 try {
                     storage.writePiece(piece, assembler.data);
                 } catch (IOException e) {
+                    verifyingPieces.remove(piece);
                     fail(e);
                     return;
                 }
                 localSet(piece);
+                verifyingPieces.remove(piece); // 好件：本地位图已覆盖，隐藏使命结束
                 saveResumeQuietly();
                 for (TaskListener listener : listeners) {
                     eventExecutor.execute(() -> {
@@ -594,6 +601,7 @@ public final class DownloadSession {
                 refillRequests(source);
             } else {
                 // 坏件从未落盘：丢弃组装器即可重下，无清盘成本
+                verifyingPieces.remove(piece); // 坏件：允许重选重下
                 int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
                 log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
                 if (bad >= MAX_BAD_PIECES_PER_PEER) {

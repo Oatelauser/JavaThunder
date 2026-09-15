@@ -5,9 +5,8 @@ import java.util.Arrays;
 /** 一个 Block 的数据（ID 7，载荷 = piece 序号 + 块内偏移 + 原始字节）。 */
 public record PieceMessage(int pieceIndex, int begin, byte[] block) implements PeerWireMessage {
 
-    public PieceMessage {
-        block = block.clone();
-    }
+    // 注意：内部类型，构造不做防御性 clone——解码热路径每块 16KiB，克隆会使分配翻倍。
+    // 调用方（引擎/testkit）不得修改 block 内容。
 
     @Override
     public boolean equals(Object o) {

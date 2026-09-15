@@ -59,6 +59,8 @@ public final class NioTransport implements PeerTransport {
 
     @Override
     public int listen(int preferredPort, HandshakeRouter router) {
+        java.util.concurrent.atomic.AtomicReference<RuntimeException> failure =
+            new java.util.concurrent.atomic.AtomicReference<>();
         submit(() -> {
             try {
                 ServerSocketChannel server = ServerSocketChannel.open();
@@ -68,15 +70,17 @@ public final class NioTransport implements PeerTransport {
                 serverChannel = server;
                 listeningPort = ((InetSocketAddress) server.getLocalAddress()).getPort();
             } catch (IOException e) {
-                throw new IllegalStateException("cannot bind port " + preferredPort, e);
+                failure.set(new IllegalStateException("cannot bind port " + preferredPort, e));
             }
         });
-        // bind 在任务中完成；等端口就绪（简单自旋，仅在启动路径）
-        while (listeningPort < 0 && !closed) {
+        while (listeningPort < 0 && failure.get() == null && !closed) {
             sleepMillis(2);
         }
+        if (failure.get() != null) {
+            throw failure.get();
+        }
         if (listeningPort < 0) {
-            throw new IllegalStateException("listen failed on port " + preferredPort);
+            throw new IllegalStateException("transport closed before listen completed");
         }
         return listeningPort;
     }

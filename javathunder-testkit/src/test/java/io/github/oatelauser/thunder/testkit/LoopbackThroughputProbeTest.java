@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 手动性能探针（CI 中跳过）：同一台机器上对比三个基线，
@@ -57,19 +58,20 @@ class LoopbackThroughputProbeTest {
         double writeMbps = SIZE_MB / elapsedSeconds(t);
         System.out.printf("PROBE sequential-write %6.0f MB/s%n", writeMbps);
 
-        // 引擎：回环完整下载（含握手、请求管线、写盘、读回校验）
+        // 引擎：回环完整下载（对称 NIO 对端，消除逐帧阻塞测量天花板）
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
             TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(
                 dir, "payload.bin", data.length, tracker.announceUrl(), new Random(1));
             TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(generated.torrentFile()));
-            try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
+            try (NioSeeder seeder = NioSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
                 try (DefaultTorrentClient client = DefaultTorrentClient.builder()
                         .transportFactory(Transports.fromSystemProperty()).build()) {
                     t = System.nanoTime();
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
-                    DownloadResult result = task.future().get();
+                    // 90s 超时：引擎若饥饿挂死，宁可失败暴露，绝不无限 park
+                    DownloadResult result = task.future().get(90, TimeUnit.SECONDS);
                     double engineMbps = SIZE_MB / elapsedSeconds(t);
                     System.out.printf("PROBE engine-loopback  %6.0f MB/s  (%d bytes, %.1fs)%n",
                         engineMbps, result.bytes(), result.elapsed().toMillis() / 1000.0);
