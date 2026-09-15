@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
   </parent>
 
   <artifactId>javathunder-api</artifactId>
@@ -38,7 +38,7 @@
             <dependency>
               <groupId>${project.groupId}</groupId>
               <artifactId>${project.artifactId}</artifactId>
-              <version>0.1.0</version>
+              <version>0.1.0</version><!-- API 基线：始终对上一个发布 tag -->
             </dependency>
           </oldVersion>
           <newVersion>
@@ -48,10 +48,10 @@
           </newVersion>
           <parameter>
             <onlyModified>true</onlyModified>
-            <breakBuildOnModifications>true</breakBuildOnModifications>
-            <include>
-              <pattern>io.github.oatelauser.thunder.*</pattern>
-            </include>
+            <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+            <includes>
+              <include>io.github.oatelauser.thunder.api</include>
+            </includes>
           </parameter>
           <skip>${skipJapicmp}</skip>
         </configuration>
