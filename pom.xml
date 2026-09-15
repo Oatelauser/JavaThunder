@@ -6,7 +6,7 @@
 
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0</version>
   <packaging>pom</packaging>
 
   <name>JavaThunder</name>
@@ -26,7 +26,7 @@
     <jspecify.version>1.0.0</jspecify.version>
     <junit.version>5.11.4</junit.version>
     <japicmp.skip>${skipJapicmp}</japicmp.skip>
-    <skipJapicmp>true</skipJapicmp>
+    <skipJapicmp>false</skipJapicmp>
   </properties>
 
   <licenses>
