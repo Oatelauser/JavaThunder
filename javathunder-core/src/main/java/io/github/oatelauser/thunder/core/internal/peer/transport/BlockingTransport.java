@@ -136,7 +136,7 @@ public final class BlockingTransport implements PeerTransport {
     static final class BlockingChannel implements PeerChannel {
 
         private final PeerConnection connection;
-        private volatile Consumer<PeerWireMessage> messageListener = m -> {
+        private volatile Consumer<java.util.List<PeerWireMessage>> messageListener = m -> {
         };
         private volatile Consumer<@Nullable Throwable> closeListener = t -> {
         };
@@ -154,7 +154,7 @@ public final class BlockingTransport implements PeerTransport {
             try {
                 while (!closed) {
                     PeerWireMessage message = connection.read();
-                    messageListener.accept(message);
+                    messageListener.accept(java.util.List.of(message));
                 }
             } catch (IOException | RuntimeException e) {
                 closeWith(e);
@@ -186,7 +186,7 @@ public final class BlockingTransport implements PeerTransport {
         }
 
         @Override
-        public void setMessageListener(Consumer<PeerWireMessage> listener) {
+        public void setMessageListener(Consumer<java.util.List<PeerWireMessage>> listener) {
             this.messageListener = listener;
         }
 

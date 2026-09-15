@@ -416,7 +416,11 @@ public final class DownloadSession {
             channel.close();
             return;
         }
-        channel.setMessageListener(message -> handleMessage(session, message));
+        channel.setMessageListener(messages -> {
+            for (PeerWireMessage message : messages) {
+                handleMessage(session, message);
+            }
+        });
         channel.setCloseListener(cause -> peerClosed(session));
         // BEP 3：bitfield 是可选消息（无数据的客户端常直接省略，只用 have 逐片通告）。
         // 连接即注册空位图，否则 have-only 对端的分片永远不可见、调度器不会发出任何请求。
@@ -508,6 +512,9 @@ public final class DownloadSession {
                 BlockRequest rejected = new BlockRequest(r.pieceIndex(), r.begin(), r.length());
                 session.issued.remove(rejected);
                 scheduler.clearInFlight(rejected); // 允许重新请求
+            }
+            case io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage e -> {
+                // BEP 10 扩展消息：正常下载会话不参与（磁力元数据由 MetadataFetcher 处理），忽略
             }
             case UnsupportedMessage u -> {
             }

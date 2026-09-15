@@ -255,7 +255,7 @@ public final class NioTransport implements PeerTransport {
         final ArrayDeque<ByteBuffer> writeQueue = new ArrayDeque<>();
         final ByteBuffer[] writeBatch = new ByteBuffer[WRITE_BATCH_MAX];
         private final AtomicBoolean flushScheduled = new AtomicBoolean(false);
-        private volatile Consumer<PeerWireMessage> messageListener = m -> {
+        private volatile Consumer<java.util.List<PeerWireMessage>> messageListener = m -> {
         };
         private volatile Consumer<@Nullable Throwable> closeListener = t -> {
         };
@@ -328,7 +328,9 @@ public final class NioTransport implements PeerTransport {
             handler.onConnected(this); // 监听器在此回调内挂好
         }
 
+        /** 批量投递：一次读批的全部帧合成一个 List 一次回调（批内线序保持）。 */
         private void deliverFrames() {
+            java.util.List<PeerWireMessage> batch = new java.util.ArrayList<>();
             while (readBuffer.remaining() >= 4) {
                 int length = peekLength(readBuffer);
                 int frameSize = 4 + length;
@@ -336,22 +338,20 @@ public final class NioTransport implements PeerTransport {
                     growReadBuffer(frameSize);
                 }
                 if (readBuffer.remaining() < frameSize) {
-                    return; // 半帧，等下次 read
+                    break; // 半帧，等下次 read
                 }
                 ByteBuffer frame = readBuffer.slice();
                 frame.limit(frameSize);
-                PeerWireMessage message;
                 try {
-                    message = PeerWireCodec.decodeFrame(frame);
+                    batch.add(PeerWireCodec.decodeFrame(frame));
                 } catch (RuntimeException e) {
                     closeWith(new IOException("malformed frame: " + e.getMessage()));
                     return;
                 }
                 readBuffer.position(readBuffer.position() + frameSize);
-                messageListener.accept(message);
-                if (closed) {
-                    return;
-                }
+            }
+            if (!batch.isEmpty()) {
+                messageListener.accept(batch);
             }
         }
 
@@ -484,7 +484,7 @@ public final class NioTransport implements PeerTransport {
         }
 
         @Override
-        public void setMessageListener(Consumer<PeerWireMessage> listener) {
+        public void setMessageListener(Consumer<java.util.List<PeerWireMessage>> listener) {
             this.messageListener = listener;
         }
 

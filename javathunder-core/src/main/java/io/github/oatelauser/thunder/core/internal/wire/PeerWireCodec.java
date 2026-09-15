@@ -35,6 +35,8 @@ public final class PeerWireCodec {
             case HaveNone h -> single(15);
             case RejectRequest r -> frame(16, 12, buf ->
                 buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
+            case ExtendedMessage e -> frame(20, 1 + e.payload().length, buf ->
+                buf.put((byte) e.extendedId()).put(e.payload()));
             case UnsupportedMessage u -> throw new PeerWireException(
                 "cannot encode unsupported message id " + u.id());
         };
@@ -93,6 +95,15 @@ public final class PeerWireCodec {
             case 16 -> {
                 requireExact(payloadLength, 12, "reject");
                 yield new RejectRequest(buf.getInt(), buf.getInt(), buf.getInt());
+            }
+            case 20 -> {
+                if (payloadLength < 1) {
+                    throw new PeerWireException("extended message requires a sub-id byte");
+                }
+                int extendedId = buf.get() & 0xFF; // 子 ID 紧跟消息 ID
+                byte[] payload = new byte[payloadLength - 1]; // 其后是 bencoded 字典
+                buf.get(payload);
+                yield new ExtendedMessage(extendedId, payload);
             }
             default -> {
                 byte[] payload = new byte[payloadLength];

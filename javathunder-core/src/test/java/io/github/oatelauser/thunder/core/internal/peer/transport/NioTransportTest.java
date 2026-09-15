@@ -95,7 +95,7 @@ class NioTransportTest {
                 new TransportHandler() {
                     @Override
                     public void onConnected(PeerChannel channel) {
-                        channel.setMessageListener(received::complete);
+                        channel.setMessageListener(batch -> received.complete(batch.get(0)));
                         channel.write(Interested.INSTANCE);
                         connected.complete(channel);
                     }
@@ -154,7 +154,7 @@ class NioTransportTest {
                 return new TransportHandler() {
                     @Override
                     public void onConnected(PeerChannel channel) {
-                        channel.setMessageListener(fromClient::complete);
+                        channel.setMessageListener(batch -> fromClient.complete(batch.get(0)));
                         inbound.complete(channel);
                     }
 

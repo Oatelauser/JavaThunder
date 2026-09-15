@@ -30,6 +30,32 @@ public record TorrentMetadata(
     public record TorrentFile(List<String> path, long offset, long length) {
     }
 
+    /**
+     * 磁力链接路径（B1）：从 BEP 9 拉到的裸 info 字典字节构造（调用方已校验
+     * SHA-1 == info-hash）。announce 侧由磁力的 tr 参数补齐，单层。
+     */
+    public static TorrentMetadata fromInfoDict(byte[] infoBytes, List<String> trackers) {
+        try {
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(infoBytes);
+            io.github.oatelauser.thunder.core.internal.bencode.BencodeValue value =
+                io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(buf);
+            if (!(value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict info)) {
+                throw new IllegalArgumentException("info dict must be a bencoded dict");
+            }
+            byte[] infoHash;
+            try {
+                infoHash = java.security.MessageDigest.getInstance("SHA-1").digest(infoBytes);
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException(e);
+            }
+            // 复用 TorrentParser 的字段校验：把它当 .torrent 的 info 段解析
+            return io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser
+                .buildFromInfoDict(info, infoHash, trackers);
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("invalid info dict: " + e.getMessage(), e);
+        }
+    }
+
     public TorrentMetadata {
         announceList = List.copyOf(announceList);
         pieces = pieces.clone();

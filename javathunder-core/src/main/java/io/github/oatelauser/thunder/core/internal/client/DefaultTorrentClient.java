@@ -141,6 +141,58 @@ public final class DefaultTorrentClient implements TorrentClient {
             throw new IllegalStateException("client is closed");
         }
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(torrentFile));
+        return startSession(meta, options);
+    }
+
+    /**
+     * 磁力链接下载（B1）：先经 BEP 9 拉取 info 字典并自校验 info-hash，
+     * 再交给正常下载会话。返回的 future 在元数据就绪前不完成——快照在此之前
+     * 反映 metadata 状态（fraction=0）。
+     */
+    @Override
+    public io.github.oatelauser.thunder.api.DownloadTask download(
+            io.github.oatelauser.thunder.api.MagnetUri magnet, DownloadOptions options) throws Exception {
+        if (closed.get()) {
+            throw new IllegalStateException("client is closed");
+        }
+        slots.acquire();
+        boolean[] released = {false};
+        Runnable releaseOnce = () -> {
+            if (!released[0]) {
+                released[0] = true;
+                slots.release();
+            }
+        };
+        try {
+            io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher fetcher =
+                new io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher(
+                    magnet.infoHash(), magnet.trackers(), transport, trackerClient,
+                    transport.listeningPort());
+            io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask task =
+                new io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask(
+                    fetcher.fetch().thenApply(infoBytes -> {
+                        try {
+                            return TorrentMetadata.fromInfoDict(infoBytes, magnet.trackers());
+                        } catch (RuntimeException e) {
+                            throw new IllegalStateException("fetched metadata invalid", e);
+                        }
+                    }), magnet, options, this::startSessionFromMagnet, releaseOnce, eventExecutor);
+            return task;
+        } catch (RuntimeException e) {
+            releaseOnce.run();
+            throw e;
+        }
+    }
+
+    private DownloadTask startSessionFromMagnet(TorrentMetadata meta, DownloadOptions options) {
+        try {
+            return startSession(meta, options);
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot start magnet download session", e);
+        }
+    }
+
+    private DownloadTask startSession(TorrentMetadata meta, DownloadOptions options) throws Exception {
         slots.acquire();
         DownloadSession session;
         try {

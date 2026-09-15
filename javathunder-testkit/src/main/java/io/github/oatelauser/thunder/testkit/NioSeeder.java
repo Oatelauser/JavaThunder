@@ -53,11 +53,16 @@ public final class NioSeeder implements AutoCloseable {
         return new TransportHandler() {
             @Override
             public void onConnected(PeerChannel channel) {
-                channel.setMessageListener(message -> {
-                    if (message instanceof Request request) {
-                        channel.write(new PieceMessage(request.pieceIndex(), request.begin(),
-                            readBlock(request)));
+                channel.setMessageListener(messages -> {
+                    java.util.List<io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage> responses =
+                        new java.util.ArrayList<>(messages.size());
+                    for (io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage message : messages) {
+                        if (message instanceof Request request) {
+                            responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
+                                readBlock(request)));
+                        }
                     }
+                    channel.write(responses);
                 });
                 Bitfield all = new Bitfield(meta.pieceCount());
                 for (int i = 0; i < meta.pieceCount(); i++) {

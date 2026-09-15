@@ -4,14 +4,16 @@ import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
 import org.jspecify.annotations.Nullable;
 
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
  * 一条已完成握手的 Peer 连接。线程安全。
  *
- * <p>推送模型：实现负责在连接线程/事件循环上回调消息监听器；
- * {@code setMessageListener}/{@code setCloseListener} 必须在
+ * <p>推送模型（批量化）：实现按批回调消息——NIO 一次读批的帧合成一个 List 一次投递，
+ * 阻塞实现每批一条。{@code setMessageListener}/{@code setCloseListener} 必须在
  * {@link TransportHandler#onConnected} 回调返回之前完成，实现保证在那之前不投递任何消息。
+ * 批内消息保持线序。
  */
 public interface PeerChannel extends AutoCloseable {
 
@@ -23,7 +25,7 @@ public interface PeerChannel extends AutoCloseable {
     void write(PeerWireMessage message);
 
     /** 批量发送：NIO 实现合成单缓冲一次刷出，减少唤醒与队列开销。 */
-    default void write(java.util.List<PeerWireMessage> messages) {
+    default void write(List<PeerWireMessage> messages) {
         for (PeerWireMessage message : messages) {
             write(message);
         }
@@ -32,7 +34,7 @@ public interface PeerChannel extends AutoCloseable {
     /** 关闭连接；幂等；触发 closeListener（cause=null 表示主动关闭）。 */
     void close();
 
-    void setMessageListener(Consumer<PeerWireMessage> listener);
+    void setMessageListener(Consumer<List<PeerWireMessage>> listener);
 
     void setCloseListener(Consumer<@Nullable Throwable> listener);
 }

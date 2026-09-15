@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 期望帧字节按 BEP 3 的线格式手写（长度前缀大端 u32 + 消息 ID u8 + 载荷），
@@ -40,8 +41,13 @@ class PeerWireCodecTest {
             assertEquals("BitTorrent protocol",
                 new String(wire, 1, 19, java.nio.charset.StandardCharsets.US_ASCII));
             for (int i = 20; i < 28; i++) {
-                assertEquals(0, wire[i], "reserved bytes must be zero in phase 1");
+                if (i != Handshake.EXTENSION_BIT_OFFSET) {
+                    assertEquals(0, wire[i], "reserved bytes other than the BEP 10 byte must stay zero");
+                }
             }
+            assertEquals(Handshake.EXTENSION_BIT_MASK, wire[Handshake.EXTENSION_BIT_OFFSET],
+                "reserved[5] must declare BEP 10 extension support (reserved[5] & 0x10)");
+            assertTrue(Handshake.supportsExtensions(wire), "our own handshake must declare BEP 10");
             assertEquals(infoHash[0], wire[28]);
             assertEquals('-', wire[48]);
             assertEquals('J', wire[49]);
@@ -197,14 +203,33 @@ class PeerWireCodecTest {
 
         @Test
         void unknownIdsAreToleratedNotFatal() {
-            // 真实客户端会发未实现的 ID（BEP10 扩展=20、BEP5 PORT=9、BEP6 Suggest=13）：
+            // 真实客户端会发未实现的 ID（BEP5 PORT=9、BEP6 Suggest=13、未知名=21）：
             // 容忍解码为 UnsupportedMessage，由引擎忽略——绝不断连
-            assertEquals(new UnsupportedMessage(20),
-                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 20, 1, 2, 3, 4, 5)));
+            assertEquals(new UnsupportedMessage(21),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 21, 1, 2, 3, 4, 5)));
             assertEquals(new UnsupportedMessage(9),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 3, 9, 0x1F, (byte) 0x90)));
             assertEquals(new UnsupportedMessage(13),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 13, 0, 0, 0, 7)));
+        }
+
+        @Test
+        void bep10ExtendedMessageRoundTrip() {
+            byte[] payload = new byte[]{100, 53, 58, 109, 115, 103}; // "d5:msg" 片段即可
+            // 线格式：长度前缀 = id(1) + sub-id(1) + payload(6) = 8
+            ExtendedMessage decoded = (ExtendedMessage) PeerWireCodec.decodeFrame(
+                frame(0, 0, 0, 8, 20, 3, 100, 53, 58, 109, 115, 103));
+            assertEquals(3, decoded.extendedId());
+            assertArrayEquals(payload, decoded.payload());
+            assertArrayEquals(new byte[]{0, 0, 0, 8, 20, 3, 100, 53, 58, 109, 115, 103},
+                PeerWireCodec.encode(decoded));
+        }
+
+        @Test
+        void bep10ExtendedMessageRequiresSubId() {
+            // 只有 id 无 sub-id 的 id-20 帧是协议违规，解码必须报错而非产脏值
+            assertThrows(io.github.oatelauser.thunder.core.internal.wire.PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 20)));
         }
 
         @Test

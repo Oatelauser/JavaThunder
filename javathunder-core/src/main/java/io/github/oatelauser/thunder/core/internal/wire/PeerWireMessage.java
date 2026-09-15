@@ -4,5 +4,5 @@ package io.github.oatelauser.thunder.core.internal.wire;
 public sealed interface PeerWireMessage permits
     KeepAlive, Choke, Unchoke, Interested, NotInterested,
     Have, BitfieldMessage, Request, PieceMessage, Cancel,
-    HaveAll, HaveNone, RejectRequest, UnsupportedMessage {
+    HaveAll, HaveNone, RejectRequest, ExtendedMessage, UnsupportedMessage {
 }

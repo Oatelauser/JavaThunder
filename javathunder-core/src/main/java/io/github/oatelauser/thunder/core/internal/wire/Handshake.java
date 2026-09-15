@@ -4,14 +4,19 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * Peer 握手（BEP 3）：
+ * Peer 握手（BEP 3 + BEP 10）：
  * {@code <pstrlen=19>"BitTorrent protocol"<8 字节保留位><20 info-hash><20 peer-id>}。
- * 阶段 1 保留位全零（阶段 2 置 DHT 扩展位）。
+ * 保留位 reserved[5] 的 0x10 位（从右数第 20 bit）置位声明扩展协议支持（BEP 10）；
+ * 阶段 2 内其余位保持为零（末字节 0x01 是 DHT/BEP 5，未启用）。
  */
 public record Handshake(byte[] infoHash, byte[] peerId) {
 
     private static final byte[] PROTOCOL = "BitTorrent protocol".getBytes(StandardCharsets.US_ASCII);
     private static final int WIRE_LENGTH = 1 + PROTOCOL.length + 8 + 20 + 20;
+    /** BEP 10 扩展协议位掩码（规范原文：bit 20 counting from 0, {@code reserved[5] & 0x10}）。 */
+    public static final int EXTENSION_BIT_MASK = 0x10;
+    /** 线格式偏移：保留区 [20,28) 的第 5 字节 = wire[25]。 */
+    public static final int EXTENSION_BIT_OFFSET = 25;
 
     public Handshake {
         if (infoHash.length != 20 || peerId.length != 20) {
@@ -28,7 +33,7 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         byte[] wire = new byte[WIRE_LENGTH];
         wire[0] = (byte) PROTOCOL.length;
         System.arraycopy(PROTOCOL, 0, wire, 1, PROTOCOL.length);
-        // 保留位 [20,28) 保持为零
+        wire[EXTENSION_BIT_OFFSET] = EXTENSION_BIT_MASK; // reserved[5] & 0x10：声明扩展能力（BEP 10）
         System.arraycopy(infoHash, 0, wire, 28, 20);
         System.arraycopy(peerId, 0, wire, 48, 20);
         return wire;
@@ -47,5 +52,11 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         byte[] infoHash = Arrays.copyOfRange(wire, 28, 48);
         byte[] peerId = Arrays.copyOfRange(wire, 48, 68);
         return new Handshake(infoHash, peerId);
+    }
+
+    /** 对端是否声明支持扩展协议（BEP 10：reserved[5] & 0x10）。 */
+    public static boolean supportsExtensions(byte[] wire) {
+        return wire.length > EXTENSION_BIT_OFFSET
+            && (wire[EXTENSION_BIT_OFFSET] & EXTENSION_BIT_MASK) != 0;
     }
 }

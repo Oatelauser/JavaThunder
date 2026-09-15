@@ -102,6 +102,38 @@ public final class TorrentParser {
         return new Scanned(announce, announceList, comment, createdBy, creationDateSec, info, infoRaw);
     }
 
+    /** 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。 */
+    public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoHash, List<String> trackers) {
+        java.util.Map<BString, BencodeValue> top = new java.util.TreeMap<>(BString.UNSIGNED_ORDER);
+        if (!trackers.isEmpty()) {
+            top.put(BString.of("announce"), BString.of(trackers.get(0)));
+            if (trackers.size() > 1) {
+                java.util.List<BencodeValue> tier = new java.util.ArrayList<>();
+                for (String url : trackers) {
+                    tier.add(BString.of(url));
+                }
+                top.put(BString.of("announce-list"), new BList(java.util.List.of(new BList(tier))));
+            }
+        }
+        top.put(BString.of("info"), info);
+        java.util.List<java.util.List<String>> tiers = trackers.isEmpty()
+            ? java.util.List.of()
+            : java.util.List.of(java.util.List.copyOf(trackers));
+        Scanned scanned = new Scanned(
+            trackers.isEmpty() ? null : trackers.get(0),
+            tiers,
+            null, null, null, info, new byte[0]);
+        // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
+        return buildWithHash(scanned, infoHash);
+    }
+
+    private static TorrentMetadata buildWithHash(Scanned s, byte[] infoHash) {
+        TorrentMetadata meta = build(s);
+        return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
+            meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
+            meta.pieces(), meta.privateFlag(), meta.files());
+    }
+
     private static TorrentMetadata build(Scanned s) {
         if (s.announce() == null && s.announceList().isEmpty()) {
             throw new IllegalArgumentException("no tracker in torrent (announce/announce-list); "
