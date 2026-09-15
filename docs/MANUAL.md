@@ -2,22 +2,75 @@
 
 版本：v0.2.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
 
-**怎么读这本手册**：第 1 章澄清角色概念（服务端/客户端到底有没有）；第 2 章是完整可运行的快速入门（公网/离线两版）；第 3 章回答"什么时候引哪个包"；第 4 章按场景逐一给完整示例（每个功能一节、每节开头标注本例需要的依赖）；第 5–9 章是速查与排错。
+**怎么读这本手册**：第 1 章建立正确的心智模型（角色、上传下载的真实关系、"机器越多越快"的原理）；第 2 章是完整可运行的快速入门；第 3 章回答"什么时候引哪个包"；**第 4 章下载场景 / 第 5 章上传与分发场景**按你的意图二选一进入；第 6 章两类共用；第 7–11 章是速查与排错。
 
 ---
 
-## 第 1 章 先澄清概念：有没有"服务端和客户端"？
+## 第 1 章 心智模型：先澄清概念
 
-**没有传统意义上的服务端和客户端。** 这是 P2P 协议——每个 JavaThunder 实例都是**对等节点（Peer）**，同时具备下载和上传能力。你只需区分四种角色：
+### 1.1 有没有"服务端和客户端"？
+
+**没有传统意义上的服务端和客户端。** 这是 P2P 协议——每个 JavaThunder 实例都是**对等节点（Peer）**，**既是客户端又是服务端**：既能从别人那里拉数据，也随时应答别人发来的数据请求。你只需区分四种角色：
 
 | 角色 | 是什么 | 谁来充当 | 你必须部署吗 |
 |---|---|---|---|
 | **下载者（Leecher）** | 还没拿全数据的节点；**边下边传** | 你的应用 | — |
-| **做种者（Seed）** | 拿全数据的节点，只上传 | 任何完整持有数据的节点（含下载完成的下载者） | 分发场景需要至少 1 个 |
+| **做种者（Seed）** | 拿全数据的节点，只上传 | 任何完整持有数据的节点（**含下载完成的下载者**） | 分发场景需要至少 1 个 |
 | **Tracker** | "电话簿"：告诉节点彼此的地址。**不碰文件数据** | 任何一个 HTTP/UDP tracker 程序 | 不必须（种子里有地址就用；可被 DHT 替代） |
 | **DHT 网络** | 去 tracker 化的分布式电话簿 | 所有参与的节点 | 不必须（可选模块） |
 
-**上传和下载的关系**：同一条 TCP 连接上的两个方向，引擎自动双向处理。你**不需要写任何"上传代码"**——只要你的节点持有某 Piece，其他客户端请求时引擎自动应答（详见 4.4 做种一节）。所谓"做种"只是"完整持有 + 持续在线"的状态。
+### 1.2 上传和下载的真实关系（重要）
+
+上传不是和下载平行的另一件事，而是**每个节点始终具备的能力**，分两种形态：
+
+| 形态 | 什么时候发生 | 你要写的代码 |
+|---|---|---|
+| **互惠上传** | 你下载的过程中，别人向你请求你**已持有的分片**——引擎自动应答（tit-for-tat：谁给你传得多你优先回馈谁） | 零 |
+| **做种** | 你**持有全部数据**后继续在线供下载 | 只需一个开关 `seedAfterComplete=true`，保持进程运行 |
+
+**不存在"上传服务/上传接口"这种东西**——同一条 TCP 连接上的两个方向，引擎自动双向处理。所谓"做种"只是"完整持有 + 持续在线"的状态。
+
+### 1.3 发现面与数据面：tracker/DHT 只是电话簿
+
+```
+                    发现面（只交换地址，两种方式可混用）
+   下载方 ──────────▶ tracker（中心电话簿，HTTP/UDP）
+          ──────────▶ DHT（分布式电话簿，去中心化）
+                    数据面（文件字节只走这一条路）
+   下载方 ◀────────── 点对点 TCP 直连 ──────────▶ 数据持有者（任何 Peer）
+```
+
+**tracker 和 DHT 从不传输文件数据**——它们只回答"谁的机器上有这个文件？给我地址列表"。拿到地址后，数据永远是节点间直连拉取。这回答了"别人怎么找到你的上传"：走发现面拿到你的地址，然后直连你。
+
+### 1.4 纠正一个常见误解：没有"分片上传到不同服务器"
+
+BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从各服务器拼回来"（那是对象存储/纠删码的模型）。对照：
+
+| | 分片存储模型（误解） | BitTorrent（实际） |
+|---|---|---|
+| 分片存在哪 | 分散上传到多个**服务**上 | **没有"服务"存分片**。每个 Peer 本地持有（或将持有）**完整文件** |
+| 上传是什么 | 把分片推送给服务 | 别人直连**你的机器**，按需请求你手中的某几片 |
+| 怎么组装 | 从不同服务器各取一片最后拼接 | 收到的块**按字节偏移直接写进本地目标文件**——`.part` 从第一天就是全尺寸预分配，片到位就写到位，不存在"最后合成"一步 |
+
+### 1.5 为什么机器越多、总吞吐越大（P2P 的核心价值）
+
+每台下载机**同时是消费者和新的供给者**——它刚下到的分片立刻可供别人拉取（rarest-first 调度还专门优先拉全网最稀少的分片，让分片尽快扩散）。对照传统 C/S 分发：
+
+| | C/S（HTTP 下载/对象存储） | P2P（BitTorrent） |
+|---|---|---|
+| 供给者 | 只有源服务器 | 源 + 每一台已下到数据的机器 |
+| 100 台机器同时拉 50GB | 全部挤源机器，出口带宽被 100 份瓜分 | 100 台互为源，**总量越大供给越多**，源机器压力近似恒定 |
+| 规模化的瓶颈 | 源机器带宽（线性恶化） | 边际递减——新人既增加需求也增加供给 |
+
+```
+1 → N 分发时的分片流动（rarest-first 保证分散）：
+   seed-01 ─┬─▶ 目标机 A ─┬─▶ 目标机 C（从 A 拿它缺的片）
+            ├─▶ 目标机 B ─┘
+            └─▶ 目标机 C ──▶ 目标机 B（从 C 拿它缺的片）
+   下完的机器自动转做种 ⇒ 供给随规模自然增长
+```
+
+这正是内网镜像分发（§5.4）选 P2P 的理由：分发节点越多，整体越快，而不是越挤越慢。
 
 ---
 
@@ -44,11 +97,11 @@
 </dependencies>
 ```
 
-> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.2.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行，无需构建工具：
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.2.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
 > ```bash
 > java -cp javathunder-core-0.2.0-with-dependencies.jar QuickStart.java
 > ```
-> 不带分类器的主 jar 保持瘦 jar，供 Maven/Gradle 做传递依赖解析——不要把 fat jar 当依赖引入。
+> 不带分类器的主 jar 保持瘦 jar 供构建工具做依赖解析——不要把 fat jar 当依赖引入。
 
 ### 2.1 版本一（推荐第一跑）：零网络本地 Swarm——离线也能完整跑通
 
@@ -78,14 +131,14 @@ public class OfflineQuickStart {
         Path dir = Path.of("sandbox");
         Files.createDirectories(dir);
 
-        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {               // ① 电话簿
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {               // ① 电话簿（真实 HTTP tracker，回环）
             var gen = TorrentGenerator.generate(dir, "hello.bin", 1_000_000,     // ② 造种子+内容
                 tracker.announceUrl(), new Random(42));
             TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(gen.torrentFile()));
 
-            try (FakeSeeder seeder = FakeSeeder.start(gen.contentFile(), meta)) { // ③ 种子源
+            try (FakeSeeder seeder = FakeSeeder.start(gen.contentFile(), meta)) { // ③ 种子源（真实线协议 TCP 服务，回环）
                 seeder.announceTo(tracker);
-                try (TorrentClient client = DefaultTorrentClient.builder().build()) {  // ④ 下载方
+                try (TorrentClient client = DefaultTorrentClient.builder().build()) {  // ④ 下载方（你的业务代码）
                     DownloadTask task = client.download(gen.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
                     task.addListener(new TaskListener() {
@@ -103,13 +156,12 @@ public class OfflineQuickStart {
 }
 ```
 
-**预期行为**：数秒内打印若干 `progress ...` 行，最后输出 `完成: sandbox\out\hello.bin (1000000 字节)`——
-这就是完整链路：tracker 找到节点 → P2P 拉块 → 逐片 SHA-1 校验 → 文件落位。可执行版本见
-testkit 的 `OfflineQuickStartTest`（IDEA 直接运行）。
+**预期行为**：数秒内打印若干 `progress ...` 行，最后输出 `完成: sandbox\out\hello.bin (1000000 字节)`。
+离线 ≠ 模拟：①③ 是**协议级真实实现**（EmbeddedTracker 是真的 HTTP tracker，FakeSeeder 是真的说 BitTorrent 线协议的 TCP 服务），只是都跑在本机回环——跑通的代码和公网下载是**同一份**。可执行版本见 testkit 的 `OfflineQuickStartTest`（IDEA 直接运行）。
 
 ### 2.2 版本二（可选）：下载公网真实种子（Ubuntu 官方 ISO）
 
-**适用**：有国际网络的环境（tracker 与对端多在境外，国内直连可能连不上 Peer 或极慢）。
+**适用**：有国际网络的环境（tracker 与对端多在境外，国内直连可能连不上 Peer 或极慢——属网络状况而非引擎故障）。
 **依赖**：仅 core（2.0 已给）。
 
 ```bash
@@ -131,7 +183,7 @@ public class QuickStart {
 
             task.addListener(new TaskListener() {
                 @Override public void onProgress(ProgressSnapshot p) {
-                    // 注意用 %n 换行： 不触发流刷新，IDEA/JUnit 控制台里会一行都看不到
+                    // 注意用 %n 换行：\r 不触发流刷新，IDEA/JUnit 控制台里会一行都看不到
                     System.out.printf("progress %.2f%%  ↓%dKB/s  peers=%d  eta=%ss%n",
                         p.fraction() * 100, p.downloadRateBps() / 1024,
                         p.connectedPeers(), p.etaMillis() == null ? "-" : p.etaMillis() / 1000);
@@ -152,7 +204,7 @@ public class QuickStart {
 }
 ```
 
-**预期行为**：数秒内 `progress` 行开始刷新（`peers=0` 只是还没连上对端，帧照常到达；国内网络可能长时间 peers≤1 且速率 KB/s 级，这属网络状况而非引擎故障）。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
+**预期行为**：数秒内 `progress` 行开始刷新（`peers=0` 只是还没连上对端，帧照常到达）。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
 
 ---
 
@@ -169,15 +221,15 @@ public class QuickStart {
 
 ---
 
-## 第 4 章 场景手册（每个功能一节、每节标注依赖）
+## 第 4 章 下载场景：我要获取文件
 
-> 以下示例延续 2.0 的依赖；每节开头"**依赖**"行说明额外要引什么。
+> 以下延续 2.0 依赖；每节开头"**依赖**"行说明额外要引什么。**下载过程中你同时在为别人上传**（互惠上传，见 §4.6）——这是自动的。
 
 ### 4.1 下载网上的种子文件（最常见）
 
 **依赖**：仅 core。
 
-从任何网站下载 `.torrent` 文件后（就像 2.1 的 Ubuntu），核心就一行：
+从任何网站下载 `.torrent` 文件后（就像 2.2 的 Ubuntu），核心就一行：
 
 ```java
 DownloadTask task = client.download(Path.of("xxx.torrent"),
@@ -185,7 +237,7 @@ DownloadTask task = client.download(Path.of("xxx.torrent"),
 DownloadResult result = task.future().join();  // 阻塞到完成；异步则 thenAccept(...)
 ```
 
-要点：多 tracker 种子自动逐层轮换；`udp://` 地址自动走 UDP tracker（BEP 15），无需配置；下载中互惠上传自动进行（见 4.4）。
+要点：多 tracker 种子自动逐层轮换；`udp://` 地址自动走 UDP tracker（BEP 15），无需配置。
 
 ### 4.2 磁力链接
 
@@ -278,77 +330,7 @@ DownloadResult r = client.download(Path.of("model-x.torrent"), options).future()
 
 恶意种子的路径穿越（`..`、盘符、保留名等）已被解析层拒绝，不会逃出 targetDir。
 
-### 4.4 做种（= 别人怎么从你这里下载）
-
-**依赖**：仅 core。核心认知：**上传不需要写代码，下载器下载的同时就自动上传**。"做种"只是让节点完整持有数据并保持在线。
-
-**4.4.1 下载完成后继续做种**（最常用——下载器自动变成新的分发源）：
-
-```java
-DownloadOptions seedOptions = new DownloadOptions(
-    Path.of("downloads"), /*resume*/ true, /*verify*/ true,
-    /*seedAfterComplete=*/ true,          // ← 关键：完成后不退出，转 SEEDING 持续上传
-    /*↓限*/ 0, /*↑限*/ 0, RestartVerifyMode.FULL);
-
-DownloadTask task = client.download(torrentPath, seedOptions);
-task.future().join();                      // future 完成 ≠ 做种结束
-// task.state() == TaskState.SEEDING；想停：task.cancel(false) 或 client.close()
-```
-
-**4.4.2 我要做"原始种子源"**（内网分发的第一台机器）：先用 4.5 造种子 → 在源机器上以上述 `seedAfterComplete` 跑一次完整下载（或从零下载一次）→ 保持进程在线，它就是 Seed。之后每台目标机器下载完成也会自动成为种子源（这正是 P2P 分发扩展的原理）。
-
-**4.4.3 从本地已有文件直接做种**：0.2.0 的推荐路径是"完整下载一次后转做种"；如需跳过下载直接对已有数据做种，属高级用法——预填 `.part` 与 `.jt-resume` 状态文件（格式见 DESIGN §5.7，参考测试 `RestartVerifyModeTest` 里的预填代码）。公共 API 化的"导入已有文件"在路线图中。
-
-### 4.5 生成种子（你要分发自己的文件给别人）
-
-**依赖**：core **+ javathunder-testkit**（生成器在 testkit）。
-
-```java
-import io.github.oatelauser.thunder.testkit.TorrentGenerator;
-
-// 单文件：生成长度 50MB 的随机内容 + 配套 .torrent（tracker 指向你的 announce）
-var single = TorrentGenerator.generate(dir, "dataset.bin", 50_000_000,
-    "http://tracker.lan:6969/announce", new Random());
-// single.contentFile() = 数据文件本体；single.torrentFile() = 分发给他人的种子
-
-// 多文件（目录树，大模型典型形态）：
-var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of(
-        java.util.List.of(java.util.List.of("weights.safetensors"), 3_000_000_000L),
-        java.util.List.of(java.util.List.of("tokenizer.json"), 2_000_000L),
-        java.util.List.of(java.util.List.of("conf"), java.util.List.of("config.yaml"), 5_000L)),
-    4 * 1024 * 1024,                          // pieceLength：大文件建议 4MB
-    "http://tracker.lan:6969/announce", new Random());
-```
-
-### 4.6 内网镜像分发完整拓扑（大模型场景）
-
-**依赖**：源/目标机器 core；（可选去 tracker）+ dht；（源机器造种子）+ testkit。
-
-```text
-          ┌──────────── ① 种子分发（任意途径：内网 HTTP/IM/配置中心）────────────┐
-          │                                                                    │
- 源机器 seed-01                       目标机器 ×N（同一份种子文件）              │
- ┌─────────────────────┐             ┌─────────────────────┐                   │
- │ 造种子(4.5) + 下载转 │   ② tracker │ download +           │ ◀─────────────────┘
- │ 做种(4.4.2) 持续在线 │◀──announce─▶│ seedAfterComplete    │
- └─────────────────────┘  (或 DHT)   └─────────────────────┘
-```
-
-```java
-// ② 的 tracker 二选一：
-//    HTTP：内网跑一个 tracker 程序（opentracker 等），种子 announce 填它
-//    UDP ：announce 填 udp://tracker.lan:6969/announce —— 引擎自动走 UDP，零配置
-//    去 tracker：两端都 builder().peerDiscovery(DhtPeerDiscovery.create(List.of("seed-01.lan:6881")))
-// ③ 目标机器统一配置建议（大体积镜像）：
-DownloadOptions mirrorOptions = DownloadOptions.defaults()
-    .targetDir(Path.of("/data/mirrors"))
-    .restartVerify(RestartVerifyMode.SAMPLED)   // TB 级断点恢复：抽样校验，不重扫全盘
-    .rateLimits(0, 0);
-```
-
-运维事实（实测口径）：N 台目标互相取缺（rarest-first），不都挤源机器；进程重启同目录重新 download 自动续传。
-
-### 4.7 断点续传（自动）与重启校验三档
+### 4.4 断点续传（自动）与重启校验三档
 
 **依赖**：仅 core。续传无需代码——同 `targetDir` 重新 `download` 即从进度位图继续。三档决定"重启时多信任上次的进度"：
 
@@ -360,7 +342,7 @@ options.restartVerify(RestartVerifyMode.NONE)     // 全信任位图（最快；
 
 进度文件 `<name>.jt-resume` 与数据 `.part` 同目录；删除两者 = 强制从头下。
 
-### 4.8 限速（全局 × 任务，双向独立）
+### 4.5 限速（全局 × 任务，双向独立）
 
 **依赖**：仅 core。
 
@@ -374,9 +356,112 @@ DefaultTorrentClient.builder()
 options.rateLimits(/*↓*/ 512 * 1024, /*↑*/ 64 * 1024);
 ```
 
-### 4.9 监控 / 事件（给自己的面板或指标系统挂回调）
+### 4.6 下载时你同时在帮别人下载（互惠上传）
 
-**依赖**：仅 core。7 个回调全部可选（default 方法），完整清单见 §5 速查：
+**依赖**：仅 core。**没有任何代码要写**——这一节只是让你知道发生了什么：你已持有的分片会被请求方拉取；引擎按 tit-for-tat 优先回馈给你贡献最多的节点（外加定期给新节点机会的"乐观槽"）。它带来的实际效果：
+
+- 公网下载：你的节点"有来有往"，更容易被对端持续 unchoke，**下载速度通常更好**
+- 内网分发：每台下载机自动成为分片的中继供给者——**这就是 §1.5"机器越多越快"的机制落地**
+- 想抑制它：§4.5 的上传限速；想贡献更多：完成后转做种（§5.1）
+
+---
+
+## 第 5 章 上传与分发场景：我要把文件给别人
+
+> 核心认知（§1.2）：**上传不需要写代码**——上传能力始终在线；你要做的是"完整持有数据 + 保持进程在线 + 让别人能发现你"。
+
+### 5.1 做种三式
+
+**依赖**：仅 core。
+
+**5.1.1 下载完成后继续做种**（最常用——下载器自动变成新的分发源）：
+
+```java
+DownloadOptions seedOptions = new DownloadOptions(
+    Path.of("downloads"), /*resume*/ true, /*verify*/ true,
+    /*seedAfterComplete=*/ true,          // ← 关键：完成后不退出，转 SEEDING 持续上传
+    /*↓限*/ 0, /*↑限*/ 0, RestartVerifyMode.FULL);
+
+DownloadTask task = client.download(torrentPath, seedOptions);
+task.future().join();                      // future 完成 ≠ 做种结束
+// task.state() == TaskState.SEEDING；想停：task.cancel(false) 或 client.close()
+```
+
+**5.1.2 我要做"原始种子源"**（内网分发的第一台机器）：先用 5.2 造种子 → 在源机器上以 `seedAfterComplete` 跑一次完整下载 → 保持进程在线，它就是 Seed。之后每台目标机器下载完成也会自动成为种子源（§1.5 的供给增长）。
+
+**5.1.3 从本地已有文件直接做种**：0.2.0 的推荐路径是"完整下载一次后转做种"；跳过下载直接对已有数据做种属高级用法——预填 `.part` 与 `.jt-resume` 状态文件（格式见 DESIGN §5.7，参考测试 `RestartVerifyModeTest` 里的预填代码）。公共 API 化的"导入已有文件"在路线图中。
+
+### 5.2 生成种子（分发的第一步）
+
+**依赖**：core **+ javathunder-testkit**（生成器在 testkit）。
+
+```java
+import io.github.oatelauser.thunder.testkit.TorrentGenerator;
+
+// 单文件：生成内容 + 配套 .torrent（tracker 指向你的 announce）
+var single = TorrentGenerator.generate(dir, "dataset.bin", 50_000_000,
+    "http://tracker.lan:6969/announce", new Random());
+// single.contentFile() = 数据文件本体；single.torrentFile() = 分发给他人的种子
+
+// 多文件（目录树，大模型典型形态）：
+var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of(
+        java.util.List.of(java.util.List.of("weights.safetensors"), 3_000_000_000L),
+        java.util.List.of(java.util.List.of("tokenizer.json"), 2_000_000L),
+        java.util.List.of(java.util.List.of("conf"), java.util.List.of("config.yaml"), 5_000L)),
+    4 * 1024 * 1024,                          // pieceLength：大文件建议 4MB
+    "http://tracker.lan:6969/announce", new Random());
+```
+
+### 5.3 别人怎么找到你：发现渠道的选择
+
+**依赖**：tracker/内嵌 tracker → 仅 core（或 testkit 的 EmbeddedTracker 当轻量内网 tracker）；去 tracker → + dht。
+
+回顾 §1.3：发现面只交换地址。三条渠道可混用，引擎自动叠加：
+
+| 渠道 | 适用 | 你要做的 |
+|---|---|---|
+| **HTTP Tracker**（种子里写 announce） | 公网种子默认；内网可跑 opentracker 或直接用 testkit 的 `EmbeddedTracker` | 种子生成时填 announce 地址 |
+| **UDP Tracker**（BEP 15） | 同上，UDP 更省开销 | announce 填 `udp://...`，引擎自动分派 |
+| **DHT**（可选模块） | 完全去 tracker；内网自建自举 | 两端 `builder().peerDiscovery(DhtPeerDiscovery.create(...))` |
+| PEX | 已连接的节点互相介绍新节点 | 无需配置，自动 |
+
+### 5.4 内网镜像分发完整拓扑（大模型场景）
+
+**依赖**：源/目标机器 core；（可选去 tracker）+ dht；（源机器造种子）+ testkit。
+
+```text
+          ┌──────────── ① 种子分发（任意途径：内网 HTTP/IM/配置中心）────────────┐
+          │                                                                    │
+ 源机器 seed-01                       目标机器 ×N（同一份种子文件）              │
+ ┌─────────────────────┐             ┌─────────────────────┐                   │
+ │ 造种子(5.2) + 下载转 │   ② 发现面 │ download +           │ ◀─────────────────┘
+ │ 做种(5.1.2) 持续在线 │◀──tracker──▶│ seedAfterComplete    │
+ └─────────────────────┘  (或 DHT)   └──────────┬──────────┘
+        ▲                                        │ ③ 数据面：N 台目标
+        └──────────── 点对点互拉分片 ◀───────────┘────────── 互相取缺，不都挤源机器
+```
+
+```java
+// ② 的发现面三选一：
+//    HTTP tracker：内网跑一个 tracker 程序（opentracker 等），种子 announce 填它
+//    UDP tracker ：announce 填 udp://tracker.lan:6969/announce —— 引擎自动走 UDP，零配置
+//    去 tracker  ：两端都 builder().peerDiscovery(DhtPeerDiscovery.create(List.of("seed-01.lan:6881")))
+// ③ 目标机器统一配置建议（大体积镜像）：
+DownloadOptions mirrorOptions = DownloadOptions.defaults()
+    .targetDir(Path.of("/data/mirrors"))
+    .restartVerify(RestartVerifyMode.SAMPLED)   // TB 级断点恢复：抽样校验，不重扫全盘
+    .rateLimits(0, 0);
+```
+
+运维事实（实测口径）：N 台目标互相取缺（rarest-first），下完自动转做种、供给随规模增长（§1.5）；进程重启同目录重新 download 自动续传。
+
+---
+
+## 第 6 章 两类共用：监控、生命周期与工程选项
+
+### 6.1 监控 / 事件（给自己的面板或指标系统挂回调）
+
+**依赖**：仅 core。7 个回调全部可选（default 方法），完整清单见 §7 速查：
 
 ```java
 task.addListener(new TaskListener() {
@@ -395,7 +480,7 @@ task.addListener(new TaskListener() {
 // 不注册也能随时主动拉快照：task.snapshot()
 ```
 
-### 4.10 暂停 / 恢复 / 取消 / 关闭
+### 6.2 暂停 / 恢复 / 取消 / 关闭
 
 **依赖**：仅 core。
 
@@ -407,7 +492,7 @@ task.cancel(true);         // 任务+本地数据+状态文件全删
 client.close();            // 停一切（AutoCloseable，幂等）
 ```
 
-### 4.11 传输引擎：默认与 NIO（什么时候需要关心）
+### 6.3 传输引擎：默认与 NIO（什么时候需要关心）
 
 **依赖**：仅 core。默认使用**阻塞传输**（简单稳健）；高吞吐场景切换 **NIO 事件循环**（回环实测 110MB/s vs 35MB/s）：
 
@@ -422,7 +507,7 @@ DefaultTorrentClient.builder()
 
 不确定就用默认；确认带宽瓶颈在引擎侧再切 NIO。
 
-### 4.12 回调跑在你自己的线程上（如 UI 线程）
+### 6.4 回调跑在你自己的线程上（如 UI 线程）
 
 **依赖**：仅 core。
 
@@ -432,7 +517,7 @@ DefaultTorrentClient.builder()
     .build();
 ```
 
-### 4.13 给自己的项目写集成测试
+### 6.5 给自己的项目写集成测试
 
 **依赖**：core（test）+ javathunder-testkit（test）。完整可抄模板见 testkit 的
 `LoopbackAcceptanceTest`；三件套 = EmbeddedTracker + TorrentGenerator + FakeSeeder，
@@ -440,7 +525,7 @@ DefaultTorrentClient.builder()
 
 ---
 
-## 第 5 章 API 速查
+## 第 7 章 API 速查
 
 **api 模块（稳定契约）**
 
@@ -451,7 +536,7 @@ DefaultTorrentClient.builder()
 | `DownloadOptions` | `defaults()` `targetDir()` `rateLimits()` `restartVerify()` | 单任务配置 |
 | `MagnetUri` | `parse(String)` | 磁力解析 |
 | `TaskListener` | onStateChanged/onProgress/onPieceComplete/onTrackerAnnounce/onPeerConnected/onPeerDisconnected/onError | 事件 |
-| `ProgressSnapshot` | fraction/rates/connectedPeers/availability/etaMillis | 快照 |
+| `ProgressSnapshot` | fraction(字节级)/rates/connectedPeers/availability/etaMillis | 快照 |
 | `TaskState` | QUEUED→VERIFYING→DOWNLOADING→SEEDING/COMPLETED；PAUSED/FAILED/CANCELLED | 状态机 |
 | `RestartVerifyMode` | FULL/SAMPLED/NONE | 重启校验档 |
 | `PeerDiscoverySource` | `getPeers(infoHash)` | 去 tracker 发现 SPI |
@@ -460,9 +545,11 @@ DefaultTorrentClient.builder()
 
 **dht 模块**：`DhtPeerDiscovery.create()` / `create(List<String> 内网自举)`
 
+**testkit**：`EmbeddedTracker.start()` `TorrentGenerator.generate/generateMultiFile` `FakeSeeder/NioSeeder.start` `MetadataSeeder.start`（BEP 9 对端）
+
 ---
 
-## 第 6 章 架构 30 秒
+## 第 8 章 架构 30 秒
 
 ```
 api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/线协议/
@@ -473,27 +560,27 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 
 线程模型：NIO 时一个 selector 平台线程管全部连接 I/O；磁盘与哈希在虚拟线程池；事件回调在独立事件线程。深入读 [DESIGN.md](DESIGN.md)（需求与详设）与 [ADR](adr/)（三份关键决策记录）。
 
-## 第 7 章 协议兼容（BEP）速查
+## 第 9 章 协议兼容（BEP）速查
 
 实现：BEP 3(v1+多文件)/9/10/11/12/15/20/23/27 完整，BEP 5 查询模式（可选模块）；
 容忍解码：BEP 6；未实现：BEP 52(v2)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
 
-## 第 8 章 部署要点
+## 第 10 章 部署要点
 
-- 端口：默认 TCP 6881 入站（放行可显著提升互惠上传）；tracker/DHT 为出站
+- 端口：默认 TCP 6881 入站（放行可显著提升互惠上传——别人连不进你，就只能你连出）；tracker/DHT 为出站
 - 磁盘：`<name>.part` + `<name>.jt-resume`；完成自动改名/落位
 - 日志：slf4j（记得带后端）；DEBUG 级有 peer/tracker/坏件全量轨迹
 - 量级：≤1000 连接、单任务 ≤200 Peer；无 MSE 加密；Windows 做种期 `.part` 名
 
-## 第 9 章 常见问题排错
+## 第 11 章 常见问题排错
 
 | 现象 | 原因与处理 |
 |---|---|
 | 完全没速度、peers=0 | 种子里 tracker 失效且未引 DHT（§4.2.3）；或 6881 未放行只影响上传不影响连出 |
 | 磁力任务一直 QUEUED | 没有 tracker 也没注入 peerDiscovery；或当前网络取不到元数据持有者 |
 | 没有任何日志 | 缺 slf4j 后端（§2.0 第二个依赖） |
-| 速度低于预期 | 先确认带宽/对端；引擎侧再试 `-Djavathunder.transport=nio`（§4.11） |
+| 速度低于预期 | 先确认带宽/对端；引擎侧再试 `-Djavathunder.transport=nio`（§6.3） |
 | 重启后从头下载 | `targetDir` 变了，或 `.jt-resume` 被删；续传要求同目录 |
 | Windows 做种时文件叫 `.part` | 已知限制（句柄占用），完成/停止后改名 |
-| IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.1 示例已修正） |
+| IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.2 示例已修正） |
 | 看似"卡住不动"其实在慢速下载 | 公网种子可能只连到 1 个 Peer、速率 KB/s 级（6GB 需数小时），`join()` 会一直阻塞。先用 §2.1 离线版验证集成，再给 future 加超时观察真实速率 |
