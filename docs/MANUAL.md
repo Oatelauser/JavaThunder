@@ -50,57 +50,10 @@
 > ```
 > 不带分类器的主 jar 保持瘦 jar，供 Maven/Gradle 做传递依赖解析——不要把 fat jar 当依赖引入。
 
-### 2.1 版本一：下载公网真实种子（Ubuntu 官方 ISO）
+### 2.1 版本一（推荐第一跑）：零网络本地 Swarm——离线也能完整跑通
 
-**适用**：有互联网环境，想先看真实效果。
-
-```bash
-# 1) 拿一个真实种子文件（Ubuntu 官方，合法）
-curl -fSL -o ubuntu.torrent https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso.torrent
-```
-
-```java
-// 2) QuickStart.java —— 完整类，直接运行
-import io.github.oatelauser.thunder.api.*;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
-import java.nio.file.Path;
-
-public class QuickStart {
-    public static void main(String[] args) throws Exception {
-        try (TorrentClient client = DefaultTorrentClient.builder().build()) {
-            DownloadTask task = client.download(
-                Path.of("ubuntu.torrent"),
-                DownloadOptions.defaults().targetDir(Path.of("downloads")));
-
-            task.addListener(new TaskListener() {
-                @Override public void onProgress(ProgressSnapshot p) {
-                    // 注意用 %n 换行：\r 不触发流刷新，IDEA/JUnit 控制台里会一行都看不到
-                    System.out.printf("progress %.2f%%  ↓%dKB/s  peers=%d  eta=%ss%n",
-                        p.fraction() * 100, p.downloadRateBps() / 1024,
-                        p.connectedPeers(), p.etaMillis() == null ? "-" : p.etaMillis() / 1000);
-                }
-            });
-
-            // 本例目标是"验证集成成功"＝几秒内进度行开始刷新（peers=0 只是还没连上对端，帧照常到达）。
-            // 完整下完 6GB ISO 在一般网络需数小时——要下到底就用 task.future().join()；
-            // 这里 90 秒验证后取消，已下数据与断点自动保留，随时重跑续传：
-            try {
-                DownloadResult result = task.future().get(90, java.util.concurrent.TimeUnit.SECONDS);
-                System.out.printf("完成: %s (%d 字节)%n", result.file(), result.bytes());
-            } catch (java.util.concurrent.TimeoutException verificationDone) {
-                System.out.println("集成验证通过（进度事件流正常），已取消；断点已保留。");
-                task.cancel(false);
-            }
-        }
-    }
-}
-```
-
-**预期行为**：启动后数秒内出现 `progress ...` 行并持续刷新（每 ~0.5s 一帧）；90 秒后打印验证通过并退出。想一口气下完整 ISO：把超时那段换成 `task.future().join()`。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
-
-### 2.2 版本二：零网络本地 Swarm（离线也能跑通）
-
-**适用**：内网开发机/CI 里验证集成，不依赖任何外部网络和 tracker。**需要额外引入 `javathunder-testkit`**（它不只是测试工具，也用于造种子、搭本地小 swarm）：
+**适用**：任何环境（无外网/公司隔离网络/CI）。全程在本机完成"下载→SHA-1 校验→完成"，约 1 秒。
+**需要额外引入 `javathunder-testkit`**（它不只是测试工具，也用于造种子、搭本地小 swarm）：
 
 ```xml
 <dependency>
@@ -113,6 +66,8 @@ public class QuickStart {
 ```java
 import io.github.oatelauser.thunder.api.*;
 import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
+import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.testkit.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -126,22 +81,78 @@ public class OfflineQuickStart {
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {               // ① 电话簿
             var gen = TorrentGenerator.generate(dir, "hello.bin", 1_000_000,     // ② 造种子+内容
                 tracker.announceUrl(), new Random(42));
-            var meta = io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser
-                .parse(Files.readAllBytes(gen.torrentFile()));
+            TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(gen.torrentFile()));
 
             try (FakeSeeder seeder = FakeSeeder.start(gen.contentFile(), meta)) { // ③ 种子源
                 seeder.announceTo(tracker);
                 try (TorrentClient client = DefaultTorrentClient.builder().build()) {  // ④ 下载方
-                    DownloadResult r = client.download(gen.torrentFile(),
-                        DownloadOptions.defaults().targetDir(dir.resolve("out")))
-                        .future().join();
-                    System.out.println("完成: " + r.file());
+                    DownloadTask task = client.download(gen.torrentFile(),
+                        DownloadOptions.defaults().targetDir(dir.resolve("out")));
+                    task.addListener(new TaskListener() {
+                        @Override public void onProgress(ProgressSnapshot p) {
+                            System.out.printf("progress %.1f%%  ↓%dKB/s  peers=%d%n",
+                                p.fraction() * 100, p.downloadRateBps() / 1024, p.connectedPeers());
+                        }
+                    });
+                    DownloadResult r = task.future().get(30, java.util.concurrent.TimeUnit.SECONDS);
+                    System.out.printf("完成: %s (%d 字节)%n", r.file(), r.bytes());
                 }
             }
         }
     }
 }
 ```
+
+**预期行为**：数秒内打印若干 `progress ...` 行，最后输出 `完成: sandbox\out\hello.bin (1000000 字节)`——
+这就是完整链路：tracker 找到节点 → P2P 拉块 → 逐片 SHA-1 校验 → 文件落位。可执行版本见
+testkit 的 `OfflineQuickStartTest`（IDEA 直接运行）。
+
+### 2.2 版本二（可选）：下载公网真实种子（Ubuntu 官方 ISO）
+
+**适用**：有国际网络的环境（tracker 与对端多在境外，国内直连可能连不上 Peer 或极慢）。
+**依赖**：仅 core（2.0 已给）。
+
+```bash
+curl -fSL -o ubuntu.torrent https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso.torrent
+```
+
+```java
+// QuickStart.java —— 注意：Ubuntu ISO 约 6GB，本例目标是"90 秒验证集成"，不是下完整
+import io.github.oatelauser.thunder.api.*;
+import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import java.nio.file.Path;
+
+public class QuickStart {
+    public static void main(String[] args) throws Exception {
+        try (TorrentClient client = DefaultTorrentClient.builder().build()) {
+            DownloadTask task = client.download(
+                Path.of("ubuntu.torrent"),
+                DownloadOptions.defaults().targetDir(Path.of("downloads")));
+
+            task.addListener(new TaskListener() {
+                @Override public void onProgress(ProgressSnapshot p) {
+                    // 注意用 %n 换行： 不触发流刷新，IDEA/JUnit 控制台里会一行都看不到
+                    System.out.printf("progress %.2f%%  ↓%dKB/s  peers=%d  eta=%ss%n",
+                        p.fraction() * 100, p.downloadRateBps() / 1024,
+                        p.connectedPeers(), p.etaMillis() == null ? "-" : p.etaMillis() / 1000);
+                }
+            });
+
+            // fraction 是字节级进度（含未凑齐分片的已收块），块一到就会动；
+            // 完整下完需数小时——要下到底就换 task.future().join()：
+            try {
+                DownloadResult result = task.future().get(90, java.util.concurrent.TimeUnit.SECONDS);
+                System.out.printf("完成: %s (%d 字节)%n", result.file(), result.bytes());
+            } catch (java.util.concurrent.TimeoutException verificationDone) {
+                System.out.println("集成验证通过（进度事件流正常），已取消；断点已保留。");
+                task.cancel(false);
+            }
+        }
+    }
+}
+```
+
+**预期行为**：数秒内 `progress` 行开始刷新（`peers=0` 只是还没连上对端，帧照常到达；国内网络可能长时间 peers≤1 且速率 KB/s 级，这属网络状况而非引擎故障）。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
 
 ---
 
@@ -485,4 +496,4 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 | 重启后从头下载 | `targetDir` 变了，或 `.jt-resume` 被删；续传要求同目录 |
 | Windows 做种时文件叫 `.part` | 已知限制（句柄占用），完成/停止后改名 |
 | IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.1 示例已修正） |
-| 看似"卡住不动"其实在慢速下载 | 公网种子可能只连到 1 个 Peer、速率 KB/s 级（6GB 需数小时），`join()` 会一直阻塞。先用 §2.2 离线版验证集成，再给 future 加超时观察真实速率 |
+| 看似"卡住不动"其实在慢速下载 | 公网种子可能只连到 1 个 Peer、速率 KB/s 级（6GB 需数小时），`join()` 会一直阻塞。先用 §2.1 离线版验证集成，再给 future 加超时观察真实速率 |

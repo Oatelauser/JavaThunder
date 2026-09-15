@@ -1083,7 +1083,10 @@ public final class DownloadSession {
     }
 
     public ProgressSnapshot snapshot() {
-        double fraction = meta.pieceCount() == 0 ? 1.0 : (double) localCardinality() / meta.pieceCount();
+        // 字节级进度（已校验件 + 在途已收块）：块一到进度就动，不等整片校验——
+        // 大件种子按"完成片数"计会在首片完成前长时间显示 0%，观测上不可接受
+        double fraction = meta.length() == 0 ? 1.0
+            : Math.min(1.0, (double) downloadedRemainingBasis() / meta.length());
         long remaining = Math.max(0, meta.length() - downloadedRemainingBasis());
         Long eta = downloadRate > 0 && remaining > 0 ? remaining * 1000 / downloadRate : null;
         return new ProgressSnapshot(fraction, downloaded.get(), uploaded.get(),
