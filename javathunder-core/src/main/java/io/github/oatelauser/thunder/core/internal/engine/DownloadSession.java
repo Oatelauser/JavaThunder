@@ -271,11 +271,17 @@ public final class DownloadSession {
             uploaded.set(resume.uploaded());
             if (resume.completed().cardinality() > 0) {
                 setState(TaskState.VERIFYING);
+                java.util.Set<Integer> sampled = pickRestartSample(resume.completed());
                 for (int i = 0; i < meta.pieceCount(); i++) {
                     if (!resume.completed().has(i)) {
                         continue;
                     }
-                    if (!options.verifyOnRestart() || storage.verifyPiece(i)) {
+                    boolean mustVerify = switch (options.restartVerifyMode()) {
+                        case FULL -> true;
+                        case SAMPLED -> sampled.contains(i); // ~10% 抽样 + 首/末件必查
+                        case NONE -> false;
+                    };
+                    if (!mustVerify || storage.verifyPiece(i)) {
                         localSet(i);
                     } else {
                         log.info("resume: piece {} failed re-verification, will re-download", i);
@@ -283,12 +289,37 @@ public final class DownloadSession {
                     }
                 }
             }
-            log.info("resume: {}/{} pieces trusted", localCardinality(), meta.pieceCount());
+            log.info("resume: {}/{} pieces trusted (mode={})", localCardinality(),
+                meta.pieceCount(), options.restartVerifyMode());
         } catch (ResumeException e) {
             log.info("resume state unusable, starting fresh: {}", e.getMessage());
         } catch (IOException e) {
             log.warn("resume verification I/O failure, starting fresh", e);
         }
+    }
+
+    /** SAMPLED 档的抽样子集：均匀随机 10% + 边界件（首/末）。 */
+    private java.util.Set<Integer> pickRestartSample(Bitfield completed) {
+        java.util.Set<Integer> sample = new java.util.HashSet<>();
+        int count = meta.pieceCount();
+        if (count > 0 && completed.has(0)) {
+            sample.add(0);
+        }
+        if (count > 1 && completed.has(count - 1)) {
+            sample.add(count - 1);
+        }
+        // 上限取 min(已完成件数, 10%)：只完成少量件就恢复时（如 5/1000），
+        // 若按总件数定 target，样本永远凑不齐 → 死循环
+        // 上限取 min(已完成件数, 10%)：只完成少量件就恢复时（如 5/1000），
+        // 若按总件数定 target，样本永远凑不齐 → 死循环
+        int target = Math.max(1, Math.min(completed.cardinality(), count / 10));
+        while (sample.size() < target) {
+            int candidate = random.nextInt(count);
+            if (completed.has(candidate)) {
+                sample.add(candidate);
+            }
+        }
+        return sample;
     }
 
     private void saveResumeQuietly() {
