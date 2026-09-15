@@ -1,11 +1,9 @@
 package io.github.oatelauser.thunder.core.internal.client;
 
-import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
-import io.github.oatelauser.thunder.api.PeerDiscoverySource;
-import io.github.oatelauser.thunder.api.DownloadOptions;
-import io.github.oatelauser.thunder.api.DownloadTask;
-import io.github.oatelauser.thunder.api.TorrentClient;
+import io.github.oatelauser.thunder.api.*;
 import io.github.oatelauser.thunder.core.internal.engine.DownloadSession;
+import io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask;
+import io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.core.internal.peer.transport.BlockingTransport;
@@ -14,6 +12,7 @@ import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandle
 import io.github.oatelauser.thunder.core.internal.ratelimit.RateLimiter;
 import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,15 +21,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
-/** {@link TorrentClient} 默认实现：全局资源 + 多任务编排 + 入站连接路由。 */
+/**
+ * {@link TorrentClient} 默认实现：全局资源 + 多任务编排 + 入站连接路由。
+ */
 public final class DefaultTorrentClient implements TorrentClient {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultTorrentClient.class);
@@ -39,7 +36,9 @@ public final class DefaultTorrentClient implements TorrentClient {
         return new Builder();
     }
 
-    /** 便捷工厂：全部默认值。 */
+    /**
+     * 便捷工厂：全部默认值。
+     */
     public static DefaultTorrentClient create() throws IOException {
         return builder().build();
     }
@@ -79,20 +78,26 @@ public final class DefaultTorrentClient implements TorrentClient {
             return this;
         }
 
-        /** 注入自定义监听器回调线程；缺省为库内单线程守护线程。 */
+        /**
+         * 注入自定义监听器回调线程；缺省为库内单线程守护线程。
+         */
         public Builder listenerExecutor(Executor executor) {
             this.listenerExecutor = executor;
             return this;
         }
 
-        /** 注入传输实现（差分验收/调试用）；缺省为阻塞参照实现。 */
+        /**
+         * 注入传输实现（差分验收/调试用）；缺省为阻塞参照实现。
+         */
         public Builder transportFactory(Function<byte[], PeerTransport> factory) {
             this.transportFactory = factory;
             return this;
         }
 
-        /** 注入去中心化 Peer 发现源（如 javathunder-dht 的 DhtPeerDiscovery）；
-         *  生命周期归本 client：close 时一并关闭。未注入则仅 tracker 发现。 */
+        /**
+         * 注入去中心化 Peer 发现源（如 javathunder-dht 的 DhtPeerDiscovery）；
+         * 生命周期归本 client：close 时一并关闭。未注入则仅 tracker 发现。
+         */
         public Builder peerDiscovery(PeerDiscoverySource source) {
             this.peerDiscovery = source;
             return this;
@@ -131,11 +136,11 @@ public final class DefaultTorrentClient implements TorrentClient {
         }
         this.udpTracker = udp;
         this.globalDownload = builder.downloadLimitBytesPerSecond <= 0
-            ? RateLimiter.unlimited()
-            : new RateLimiter(builder.downloadLimitBytesPerSecond);
+                ? RateLimiter.unlimited()
+                : new RateLimiter(builder.downloadLimitBytesPerSecond);
         this.globalUpload = builder.uploadLimitBytesPerSecond <= 0
-            ? RateLimiter.unlimited()
-            : new RateLimiter(builder.uploadLimitBytesPerSecond);
+                ? RateLimiter.unlimited()
+                : new RateLimiter(builder.uploadLimitBytesPerSecond);
         if (builder.listenerExecutor != null) {
             this.ownedExecutor = null;
             this.eventExecutor = builder.listenerExecutor;
@@ -172,13 +177,12 @@ public final class DefaultTorrentClient implements TorrentClient {
      * 反映 metadata 状态（fraction=0）。
      */
     @Override
-    public io.github.oatelauser.thunder.api.DownloadTask download(
-            io.github.oatelauser.thunder.api.MagnetUri magnet, DownloadOptions options) throws Exception {
+    public DownloadTask download(MagnetUri magnet, DownloadOptions options) throws Exception {
         if (closed.get()) {
             throw new IllegalStateException("client is closed");
         }
         slots.acquire();
-        boolean[] released = {false};
+        boolean[] released = { false };
         Runnable releaseOnce = () -> {
             if (!released[0]) {
                 released[0] = true;
@@ -186,12 +190,9 @@ public final class DefaultTorrentClient implements TorrentClient {
             }
         };
         try {
-            io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher fetcher =
-                new io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher(
-                    magnet.infoHash(), magnet.trackers(), transport, trackerClient,
-                    transport.listeningPort(), peerDiscovery, udpTracker);
-            io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask task =
-                new io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask(
+            MetadataFetcher fetcher = new MetadataFetcher(magnet.infoHash(), magnet.trackers(),
+                    transport, trackerClient, transport.listeningPort(), peerDiscovery, udpTracker);
+            return new MagnetDownloadTask(
                     fetcher.fetch().thenApply(infoBytes -> {
                         try {
                             return TorrentMetadata.fromInfoDict(infoBytes, magnet.trackers());
@@ -199,7 +200,6 @@ public final class DefaultTorrentClient implements TorrentClient {
                             throw new IllegalStateException("fetched metadata invalid", e);
                         }
                     }), magnet, options, this::startSessionFromMagnet, releaseOnce, eventExecutor);
-            return task;
         } catch (RuntimeException e) {
             releaseOnce.run();
             throw e;
@@ -219,9 +219,9 @@ public final class DefaultTorrentClient implements TorrentClient {
         DownloadSession session;
         try {
             session = new DownloadSession(meta, options,
-                new DownloadSession.SessionConfig(maxPeersPerTask, transport.listeningPort(),
-                    globalDownload, globalUpload, peerDiscovery, udpTracker),
-                transport, trackerClient, eventExecutor, peerId);
+                    new DownloadSession.SessionConfig(maxPeersPerTask, transport.listeningPort(),
+                            globalDownload, globalUpload, peerDiscovery, udpTracker),
+                    transport, trackerClient, eventExecutor, peerId);
         } catch (IOException | RuntimeException e) {
             slots.release();
             throw e;

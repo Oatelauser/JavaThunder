@@ -13,6 +13,8 @@ import java.util.List;
  */
 public record MagnetUri(byte[] infoHash, String displayName, List<String> trackers) {
 
+    private static final String BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
     public MagnetUri {
         if (infoHash == null || infoHash.length != 20) {
             throw new IllegalArgumentException("magnet info-hash must be 20 bytes");
@@ -65,9 +67,10 @@ public record MagnetUri(byte[] infoHash, String displayName, List<String> tracke
         throw new IllegalArgumentException("btih must be 40 hex or 32 base32 chars: " + encoded);
     }
 
-    private static final String BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-    /** RFC 4648 base32 解码（无填充容忍）。 */
+    /**
+     * RFC 4648 base32 解码（无填充容忍）。
+     */
     static byte[] base32Decode(String input) {
         StringBuilder cleaned = new StringBuilder();
         for (char c : input.toCharArray()) {
@@ -76,10 +79,18 @@ public record MagnetUri(byte[] infoHash, String displayName, List<String> tracke
             }
         }
         int length = cleaned.length();
-        if (length % 8 != 0 && length % 8 != 2 && length % 8 != 4 && length % 8 != 5
-            && length % 8 != 7) {
+        if (length % 8 != 0 && length % 8 != 2 && length % 8 != 4 && length % 8 != 5 && length % 8 != 7) {
             throw new IllegalArgumentException("invalid base32 length: " + length);
         }
+        List<Byte> out = getOut(length, cleaned);
+        byte[] result = new byte[out.size()];
+        for (int i = 0; i < out.size(); i++) {
+            result[i] = out.get(i);
+        }
+        return result;
+    }
+
+    private static List<Byte> getOut(int length, StringBuilder cleaned) {
         long buffer = 0;
         int bits = 0;
         List<Byte> out = new ArrayList<>();
@@ -95,14 +106,11 @@ public record MagnetUri(byte[] infoHash, String displayName, List<String> tracke
                 bits -= 8;
             }
         }
-        byte[] result = new byte[out.size()];
-        for (int i = 0; i < out.size(); i++) {
-            result[i] = out.get(i);
-        }
-        return result;
+        return out;
     }
 
     private static String urlDecode(String value) {
         return URLDecoder.decode(value, StandardCharsets.UTF_8);
     }
+
 }

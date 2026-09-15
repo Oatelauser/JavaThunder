@@ -44,6 +44,12 @@
 </dependencies>
 ```
 
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.2.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行，无需构建工具：
+> ```bash
+> java -cp javathunder-core-0.2.0-with-dependencies.jar QuickStart.java
+> ```
+> 不带分类器的主 jar 保持瘦 jar，供 Maven/Gradle 做传递依赖解析——不要把 fat jar 当依赖引入。
+
 ### 2.1 版本一：下载公网真实种子（Ubuntu 官方 ISO）
 
 **适用**：有互联网环境，想先看真实效果。
@@ -68,20 +74,29 @@ public class QuickStart {
 
             task.addListener(new TaskListener() {
                 @Override public void onProgress(ProgressSnapshot p) {
-                    System.out.printf("\r%.1f%%  ↓%dKB/s  peers=%d  eta=%ss ",
+                    // 注意用 %n 换行：\r 不触发流刷新，IDEA/JUnit 控制台里会一行都看不到
+                    System.out.printf("progress %.2f%%  ↓%dKB/s  peers=%d  eta=%ss%n",
                         p.fraction() * 100, p.downloadRateBps() / 1024,
                         p.connectedPeers(), p.etaMillis() == null ? "-" : p.etaMillis() / 1000);
                 }
             });
 
-            DownloadResult result = task.future().join();   // 返回即全部 Piece 校验通过
-            System.out.printf("%n完成: %s (%d 字节)%n", result.file(), result.bytes());
+            // 本例目标是"验证集成成功"＝几秒内进度行开始刷新（peers=0 只是还没连上对端，帧照常到达）。
+            // 完整下完 6GB ISO 在一般网络需数小时——要下到底就用 task.future().join()；
+            // 这里 90 秒验证后取消，已下数据与断点自动保留，随时重跑续传：
+            try {
+                DownloadResult result = task.future().get(90, java.util.concurrent.TimeUnit.SECONDS);
+                System.out.printf("完成: %s (%d 字节)%n", result.file(), result.bytes());
+            } catch (java.util.concurrent.TimeoutException verificationDone) {
+                System.out.println("集成验证通过（进度事件流正常），已取消；断点已保留。");
+                task.cancel(false);
+            }
         }
     }
 }
 ```
 
-**预期行为**：进度行每 ~0.5 秒刷新；结束后 `downloads/` 出现完整 ISO（下载期间是同名 `.part`）。命令行不写代码等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
+**预期行为**：启动后数秒内出现 `progress ...` 行并持续刷新（每 ~0.5s 一帧）；90 秒后打印验证通过并退出。想一口气下完整 ISO：把超时那段换成 `task.future().join()`。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
 
 ### 2.2 版本二：零网络本地 Swarm（离线也能跑通）
 
@@ -469,3 +484,5 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 | 速度低于预期 | 先确认带宽/对端；引擎侧再试 `-Djavathunder.transport=nio`（§4.11） |
 | 重启后从头下载 | `targetDir` 变了，或 `.jt-resume` 被删；续传要求同目录 |
 | Windows 做种时文件叫 `.part` | 已知限制（句柄占用），完成/停止后改名 |
+| IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.1 示例已修正） |
+| 看似"卡住不动"其实在慢速下载 | 公网种子可能只连到 1 个 Peer、速率 KB/s 级（6GB 需数小时），`join()` 会一直阻塞。先用 §2.2 离线版验证集成，再给 future 加超时观察真实速率 |

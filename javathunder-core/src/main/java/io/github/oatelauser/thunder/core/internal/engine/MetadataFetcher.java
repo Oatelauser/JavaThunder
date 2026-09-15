@@ -1,30 +1,19 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
-import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
-import org.jspecify.annotations.Nullable;
-import io.github.oatelauser.thunder.core.internal.bencode.BDict;
-import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
-import io.github.oatelauser.thunder.core.internal.bencode.BString;
-import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
-import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.bencode.*;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
-import io.github.oatelauser.thunder.core.internal.tracker.AnnounceRequest;
-import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
-import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
-import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
-import io.github.oatelauser.thunder.core.internal.tracker.TrackerException;
+import io.github.oatelauser.thunder.core.internal.tracker.*;
 import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Interested;
 import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -33,8 +22,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 
 /**
  * 磁力链接的元数据获取（B1：BEP 10 + BEP 9）。
@@ -63,7 +50,7 @@ public final class MetadataFetcher {
     private final CountDownLatch finished = new CountDownLatch(1);
 
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
-                           TrackerClient trackerClient, int listenPort) {
+            TrackerClient trackerClient, int listenPort) {
         this(infoHash, trackers, transport, trackerClient, listenPort, null);
     }
 
@@ -71,16 +58,16 @@ public final class MetadataFetcher {
     private final UdpTrackerClient udpTracker;
 
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
-                           TrackerClient trackerClient, int listenPort,
-                           @Nullable
-                           PeerDiscoverySource discovery) {
+            TrackerClient trackerClient, int listenPort,
+            @Nullable
+            PeerDiscoverySource discovery) {
         this(infoHash, trackers, transport, trackerClient, listenPort, discovery, null);
     }
 
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
-                           TrackerClient trackerClient, int listenPort,
-                           @Nullable PeerDiscoverySource discovery,
-                           @Nullable UdpTrackerClient udpTracker) {
+            TrackerClient trackerClient, int listenPort,
+            @Nullable PeerDiscoverySource discovery,
+            @Nullable UdpTrackerClient udpTracker) {
         this.infoHash = infoHash.clone();
         this.trackers = List.copyOf(trackers);
         this.transport = transport;
@@ -94,7 +81,9 @@ public final class MetadataFetcher {
     @Nullable
     private final PeerDiscoverySource discovery;
 
-    /** 异步拉取，完成后给出 info 字典的原始字节。 */
+    /**
+     * 异步拉取，完成后给出 info 字典的原始字节。
+     */
     public CompletableFuture<byte[]> fetch() {
         Thread.ofVirtual().name("javathunder-metadata").start(() -> {
             try {
@@ -125,13 +114,13 @@ public final class MetadataFetcher {
 
     private void announceTrackers() {
         AnnounceRequest request = new AnnounceRequest(infoHash, peerId, listenPort,
-            0, 0, 0, TrackerEvent.STARTED, 50);
+                0, 0, 0, TrackerEvent.STARTED, 50);
         for (String url : trackers) {
             try {
                 var response = UdpTrackerClient
-                    .supports(url) && udpTracker != null
-                    ? udpTracker.announce(url, request)
-                    : trackerClient.announce(url, request);
+                        .supports(url) && udpTracker != null
+                        ? udpTracker.announce(url, request)
+                        : trackerClient.announce(url, request);
                 if (response.failureReason() == null) {
                     response.peers().forEach(candidates::offer);
                 }
@@ -170,8 +159,8 @@ public final class MetadataFetcher {
         }
         if (!result.isDone()) {
             result.completeExceptionally(new IllegalStateException(
-                "metadata fetch timed out after " + TIMEOUT_MILLIS + "ms (peers=" + sessions.size()
-                    + ", pending=" + candidates.size() + ")"));
+                    "metadata fetch timed out after " + TIMEOUT_MILLIS + "ms (peers=" + sessions.size()
+                            + ", pending=" + candidates.size() + ")"));
         }
     }
 
@@ -194,7 +183,7 @@ public final class MetadataFetcher {
         }
         // BEP 10 扩展握手：声明我们支持 ut_metadata（子 ID 1）
         BDict m = new BDict(java.util.Map.of(
-            BString.of("ut_metadata"), new BInteger(OUR_UT_METADATA_ID)));
+                BString.of("ut_metadata"), new BInteger(OUR_UT_METADATA_ID)));
         java.util.Map<BString, BencodeValue> handshake = new java.util.TreeMap<>(BString.UNSIGNED_ORDER);
         handshake.put(BString.of("m"), m);
         handshake.put(BString.of("p"), new BInteger(listenPort));
@@ -211,12 +200,12 @@ public final class MetadataFetcher {
                 return true;
             }
             BencodeValue utMetadata = handshake.get("m") instanceof BDict m
-                ? m.get("ut_metadata") : null;
+                    ? m.get("ut_metadata") : null;
             if (utMetadata instanceof BInteger id && id.value() > 0) {
                 session.remoteUtMetadataId = (int) id.value();
                 BencodeValue size = handshake.get("metadata_size");
                 if (size instanceof BInteger metadataSize
-                    && metadataSize.value() > 0 && metadataSize.value() <= 8 * 1024 * 1024) {
+                        && metadataSize.value() > 0 && metadataSize.value() <= 8 * 1024 * 1024) {
                     session.metadataSize = (int) metadataSize.value();
                     requestBlocks(session);
                 }
@@ -268,7 +257,7 @@ public final class MetadataFetcher {
             request.put(BString.of("msg_type"), new BInteger(0));
             request.put(BString.of("piece"), new BInteger(piece));
             session.channel.write(new ExtendedMessage(session.remoteUtMetadataId,
-                Bencode.encode(new BDict(request))));
+                    Bencode.encode(new BDict(request))));
         }
     }
 
@@ -311,7 +300,9 @@ public final class MetadataFetcher {
         }
     }
 
-    /** 单 Peer 的元数据交换状态。 */
+    /**
+     * 单 Peer 的元数据交换状态。
+     */
     private static final class MetadataSession {
         final String key;
         final PeerChannel channel;

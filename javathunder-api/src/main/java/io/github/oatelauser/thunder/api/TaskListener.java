@@ -17,9 +17,10 @@ public interface TaskListener {
     default void onPieceComplete(int pieceIndex) {
     }
 
-    /** 一次 announce 的结果（成功或失败原因）。 */
-    default void onTrackerAnnounce(String trackerUrl, @Nullable String failureReason,
-                                   int seeders, int leechers) {
+    /**
+     * 一次 announce 的结果（成功或失败原因）。
+     */
+    default void onTrackerAnnounce(String trackerUrl, @Nullable String failureReason, int seeders, int leechers) {
     }
 
     default void onPeerConnected(String peerAddress) {
