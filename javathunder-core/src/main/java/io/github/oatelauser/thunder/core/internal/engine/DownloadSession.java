@@ -13,7 +13,9 @@ import io.github.oatelauser.thunder.core.internal.ratelimit.RateLimiter;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
 import io.github.oatelauser.thunder.core.internal.storage.ResumeException;
 import io.github.oatelauser.thunder.core.internal.storage.ResumeState;
+import io.github.oatelauser.thunder.core.internal.storage.MultiFileStorage;
 import io.github.oatelauser.thunder.core.internal.storage.StorageManager;
+import io.github.oatelauser.thunder.core.internal.storage.TorrentStorage;
 import io.github.oatelauser.thunder.core.internal.tracker.AnnounceRequest;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
@@ -86,7 +88,7 @@ public final class DownloadSession {
     private final TrackerClient trackerClient;
     private final byte[] peerId;
     private final Executor eventExecutor;
-    private final StorageManager storage;
+    private final TorrentStorage storage;
     private final Path resumeFile;
     private final PieceScheduler scheduler;
     private final ChokingManager choking;
@@ -129,7 +131,9 @@ public final class DownloadSession {
         this.trackerClient = trackerClient;
         this.eventExecutor = eventExecutor;
         this.peerId = peerId.clone();
-        this.storage = new StorageManager(meta, options.targetDir());
+        this.storage = meta.multiFile()
+            ? new MultiFileStorage(meta, options.targetDir())
+            : new StorageManager(meta, options.targetDir());
         this.resumeFile = storage.partFile().resolveSibling(meta.name() + ".jt-resume");
         this.local = new Bitfield(meta.pieceCount());
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length(), random);

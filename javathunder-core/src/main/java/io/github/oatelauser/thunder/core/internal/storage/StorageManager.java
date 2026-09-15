@@ -18,7 +18,7 @@ import java.util.Arrays;
  * Block 直写最终偏移（内存占用与 Piece 大小无关），Piece 齐后读回 SHA-1 校验。
  * 位置式读写线程安全，多 Peer 虚拟线程可并发写入不同 Piece。
  */
-public final class StorageManager implements AutoCloseable {
+public final class StorageManager implements TorrentStorage {
 
     /** 写通道池大小：Windows 上单句柄位置写会串行化，分片解除多 Peer 并发写的互斥。 */
     private static final int WRITE_CHANNELS = 4;

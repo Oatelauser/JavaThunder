@@ -112,6 +112,45 @@ class TtorrentInteropTest {
         }
     }
 
+    @Test
+    void javaThunderDownloadsMultiFileFromTtorrentSeeder() throws Exception {
+        Assumptions.assumeTrue(refereeAvailable(), "ttorrent referee not on classpath");
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
+            // 多文件（B3）：件 2 跨 weights.bin/config.json 边界，验证跨界拼装与第三方一致
+            TorrentGenerator.GeneratedMultiFileTorrent generated =
+                TorrentGenerator.generateMultiFile(dir, "interop-dir", java.util.List.of(
+                    java.util.List.of(java.util.List.of("weights.bin"), 600_000),
+                    java.util.List.of(java.util.List.of("nested", "config.json"), 130_000),
+                    java.util.List.of(java.util.List.of("tokenizer"), 256)),
+                    256 * 1024, tracker.announceUrl(), new Random(33));
+
+            // ttorrent 多文件布局：parentDir 下以种子 name 为根；generateMultiFile 已写 dir/interop-dir/
+            Client seeder = new Client(InetAddress.getLoopbackAddress(),
+                new SharedTorrent(Files.readAllBytes(generated.torrentFile()), dir.toFile()));
+            seeder.share();
+            try {
+                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                    DownloadTask task = client.download(generated.torrentFile(),
+                        DownloadOptions.defaults().targetDir(dir.resolve("out")));
+                    task.future().get(90, TimeUnit.SECONDS);
+
+                    assertEquals(TaskState.COMPLETED, task.state());
+                    Path outRoot = dir.resolve("out").resolve("interop-dir");
+                    assertArrayEquals(Files.readAllBytes(generated.rootDir().resolve("weights.bin")),
+                        Files.readAllBytes(outRoot.resolve("weights.bin")));
+                    assertArrayEquals(
+                        Files.readAllBytes(generated.rootDir().resolve("nested").resolve("config.json")),
+                        Files.readAllBytes(outRoot.resolve("nested").resolve("config.json")));
+                    assertArrayEquals(Files.readAllBytes(generated.rootDir().resolve("tokenizer")),
+                        Files.readAllBytes(outRoot.resolve("tokenizer")));
+                }
+            } finally {
+                seeder.stop();
+            }
+        }
+    }
+
     private Client startTtorrentSeeder(TorrentGenerator.GeneratedTorrent generated, String subdir)
         throws Exception {
         Path seedDir = dir.resolve(subdir);

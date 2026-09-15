@@ -107,16 +107,9 @@ public final class TorrentParser {
             throw new IllegalArgumentException("no tracker in torrent (announce/announce-list); "
                 + "trackerless download arrives with DHT in phase 2");
         }
-        if (s.info().value().containsKey(BString.of("files"))) {
-            throw new IllegalArgumentException("multi-file torrents are not supported until phase 2");
-        }
         String name = requireString(s.info(), "name");
         if (name.isEmpty()) {
             throw new IllegalArgumentException("info.name must not be empty");
-        }
-        long length = requireInteger(s.info(), "length").value();
-        if (length <= 0) {
-            throw new IllegalArgumentException("info.length must be positive in phase 1");
         }
         long pieceLength = requireInteger(s.info(), "piece length").value();
         if (pieceLength <= 0) {
@@ -126,6 +119,23 @@ public final class TorrentParser {
         if (pieces.value().length == 0 || pieces.value().length % 20 != 0) {
             throw new IllegalArgumentException("info.pieces must be a non-empty multiple of 20 bytes");
         }
+
+        long length;
+        List<TorrentMetadata.TorrentFile> files;
+        if (s.info().value().containsKey(BString.of("files"))) {
+            files = parseFiles(s.info());
+            length = files.stream().mapToLong(TorrentMetadata.TorrentFile::length).sum();
+            if (length <= 0) {
+                throw new IllegalArgumentException("multi-file torrent must have positive total length");
+            }
+        } else {
+            length = requireInteger(s.info(), "length").value();
+            if (length <= 0) {
+                throw new IllegalArgumentException("info.length must be positive");
+            }
+            files = List.of();
+        }
+
         long expectedPieces = (length + pieceLength - 1) / pieceLength;
         if (pieces.value().length / 20 != expectedPieces) {
             throw new IllegalArgumentException("piece count mismatch: pieces has "
@@ -136,7 +146,59 @@ public final class TorrentParser {
 
         return new TorrentMetadata(sha1(s.infoRawBytes()), s.announce(), s.announceList(),
             s.comment(), s.createdBy(), s.creationDateSec(),
-            name, length, pieceLength, pieces.value(), privateFlag);
+            name, length, pieceLength, pieces.value(), privateFlag, files);
+    }
+
+    /**
+     * 多文件清单（BEP 3）：info.files[] 的 path[]/length 映射为拼接流偏移。
+     * 路径穿越防护（DESIGN §6.6）：拒绝空组件、`..`、绝对路径元素、反斜杠、
+     * 盘符、Windows 保留设备名与控制字符——防恶意种子逃出目标目录。
+     */
+    private static List<TorrentMetadata.TorrentFile> parseFiles(BDict info) {
+        BencodeValue filesValue = require(info, "files");
+        if (!(filesValue instanceof BList fileList) || fileList.value().isEmpty()) {
+            throw new IllegalArgumentException("info.files must be a non-empty list");
+        }
+        List<TorrentMetadata.TorrentFile> result = new ArrayList<>();
+        long offset = 0;
+        for (BencodeValue entryValue : fileList.value()) {
+            if (!(entryValue instanceof BDict entry)) {
+                throw new IllegalArgumentException("info.files entry must be a dict");
+            }
+            long fileLength = asInteger(require(entry, "length"), "files entry length").value();
+            if (fileLength < 0) {
+                throw new IllegalArgumentException("files entry length must be >= 0");
+            }
+            BencodeValue pathValue = require(entry, "path");
+            if (!(pathValue instanceof BList pathList) || pathList.value().isEmpty()) {
+                throw new IllegalArgumentException("files entry path must be a non-empty list");
+            }
+            List<String> path = new ArrayList<>();
+            for (BencodeValue componentValue : pathList.value()) {
+                String component = asString(componentValue, "files entry path component");
+                if (component.isEmpty() || "..".equals(component) || component.contains("\\")
+                    || component.contains("/") || component.contains(":")
+                    || component.chars().anyMatch(c -> c < 0x20)
+                    || isWindowsReserved(component)) {
+                    throw new IllegalArgumentException("unsafe path component in torrent: " + component);
+                }
+                path.add(component);
+            }
+            result.add(new TorrentMetadata.TorrentFile(List.copyOf(path), offset, fileLength));
+            offset += fileLength;
+        }
+        return result;
+    }
+
+    private static boolean isWindowsReserved(String component) {
+        String stem = component.contains(".")
+            ? component.substring(0, component.indexOf('.')) : component;
+        return switch (stem.toUpperCase()) {
+            case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
+                 "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+                 "LPT7", "LPT8", "LPT9" -> true;
+            default -> false;
+        };
     }
 
     private static String requireString(BDict dict, String key) {

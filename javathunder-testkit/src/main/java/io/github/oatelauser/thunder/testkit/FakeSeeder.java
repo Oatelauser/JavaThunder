@@ -91,6 +91,22 @@ public final class FakeSeeder implements AutoCloseable {
         return Arrays.copyOfRange(content, offset, offset + request.length());
     }
 
+    /** 多文件形态：把拼接流读进内存后复用同一应答路径。 */
+    public static FakeSeeder startMultiFile(TorrentMetadata meta, Path rootDir) throws IOException {
+        java.io.ByteArrayOutputStream concatenated = new java.io.ByteArrayOutputStream();
+        for (TorrentMetadata.TorrentFile file : meta.files()) {
+            Path path = rootDir;
+            for (String component : file.path()) {
+                path = path.resolve(component);
+            }
+            concatenated.writeBytes(Files.readAllBytes(path));
+        }
+        ServerSocket serverSocket = new ServerSocket(0, 64, java.net.InetAddress.getLoopbackAddress());
+        FakeSeeder seeder = new FakeSeeder(serverSocket, concatenated.toByteArray(), meta);
+        seeder.threads.submit(seeder::acceptLoop);
+        return seeder;
+    }
+
     @Override
     public void close() {
         running.set(false);

@@ -190,15 +190,66 @@ class TorrentParserTest {
         }
 
         @Test
-        void multiFileTorrentRejectedInPhaseOne() {
+        void emptyFilesListRejected() {
             Map<BString, BencodeValue> infoFields = new TreeMap<>(BString.UNSIGNED_ORDER);
             infoFields.put(BString.of("name"), BString.of("dir"));
             infoFields.put(BString.of("piece length"), new BInteger(256));
+            infoFields.put(BString.of("pieces"), new BString(new byte[20]));
             infoFields.put(BString.of("files"), new BList(List.of()));
             byte[] bytes = torrent(new BDict(infoFields), Map.of());
             IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> TorrentParser.parse(bytes));
-            assertEquals("multi-file torrents are not supported until phase 2", e.getMessage());
+            assertEquals("info.files must be a non-empty list", e.getMessage());
+        }
+
+        @Test
+        void parsesMultiFileTorrentWithOffsets() {
+            // 两个文件：weights.bin 640B + config.json 100B → 拼接流 740B / 256B 件 → 3 件
+            Map<BString, BencodeValue> file1 = new TreeMap<>(BString.UNSIGNED_ORDER);
+            file1.put(BString.of("length"), new BInteger(640));
+            file1.put(BString.of("path"), new BList(List.of(BString.of("weights.bin"))));
+            Map<BString, BencodeValue> file2 = new TreeMap<>(BString.UNSIGNED_ORDER);
+            file2.put(BString.of("length"), new BInteger(100));
+            file2.put(BString.of("path"), new BList(List.of(
+                BString.of("nested"), BString.of("config.json"))));
+            Map<BString, BencodeValue> infoFields = new TreeMap<>(BString.UNSIGNED_ORDER);
+            infoFields.put(BString.of("name"), BString.of("model-x"));
+            infoFields.put(BString.of("piece length"), new BInteger(256));
+            infoFields.put(BString.of("length"), new BInteger(740));
+            infoFields.put(BString.of("pieces"), new BString(new byte[60])); // 3 块
+            infoFields.put(BString.of("files"), new BList(List.of(new BDict(file1), new BDict(file2))));
+            // 去掉单文件 length 键的多件构造：直接手拼 info
+            infoFields.remove(BString.of("length"));
+
+            TorrentMetadata meta = TorrentParser.parse(torrent(new BDict(infoFields), Map.of()));
+
+            assertEquals(true, meta.multiFile());
+            assertEquals(740, meta.length());
+            assertEquals(2, meta.files().size());
+            assertEquals(List.of("weights.bin"), meta.files().get(0).path());
+            assertEquals(0, meta.files().get(0).offset());
+            assertEquals(640, meta.files().get(0).length());
+            assertEquals(List.of("nested", "config.json"), meta.files().get(1).path());
+            assertEquals(640, meta.files().get(1).offset());
+        }
+
+        @Test
+        void rejectsPathTraversalComponents() {
+            for (String evil : new String[]{"..", "", "a/b", "a\\b", "C:evil", "CON", "com1.txt",
+                "nul.bin", "bad\u0001name"}) {
+                Map<BString, BencodeValue> file = new TreeMap<>(BString.UNSIGNED_ORDER);
+                file.put(BString.of("length"), new BInteger(10));
+                file.put(BString.of("path"), new BList(List.of(BString.of(evil))));
+                Map<BString, BencodeValue> infoFields = new TreeMap<>(BString.UNSIGNED_ORDER);
+                infoFields.put(BString.of("name"), BString.of("d"));
+                infoFields.put(BString.of("piece length"), new BInteger(256));
+                infoFields.put(BString.of("length"), new BInteger(10));
+                infoFields.put(BString.of("pieces"), new BString(new byte[20]));
+                infoFields.put(BString.of("files"), new BList(List.of(new BDict(file))));
+                byte[] bytes = torrent(new BDict(infoFields), Map.of());
+                assertThrows(IllegalArgumentException.class, () -> TorrentParser.parse(bytes),
+                    "path component should be rejected: " + evil);
+            }
         }
 
         @Test
