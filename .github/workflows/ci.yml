@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: JDK ${{ matrix.java }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [21, 25]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Build and test
+        run: mvn -B -ntp verify
+      - name: Differential acceptance (NIO transport)
+        run: >
+          mvn -B -ntp -pl javathunder-testkit -am test
+          -Dtest='LoopbackAcceptanceTest,MultiPeerAcceptanceTest,RateLimitAcceptanceTest,TrackerBackoffTest'
+          -Djavathunder.transport=nio
+          -Dsurefire.failIfNoSpecifiedTests=false
+
+  interop:
+    name: Interop (ttorrent referee)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - name: Bidirectional interop
+        run: >
+          mvn -B -ntp -pl javathunder-testkit -am test
+          -Dtest=TtorrentInteropTest
+          -Dsurefire.excludedGroups=
+
+  perf:
+    name: Perf probe (regression guard)
+    runs-on: ubuntu-latest
+    continue-on-error: true # 探针受 runner 性能影响，先观察不阻断
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - name: Loopback throughput probe
+        run: >
+          mvn -B -ntp -pl javathunder-testkit -am test
+          -Dtest=LoopbackThroughputProbeTest
+          -Djavathunder.transport=nio
+          -Dsurefire.excludedGroups=
+          -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Extract datapoint
+        if: always()
+        run: grep -h "PROBE" javathunder-testkit/target/surefire-reports/*.txt || true

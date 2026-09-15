@@ -20,4 +20,43 @@
       <artifactId>jspecify</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <!-- 公共 API 守门员：0.1.0 tag 之后，任何破坏性 API 变更令构建失败 -->
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <version>0.23.1</version>
+        <configuration>
+          <oldVersion>
+            <dependency>
+              <groupId>${project.groupId}</groupId>
+              <artifactId>${project.artifactId}</artifactId>
+              <version>0.1.0</version>
+            </dependency>
+          </oldVersion>
+          <newVersion>
+            <file>
+              <path>${project.build.directory}/${project.build.finalName}.jar</path>
+            </file>
+          </newVersion>
+          <parameter>
+            <onlyModified>true</onlyModified>
+            <failOnModification>true</failOnModification>
+            <skipPmdAnalysis>true</skipPmdAnalysis>
+          </parameter>
+          <skip>${skipJapicmp}</skip>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals>
+              <goal>cmp</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>
