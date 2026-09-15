@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.client;
 
+import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TorrentClient;
@@ -50,6 +51,7 @@ public final class DefaultTorrentClient implements TorrentClient {
         private long uploadLimitBytesPerSecond;
         private Executor listenerExecutor;
         private Function<byte[], PeerTransport> transportFactory = BlockingTransport::new;
+        private PeerDiscoverySource peerDiscovery;
 
         public Builder listenPort(int port) {
             this.listenPort = port;
@@ -88,6 +90,13 @@ public final class DefaultTorrentClient implements TorrentClient {
             return this;
         }
 
+        /** 注入去中心化 Peer 发现源（如 javathunder-dht 的 DhtPeerDiscovery）；
+         *  生命周期归本 client：close 时一并关闭。未注入则仅 tracker 发现。 */
+        public Builder peerDiscovery(PeerDiscoverySource source) {
+            this.peerDiscovery = source;
+            return this;
+        }
+
         public DefaultTorrentClient build() throws IOException {
             return new DefaultTorrentClient(this);
         }
@@ -102,12 +111,15 @@ public final class DefaultTorrentClient implements TorrentClient {
     private final RateLimiter globalUpload;
     private final byte[] peerId = PeerIds.generate();
     private final PeerTransport transport;
+    @Nullable
+    private final PeerDiscoverySource peerDiscovery;
     private final ConcurrentHashMap<String, DownloadSession> sessions = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private DefaultTorrentClient(Builder builder) throws IOException {
         this.maxPeersPerTask = builder.maxPeersPerTask;
         this.slots = new Semaphore(Math.max(1, builder.maxConcurrentTasks));
+        this.peerDiscovery = builder.peerDiscovery;
         this.globalDownload = builder.downloadLimitBytesPerSecond <= 0
             ? RateLimiter.unlimited()
             : new RateLimiter(builder.downloadLimitBytesPerSecond);
@@ -167,7 +179,7 @@ public final class DefaultTorrentClient implements TorrentClient {
             io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher fetcher =
                 new io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher(
                     magnet.infoHash(), magnet.trackers(), transport, trackerClient,
-                    transport.listeningPort());
+                    transport.listeningPort(), peerDiscovery);
             io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask task =
                 new io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask(
                     fetcher.fetch().thenApply(infoBytes -> {
@@ -198,7 +210,7 @@ public final class DefaultTorrentClient implements TorrentClient {
         try {
             session = new DownloadSession(meta, options,
                 new DownloadSession.SessionConfig(maxPeersPerTask, transport.listeningPort(),
-                    globalDownload, globalUpload),
+                    globalDownload, globalUpload, peerDiscovery),
                 transport, trackerClient, eventExecutor, peerId);
         } catch (IOException | RuntimeException e) {
             slots.release();
@@ -224,6 +236,9 @@ public final class DefaultTorrentClient implements TorrentClient {
                 session.cancel(false);
             } catch (RuntimeException ignored) {
             }
+        }
+        if (peerDiscovery != null) {
+            peerDiscovery.close();
         }
         transport.close();
         if (ownedExecutor != null) {

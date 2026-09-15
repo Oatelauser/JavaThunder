@@ -21,6 +21,11 @@ public interface PeerChannel extends AutoCloseable {
 
     byte[] remotePeerId();
 
+    /** 对端握手保留位是否声明支持 BEP 10 扩展协议（未握手完成前 false）。 */
+    default boolean remoteSupportsExtensions() {
+        return false;
+    }
+
     /** 发送一条消息（可能排队，由实现决定何时刷出）。 */
     void write(PeerWireMessage message);
 

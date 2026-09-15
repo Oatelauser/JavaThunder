@@ -31,6 +31,8 @@ public final class PeerConnection implements AutoCloseable {
     private final OutputStream out;
     private final byte[] remotePeerId;
     private final InetSocketAddress remoteAddress;
+    /** 对端握手保留位是否声明 BEP 10 扩展协议（established 旧重载默认 false）。 */
+    private volatile boolean remoteSupportsExtensions;
 
     private PeerConnection(Socket socket, byte[] remotePeerId) throws IOException {
         this.socket = socket;
@@ -51,12 +53,15 @@ public final class PeerConnection implements AutoCloseable {
             OutputStream rawOut = socket.getOutputStream();
             rawOut.write(Handshake.encode(infoHash, peerId));
             rawOut.flush();
-            Handshake handshake = Handshake.decode(readFully(socket.getInputStream(), 68));
+            byte[] remoteWire = readFully(socket.getInputStream(), 68);
+            Handshake handshake = Handshake.decode(remoteWire);
             if (!Arrays.equals(handshake.infoHash(), infoHash)) {
                 throw new IOException("peer " + address + " answered with a different info-hash");
             }
             socket.setSoTimeout(READ_TIMEOUT_MILLIS);
-            return new PeerConnection(socket, handshake.peerId());
+            PeerConnection connection = new PeerConnection(socket, handshake.peerId());
+            connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
+            return connection;
         } catch (IOException e) {
             try {
                 socket.close();
@@ -71,8 +76,11 @@ public final class PeerConnection implements AutoCloseable {
     public static PeerConnection accept(Socket socket, byte[] infoHash, byte[] peerId) throws IOException {
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
-            Handshake handshake = Handshake.decode(readFully(socket.getInputStream(), 68));
-            return acceptWithHandshake(socket, handshake, infoHash, peerId);
+            byte[] remoteWire = readFully(socket.getInputStream(), 68);
+            Handshake handshake = Handshake.decode(remoteWire);
+            PeerConnection connection = acceptWithHandshake(socket, handshake, infoHash, peerId);
+            connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
+            return connection;
         } catch (IOException e) {
             try {
                 socket.close();
@@ -103,8 +111,16 @@ public final class PeerConnection implements AutoCloseable {
 
     /** 用已完成握手的 socket 包装连接（入站路由路径用）。 */
     public static PeerConnection established(Socket socket, byte[] remotePeerId) throws IOException {
+        return established(socket, remotePeerId, false);
+    }
+
+    /** 同上，但携带对端握手的 BEP 10 保留位声明（调用方已读过对端握手线格式）。 */
+    public static PeerConnection established(Socket socket, byte[] remotePeerId,
+                                             boolean remoteSupportsExtensions) throws IOException {
         socket.setSoTimeout(READ_TIMEOUT_MILLIS);
-        return new PeerConnection(socket, remotePeerId);
+        PeerConnection connection = new PeerConnection(socket, remotePeerId);
+        connection.remoteSupportsExtensions = remoteSupportsExtensions;
+        return connection;
     }
 
     /** 阻塞读一帧；EOF 抛 IOException。 */
@@ -131,6 +147,11 @@ public final class PeerConnection implements AutoCloseable {
 
     public byte[] remotePeerId() {
         return remotePeerId.clone();
+    }
+
+    /** 对端握手保留位是否声明支持 BEP 10 扩展协议。 */
+    public boolean remoteSupportsExtensions() {
+        return remoteSupportsExtensions;
     }
 
     public InetSocketAddress remoteAddress() {

@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
+import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.ProgressSnapshot;
@@ -75,7 +76,15 @@ public final class DownloadSession {
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
 
     public record SessionConfig(int maxPeers, int listenPort,
-                                RateLimiter globalDownload, RateLimiter globalUpload) {
+                                RateLimiter globalDownload, RateLimiter globalUpload,
+                                @Nullable
+                                PeerDiscoverySource discovery) {
+
+        @Deprecated
+        public SessionConfig(int maxPeers, int listenPort, RateLimiter globalDownload,
+                             RateLimiter globalUpload) {
+            this(maxPeers, listenPort, globalDownload, globalUpload, null);
+        }
     }
 
     private final TorrentMetadata meta;
@@ -295,8 +304,24 @@ public final class DownloadSession {
             }
             if (running.get()) {
                 announce(TrackerEvent.NONE);
+                replenishFromDiscovery(); // tracker 之外：DHT 等来源周期补充候选
             }
         }
+    }
+
+    /** 去中心化来源补充：结果异步入候选队列，空结果不惊动。 */
+    private void replenishFromDiscovery() {
+        PeerDiscoverySource discovery = config.discovery();
+        if (discovery == null || !running.get()) {
+            return;
+        }
+        discovery.getPeers(meta.infoHash()).whenComplete((peers, error) -> {
+            if (error == null) {
+                for (java.net.InetSocketAddress peer : peers) {
+                    offerCandidate(peer);
+                }
+            }
+        });
     }
 
     private void announce(TrackerEvent event) {

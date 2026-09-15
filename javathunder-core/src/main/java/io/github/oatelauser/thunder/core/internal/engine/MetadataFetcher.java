@@ -1,5 +1,7 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
+import io.github.oatelauser.thunder.api.PeerDiscoverySource;
+import org.jspecify.annotations.Nullable;
 import io.github.oatelauser.thunder.core.internal.bencode.BDict;
 import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
@@ -61,25 +63,52 @@ public final class MetadataFetcher {
 
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
                            TrackerClient trackerClient, int listenPort) {
+        this(infoHash, trackers, transport, trackerClient, listenPort, null);
+    }
+
+    public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
+                           TrackerClient trackerClient, int listenPort,
+                           @Nullable
+                           PeerDiscoverySource discovery) {
         this.infoHash = infoHash.clone();
         this.trackers = List.copyOf(trackers);
         this.transport = transport;
         this.trackerClient = trackerClient;
         this.listenPort = listenPort;
+        this.discovery = discovery;
         this.peerId = PeerIds.generate();
     }
+
+    @Nullable
+    private final PeerDiscoverySource discovery;
 
     /** 异步拉取，完成后给出 info 字典的原始字节。 */
     public CompletableFuture<byte[]> fetch() {
         Thread.ofVirtual().name("javathunder-metadata").start(() -> {
             try {
                 announceTrackers();
+                discoverPeers(); // DHT 等去中心化来源（磁力无 tracker 时的主通道）
                 connectLoop();
             } catch (Throwable t) {
                 result.completeExceptionally(t);
             }
         });
         return result.whenComplete((ignored, error) -> finished.countDown());
+    }
+
+    private void discoverPeers() {
+        if (discovery == null) {
+            return;
+        }
+        discovery.getPeers(infoHash).whenComplete((peers, error) -> {
+            if (error != null) {
+                log.debug("peer discovery failed: {}", error.toString());
+                return;
+            }
+            for (InetSocketAddress peer : peers) {
+                candidates.offer(peer);
+            }
+        });
     }
 
     private void announceTrackers() {
@@ -145,6 +174,9 @@ public final class MetadataFetcher {
         });
         channel.setCloseListener(cause -> sessions.remove(key));
         channel.write(Interested.INSTANCE);
+        if (!channel.remoteSupportsExtensions()) {
+            return; // 对端握手未声明 BEP 10：ut_metadata 无从协商，等下一个 Peer
+        }
         // BEP 10 扩展握手：声明我们支持 ut_metadata（子 ID 1）
         BDict m = new BDict(java.util.Map.of(
             BString.of("ut_metadata"), new BInteger(OUR_UT_METADATA_ID)));
