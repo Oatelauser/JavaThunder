@@ -25,11 +25,12 @@
 |---|---|---|
 | BEP 10 | 扩展握手 | 一切扩展的载体 |
 | BEP 9 | ut_metadata 元数据交换 | 磁力链接 |
-| BEP 5 | DHT（Kademlia） | 去 Tracker 化。**已实现（查询模式）**：KRPC + 路由表 + 迭代查找 + get_peers/announce_peer；不做全功能节点（不响应他人 query），引擎接入（磁力无 tracker 时自动用 DHT）留待后续 |
-| BEP 11 | PEX | Peer 互相发现 |
-| BEP 15 | UDP Tracker | Tracker 通道冗余 |
+| BEP 5 | DHT（Kademlia） | 去 Tracker 化。**已实现（查询模式）**：KRPC + 路由表 + 迭代查找 + get_peers/announce_peer；不做全功能节点（不响应他人 query）。**引擎已接入（B5）**：`builder().peerDiscovery(DhtPeerDiscovery.create())` 注入，会话与磁力按 announce 周期补充候选；private 种子（BEP 27）自动禁用 |
+| BEP 11 | PEX | Peer 互相发现。**已实现（B7）**：ut_pex 协商 + added/added.f 紧凑表解析 + 每 60s 广播连接表；private 种子不启用 |
+| BEP 15 | UDP Tracker | Tracker 通道冗余。**已实现（B6）**：connect 60s 缓存 + announce + 事务 ID 校验 + 指数退避重试，按 URL scheme 自动分派，UDP 栈不可用时回退 HTTP |
 
-DHT 已落为独立可选模块（`javathunder-dht`，查询模式），轻量使用者无需引入该 jar。
+DHT 已落为独立可选模块（`javathunder-dht`，查询模式），轻量使用者无需引入该 jar；
+引擎通过 api 模块的 `PeerDiscoverySource` SPI 消费（core 不依赖 dht，方向为 dht → api）。
 
 ## 第三阶段（按需/远期）
 

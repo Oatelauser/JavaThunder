@@ -45,14 +45,26 @@ try (TorrentClient client = TorrentClient.builder()
 ## 特性
 
 - **协议**：BEP 3（v1 种子 + 线协议）、BEP 10（扩展握手）+ BEP 9（ut_metadata 磁力链接）、
-  BEP 12（多 Tracker 分层）、BEP 20（peer id 规范）、
-  BEP 23（紧凑 peer 表）、BEP 27（私有种子标志）、BEP 5（DHT，可选模块）；对 BEP 6/10 消息容忍解码不握手即断
+  BEP 11（PEX）、BEP 12（多 Tracker 分层）、BEP 15（UDP Tracker）、
+  BEP 20（peer id 规范）、BEP 23（紧凑 peer 表）、BEP 27（私有种子标志——自动禁用 PEX/DHT）、
+  BEP 5（DHT，可选模块）；对 BEP 6/10 消息容忍解码不握手即断
 - **磁力链接**：`MagnetUri.parse(...)` → `client.download(...)`，info-hash SHA-1 自校验后
-  转正常下载；需 tracker 发现持有元数据的 Peer（DHT 模块已可用，引擎自动接入为后续工作）
+  转正常下载；tracker 之外可注入 DHT 作为元数据/Peer 来源（见下）
 - **DHT（BEP 5，可选模块 `javathunder-dht`）**：KRPC over UDP + 简化 Kademlia 路由表 +
   迭代 find_node/get_peers/announce_peer 的对等发现源（查询模式，不响应他人 query）。
-  公网默认 bootstrap（router.bittorrent.com 等）；内网自建：`dht.bootstrap(List.of("dht.lan:6881"))`，
-  `dht.getPeers(infoHash)` 返回持有者地址
+  经 `PeerDiscoverySource` SPI 注入引擎，会话与磁力按 announce 周期补充候选：
+
+  ```java
+  try (TorrentClient client = TorrentClient.builder()
+          .peerDiscovery(DhtPeerDiscovery.create())      // 公网默认 bootstrap
+          // 内网自建：DhtPeerDiscovery.create(List.of("dht.lan:6881"))
+          .build()) { ... }
+  ```
+
+- **UDP Tracker（BEP 15）**：`udp://` announce 自动走 UDP 客户端（connect 60s 缓存、
+  事务 ID 校验、指数退避重试；UDP 栈不可用自动回退 HTTP），与 HTTP tracker 混用无感
+- **PEX（BEP 11）**：与对端协商 ut_pex 后互换连接表（added/added.f 紧凑表，
+  每 60s 广播一次），减少对 tracker 的轮询依赖；private 种子自动关闭
 - **引擎**：Piece 内存零拷贝组装、逐件 SHA-1 校验、`.part` 预分配 + gather 直写、
   断点续传（`.jt-resume`，CRC32 + info-hash 绑定 + 重启重校验）、rarest-first 调度、
   tit-for-tat choking + 乐观槽、endgame 判定、两级（全局 ∧ 任务）令牌桶限速
@@ -72,8 +84,8 @@ try (TorrentClient client = TorrentClient.builder()
 ## Known Limits（设计量级，非目标）
 
 - 并发连接 ≤ 1000、单任务 ≤ 200 Peer 的场景；更大规模（DHT 爬虫级）不在当前设计内
-- 单文件种子（多文件是第二阶段）；PEX/UDP Tracker 未实现（均在路线图）；DHT 为可选模块
-  `javathunder-dht`（查询模式，引擎自动接入为后续）
+- 单文件种子（多文件是第二阶段）；DHT 为可选模块 `javathunder-dht`（查询模式，注入式接入）；
+  PEX 暂只广播 IPv4 连接表（added6 不支持）
 - 无连接加密（MSE/PE）——非 BEP 标准，明确不实现
 - Windows 上做种期间文件保持 `.part` 名（句柄占用），完成即改名
 
