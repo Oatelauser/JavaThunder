@@ -75,6 +75,8 @@ public final class DownloadSession {
     private static final Logger log = LoggerFactory.getLogger(DownloadSession.class);
     private static final int PIPELINE_DEPTH = 32;
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
+    /** BEP 11：我们侧 ut_pex 子 ID（对端用协商值发给我们，我们统一用 2）。 */
+    private static final int UT_PEX_ID = 2;
 
     public record SessionConfig(int maxPeers, int listenPort,
                                 RateLimiter globalDownload, RateLimiter globalUpload,
@@ -323,6 +325,9 @@ public final class DownloadSession {
         if (discovery == null || !running.get()) {
             return;
         }
+        if (meta.privateFlag()) {
+            return; // BEP 27：private 种子禁止 DHT 等非 tracker 通道发现 peer
+        }
         discovery.getPeers(meta.infoHash()).whenComplete((peers, error) -> {
             if (error == null) {
                 for (java.net.InetSocketAddress peer : peers) {
@@ -465,6 +470,23 @@ public final class DownloadSession {
             channel.write(new BitfieldMessage(localBytes()));
         }
         channel.write(Interested.INSTANCE);
+        // BEP 10/11：声明 ut_pex（子 ID 2）——对端支持即协商 PEX。
+        // BEP 27：private 种子禁用 PEX（不做对等交换，仅 tracker 通道）。
+        if (channel.remoteSupportsExtensions() && !meta.privateFlag()) {
+            java.util.Map<io.github.oatelauser.thunder.core.internal.bencode.BString,
+                io.github.oatelauser.thunder.core.internal.bencode.BencodeValue> m =
+                new java.util.TreeMap<>(io.github.oatelauser.thunder.core.internal.bencode.BString.UNSIGNED_ORDER);
+            m.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("ut_pex"),
+                new io.github.oatelauser.thunder.core.internal.bencode.BInteger(UT_PEX_ID));
+            java.util.Map<io.github.oatelauser.thunder.core.internal.bencode.BString,
+                io.github.oatelauser.thunder.core.internal.bencode.BencodeValue> handshake =
+                new java.util.TreeMap<>(io.github.oatelauser.thunder.core.internal.bencode.BString.UNSIGNED_ORDER);
+            handshake.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("m"),
+                new io.github.oatelauser.thunder.core.internal.bencode.BDict(m));
+            channel.write(new io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage(0,
+                io.github.oatelauser.thunder.core.internal.bencode.Bencode.encode(
+                    new io.github.oatelauser.thunder.core.internal.bencode.BDict(handshake))));
+        }
         log.debug("peer {} connected", key);
         for (TaskListener listener : listeners) {
             eventExecutor.execute(() -> {
@@ -550,7 +572,12 @@ public final class DownloadSession {
                 scheduler.clearInFlight(rejected); // 允许重新请求
             }
             case io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage e -> {
-                // BEP 10 扩展消息：正常下载会话不参与（磁力元数据由 MetadataFetcher 处理），忽略
+                if (e.extendedId() == 0) {
+                    handleExtensionHandshake(session, e.payload());
+                } else if (e.extendedId() == UT_PEX_ID) {
+                    handlePex(session, e.payload());
+                }
+                // 其余扩展消息本会话不消费
             }
             case UnsupportedMessage u -> {
             }
@@ -559,6 +586,110 @@ public final class DownloadSession {
             case KeepAlive k -> {
             }
         }
+    }
+
+    /** BEP 10 扩展握手（对端 → 我们）：记录其 ut_pex 子 ID（有则开启 PEX 接收）。 */
+    private void handleExtensionHandshake(PeerSession session, byte[] payload) {
+        try {
+            var value = io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(
+                java.nio.ByteBuffer.wrap(payload));
+            if (value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict dict
+                && dict.get("m") instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict m
+                && m.get("ut_pex") instanceof io.github.oatelauser.thunder.core.internal.bencode.BInteger id) {
+                session.remotePexId = (int) id.value();
+                if (session.remotePexId > 0) {
+                    log.debug("pex negotiated with {} (remote ut_pex id {})", session.key,
+                        session.remotePexId);
+                }
+            }
+        } catch (RuntimeException e) {
+            log.debug("peer {} sent unreadable extension handshake", session.key);
+        }
+    }
+
+    /** BEP 11 ut_pex：解析 added 紧凑表并入候选队列。 */
+    private void handlePex(PeerSession session, byte[] payload) {
+        if (meta.privateFlag()) {
+            return; // BEP 27：private 种子不参与对等交换（我们也不广播，此处双保险）
+        }
+        try {
+            var value = io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(
+                java.nio.ByteBuffer.wrap(payload));
+            if (!(value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict dict)
+                || !(dict.get("added") instanceof io.github.oatelauser.thunder.core.internal.bencode.BString added)) {
+                return;
+            }
+            byte[] data = added.value();
+            if (data.length % 6 != 0) {
+                return;
+            }
+            int introduced = 0;
+            for (int i = 0; i + 6 <= data.length; i += 6) {
+                // added.f 为可选字段（BEP 11），即使缺失也照常取地址；位图语义（加密等）我们不用
+                if (peers.size() >= config.maxPeers()) {
+                    break;
+                }
+                String host = (data[i] & 0xFF) + "." + (data[i + 1] & 0xFF) + "."
+                    + (data[i + 2] & 0xFF) + "." + (data[i + 3] & 0xFF);
+                int port = ((data[i + 4] & 0xFF) << 8) | (data[i + 5] & 0xFF);
+                offerCandidate(new java.net.InetSocketAddress(host, port));
+                introduced++;
+            }
+            log.debug("pex from {}: {} candidates", session.key, introduced);
+        } catch (RuntimeException e) {
+            log.debug("peer {} sent unreadable pex", session.key);
+        }
+    }
+
+    /** BEP 11：向已协商 PEX 的对端周期广播当前连接表（added 紧凑表）。 */
+    private void broadcastPex() {
+        if (meta.privateFlag()) {
+            return; // BEP 27：private 种子不广播连接表
+        }
+        java.io.ByteArrayOutputStream compact = new java.io.ByteArrayOutputStream();
+        java.io.ByteArrayOutputStream flags = new java.io.ByteArrayOutputStream();
+        int count = 0;
+        for (PeerSession session : peers.values()) {
+            java.net.InetSocketAddress address = session.channel.remoteAddress();
+            if (address.getAddress() == null) {
+                continue;
+            }
+            byte[] ip = address.getAddress().getAddress();
+            if (ip.length != 4) {
+                continue; // IPv6 PEX 需 added6，暂不支持
+            }
+            compact.write(ip, 0, 4);
+            compact.write(address.getPort() >> 8);
+            compact.write(address.getPort() & 0xFF);
+            flags.write(0x00); // 无特殊语义位
+            count++;
+        }
+        if (count == 0) {
+            return;
+        }
+        java.util.Map<io.github.oatelauser.thunder.core.internal.bencode.BString,
+            io.github.oatelauser.thunder.core.internal.bencode.BencodeValue> dict =
+            new java.util.TreeMap<>(io.github.oatelauser.thunder.core.internal.bencode.BString.UNSIGNED_ORDER);
+        dict.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("added"),
+            new io.github.oatelauser.thunder.core.internal.bencode.BString(compact.toByteArray()));
+        dict.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("added.f"),
+            new io.github.oatelauser.thunder.core.internal.bencode.BString(flags.toByteArray()));
+        byte[] payload = io.github.oatelauser.thunder.core.internal.bencode.Bencode.encode(
+            new io.github.oatelauser.thunder.core.internal.bencode.BDict(dict));
+        int recipients = 0;
+        for (PeerSession session : peers.values()) {
+            if (session.remotePexId > 0) {
+                try {
+                    session.channel.write(
+                        new io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage(
+                            session.remotePexId, payload));
+                    recipients++;
+                } catch (RuntimeException ignored) {
+                    // 通道关闭竞态：写失败由 close 路径收尾
+                }
+            }
+        }
+        log.debug("pex broadcast: {} peers listed, {} recipients", count, recipients);
     }
 
     private void refillRequests(PeerSession session) {
@@ -885,6 +1016,9 @@ public final class DownloadSession {
                 }
             }
             tick++;
+            if (tick % 6 == 0) { // choking 每 10s 一拍：PEX 每 60s 一轮
+                broadcastPex();
+            }
         }
     }
 
@@ -1065,6 +1199,8 @@ public final class DownloadSession {
         volatile boolean peerChokingUs = true;
         volatile boolean weChokingThem = true;
         volatile boolean remoteInterested;
+        /** 对端协商的 ut_pex 子 ID（>0 表示 PEX 已协商，按此值发送）。 */
+        volatile int remotePexId = -1;
         int currentPiece = -1;
 
         PeerSession(String key, PeerChannel channel, int pieceCount) {
