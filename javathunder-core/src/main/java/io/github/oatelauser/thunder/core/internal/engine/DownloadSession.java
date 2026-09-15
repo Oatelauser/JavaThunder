@@ -594,6 +594,11 @@ public final class DownloadSession {
 
     private void releaseAssignment(PeerSession session) {
         session.pending.clear();
+        // 在途标记必须一并清掉：被 Choke 后这些块的对端响应可能永不到达，
+        // 不清则所在 Piece 停滞到断连为止（D1 实验中暴露的既有隐患）
+        for (BlockRequest block : session.issued) {
+            scheduler.clearInFlight(block);
+        }
         session.issued.clear();
         if (session.currentPiece >= 0) {
             activePieces.remove(session.currentPiece);
