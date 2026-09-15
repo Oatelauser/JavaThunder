@@ -6,21 +6,18 @@ import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
 import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
-import io.github.oatelauser.thunder.core.internal.wire.BitfieldMessage;
-import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
-import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
-import io.github.oatelauser.thunder.core.internal.wire.Request;
-import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
+import io.github.oatelauser.thunder.core.internal.wire.*;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * NIO 版种子方（探针对端）：与引擎同构的事件循环——批量读请求帧、gather 批量写。
@@ -41,9 +38,9 @@ public final class NioSeeder implements AutoCloseable {
     public static NioSeeder start(Path contentFile, TorrentMetadata meta) throws IOException {
         NioTransport transport = new NioTransport(PeerIds.generate());
         NioSeeder seeder = new NioSeeder(transport,
-            FileChannel.open(contentFile, StandardOpenOption.READ), meta);
+                FileChannel.open(contentFile, StandardOpenOption.READ), meta);
         transport.listen(0, infoHash ->
-            Arrays.equals(infoHash, meta.infoHash()) ? seeder.handler() : null);
+                Arrays.equals(infoHash, meta.infoHash()) ? seeder.handler() : null);
         return seeder;
     }
 
@@ -60,12 +57,11 @@ public final class NioSeeder implements AutoCloseable {
             @Override
             public void onConnected(PeerChannel channel) {
                 channel.setMessageListener(messages -> {
-                    java.util.List<PeerWireMessage> responses = new java.util.ArrayList<>(messages.size());
+                    List<PeerWireMessage> responses = new ArrayList<>(messages.size());
                     for (PeerWireMessage message : messages) {
                         if (message instanceof Request request) {
                             try {
-                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
-                                    readBlock(request)));
+                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(), readBlock(request)));
                             } catch (IOException e) {
                                 return; // 源文件不可读：直接放弃本批
                             }
@@ -87,7 +83,9 @@ public final class NioSeeder implements AutoCloseable {
         };
     }
 
-    /** 分块读：位置式 channel 读，16KiB 粒度。 */
+    /**
+     * 分块读：位置式 channel 读，16KiB 粒度。
+     */
     private byte[] readBlock(Request request) throws IOException {
         long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
         ByteBuffer buffer = ByteBuffer.allocate(request.length());
@@ -107,4 +105,5 @@ public final class NioSeeder implements AutoCloseable {
         } catch (IOException ignored) {
         }
     }
+
 }

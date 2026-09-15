@@ -1,6 +1,7 @@
 package io.github.oatelauser.thunder.testkit;
 
 import io.github.oatelauser.thunder.core.internal.peer.transport.BlockingTransport;
+import io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 
 import java.util.function.Function;
@@ -17,8 +18,9 @@ public final class Transports {
     public static Function<byte[], PeerTransport> fromSystemProperty() {
         String name = System.getProperty("javathunder.transport", "blocking");
         if ("nio".equalsIgnoreCase(name)) {
-            return io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport::new;
+            return NioTransport::new;
         }
         return BlockingTransport::new;
     }
+
 }

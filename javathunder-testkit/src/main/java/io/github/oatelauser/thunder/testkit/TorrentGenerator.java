@@ -1,31 +1,20 @@
 package io.github.oatelauser.thunder.testkit;
 
-import io.github.oatelauser.thunder.core.internal.bencode.BDict;
-import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
-import io.github.oatelauser.thunder.core.internal.bencode.BList;
-import io.github.oatelauser.thunder.core.internal.bencode.BString;
-import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
-import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.bencode.*;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.TreeMap;
+import java.util.*;
 
-/** 生成随机内容文件与配套 .torrent，用于回环测试。 */
+
+/**
+ * 生成随机内容文件与配套 .torrent，用于回环测试。
+ */
 public final class TorrentGenerator {
-
-    public record GeneratedTorrent(Path contentFile, Path torrentFile, int pieceCount) {
-    }
-
-    /** 多文件形态：目录树 + 各文件真实内容 + 对应 .torrent（返回根目录）。 */
-    public record GeneratedMultiFileTorrent(Path rootDir, Path torrentFile, int pieceCount) {
-    }
 
     public static final int DEFAULT_PIECE_LENGTH = 256 * 1024;
 
@@ -33,12 +22,12 @@ public final class TorrentGenerator {
     }
 
     public static GeneratedTorrent generate(Path dir, String name, int sizeBytes,
-                                            String announceUrl, Random random) throws IOException {
+            String announceUrl, Random random) throws IOException {
         return generate(dir, name, sizeBytes, DEFAULT_PIECE_LENGTH, announceUrl, random);
     }
 
     public static GeneratedTorrent generate(Path dir, String name, int sizeBytes, int pieceLength,
-                                            String announceUrl, Random random) throws IOException {
+            String announceUrl, Random random) throws IOException {
         byte[] content = new byte[sizeBytes];
         random.nextBytes(content);
         Path contentFile = dir.resolve(name);
@@ -66,17 +55,16 @@ public final class TorrentGenerator {
         return new GeneratedTorrent(contentFile, torrentFile, pieceCount);
     }
 
-    /** 生成多文件种子：name 根目录下按 [path, sizeBytes] 写随机内容，Piece 覆盖拼接流。 */
-    public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name,
-                                                              java.util.List<java.util.List<Object>> specs,
-                                                              int pieceLength, String announceUrl,
-                                                              Random random) throws IOException {
-        java.io.ByteArrayOutputStream concatenated = new java.io.ByteArrayOutputStream();
-        List<BencodeValue> fileDicts = new java.util.ArrayList<>();
-        long offset = 0;
-        for (java.util.List<Object> spec : specs) {
-            @SuppressWarnings("unchecked")
-            java.util.List<String> path = (java.util.List<String>) spec.get(0);
+    /**
+     * 生成多文件种子：name 根目录下按 [path, sizeBytes] 写随机内容，Piece 覆盖拼接流。
+     */
+    @SuppressWarnings("unchecked")
+    public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name, List<List<Object>> specs,
+            int pieceLength, String announceUrl, Random random) throws IOException {
+        ByteArrayOutputStream concatenated = new ByteArrayOutputStream();
+        List<BencodeValue> fileDicts = new ArrayList<>();
+        for (List<Object> spec : specs) {
+            List<String> path = (List<String>) spec.get(0);
             int sizeBytes = (Integer) spec.get(1);
             byte[] content = new byte[sizeBytes];
             random.nextBytes(content);
@@ -89,13 +77,12 @@ public final class TorrentGenerator {
             concatenated.writeBytes(content);
             Map<BString, BencodeValue> fileDict = new TreeMap<>(BString.UNSIGNED_ORDER);
             fileDict.put(BString.of("length"), new BInteger(sizeBytes));
-            List<BencodeValue> pathElements = new java.util.ArrayList<>();
+            List<BencodeValue> pathElements = new ArrayList<>();
             for (String component : path) {
                 pathElements.add(BString.of(component));
             }
             fileDict.put(BString.of("path"), new BList(pathElements));
             fileDicts.add(new BDict(fileDict));
-            offset += sizeBytes;
         }
         byte[] stream = concatenated.toByteArray();
         int pieceCount = (stream.length + pieceLength - 1) / pieceLength;
@@ -128,4 +115,14 @@ public final class TorrentGenerator {
             throw new IllegalStateException(e);
         }
     }
+
+    public record GeneratedTorrent(Path contentFile, Path torrentFile, int pieceCount) {
+    }
+
+    /**
+     * 多文件形态：目录树 + 各文件真实内容 + 对应 .torrent（返回根目录）。
+     */
+    public record GeneratedMultiFileTorrent(Path rootDir, Path torrentFile, int pieceCount) {
+    }
+
 }

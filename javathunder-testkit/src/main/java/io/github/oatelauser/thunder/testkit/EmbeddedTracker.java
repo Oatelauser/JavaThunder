@@ -13,12 +13,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** 内嵌 HTTP Tracker（BEP 3/23）：内存 Peer 表，compact 响应，interval=2s。 */
+/**
+ * 内嵌 HTTP Tracker（BEP 3/23）：内存 Peer 表，compact 响应，interval=2s。
+ */
 public final class EmbeddedTracker implements AutoCloseable {
 
     private final HttpServer server;
     private final ConcurrentMap<String, ConcurrentMap<InetSocketAddress, Boolean>> swarms =
-        new ConcurrentHashMap<>();
+            new ConcurrentHashMap<>();
 
     private EmbeddedTracker(HttpServer server) {
         this.server = server;
@@ -36,7 +38,9 @@ public final class EmbeddedTracker implements AutoCloseable {
         return "http://127.0.0.1:" + server.getAddress().getPort() + "/announce";
     }
 
-    /** 种子方直接注册（FakeSeeder 用，绕过 HTTP announce）。 */
+    /**
+     * 种子方直接注册（FakeSeeder 用，绕过 HTTP announce）。
+     */
     public void register(byte[] infoHash, int port) {
         swarm(infoHash).put(new InetSocketAddress("127.0.0.1", port), Boolean.TRUE);
     }
@@ -63,7 +67,7 @@ public final class EmbeddedTracker implements AutoCloseable {
             byte[] peers = compactPeers(swarm, self);
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             body.writeBytes(ascii("d8:intervali2e8:completei1e10:incompletei"
-                + Math.max(0, swarm.size() - 1) + "e5:peers"));
+                    + Math.max(0, swarm.size() - 1) + "e5:peers"));
             body.writeBytes(ascii(String.valueOf(peers.length)));
             body.write(':');
             body.writeBytes(peers);
@@ -74,8 +78,7 @@ public final class EmbeddedTracker implements AutoCloseable {
         }
     }
 
-    private static byte[] compactPeers(ConcurrentMap<InetSocketAddress, Boolean> swarm,
-                                       InetSocketAddress self) {
+    private static byte[] compactPeers(ConcurrentMap<InetSocketAddress, Boolean> swarm, InetSocketAddress self) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (InetSocketAddress peer : swarm.keySet()) {
             if (peer.equals(self)) {
@@ -109,7 +112,9 @@ public final class EmbeddedTracker implements AutoCloseable {
         server.stop(0);
     }
 
-    /** raw query 解析（%XX → 原始字节）。 */
+    /**
+     * raw query 解析（%XX → 原始字节）。
+     */
     private static final class Query {
         static Map<String, byte[]> parse(String rawQuery) {
             Map<String, byte[]> params = new ConcurrentHashMap<>();
@@ -119,7 +124,7 @@ public final class EmbeddedTracker implements AutoCloseable {
                     continue;
                 }
                 params.put(new String(decode(pair.substring(0, eq)), StandardCharsets.UTF_8),
-                    decode(pair.substring(eq + 1)));
+                        decode(pair.substring(eq + 1)));
             }
             return params;
         }
