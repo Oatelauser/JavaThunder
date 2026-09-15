@@ -43,8 +43,10 @@
           </newVersion>
           <parameter>
             <onlyModified>true</onlyModified>
-            <failOnModification>true</failOnModification>
-            <skipPmdAnalysis>true</skipPmdAnalysis>
+            <breakBuildOnModifications>true</breakBuildOnModifications>
+            <include>
+              <pattern>io.github.oatelauser.thunder.*</pattern>
+            </include>
           </parameter>
           <skip>${skipJapicmp}</skip>
         </configuration>
