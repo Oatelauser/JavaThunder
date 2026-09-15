@@ -31,6 +31,12 @@ public final class PeerWireCodec {
                 buf.putInt(p.pieceIndex()).putInt(p.begin()).put(p.block()));
             case Cancel c -> frame(8, 12, buf ->
                 buf.putInt(c.pieceIndex()).putInt(c.begin()).putInt(c.length()));
+            case HaveAll h -> single(14);
+            case HaveNone h -> single(15);
+            case RejectRequest r -> frame(16, 12, buf ->
+                buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
+            case UnsupportedMessage u -> throw new PeerWireException(
+                "cannot encode unsupported message id " + u.id());
         };
     }
 
@@ -82,7 +88,17 @@ public final class PeerWireCodec {
                 requireExact(payloadLength, 12, "cancel");
                 yield new Cancel(buf.getInt(), buf.getInt(), buf.getInt());
             }
-            default -> throw new PeerWireException("unknown message id " + id);
+            case 14 -> requireLength(payloadLength, 0, HaveAll.INSTANCE);
+            case 15 -> requireLength(payloadLength, 0, HaveNone.INSTANCE);
+            case 16 -> {
+                requireExact(payloadLength, 12, "reject");
+                yield new RejectRequest(buf.getInt(), buf.getInt(), buf.getInt());
+            }
+            default -> {
+                byte[] payload = new byte[payloadLength];
+                buf.get(payload); // 未实现的 ID：吞掉载荷，容忍解码
+                yield new UnsupportedMessage(id);
+            }
         };
     }
 

@@ -151,7 +151,9 @@ class PeerWireCodecTest {
 
         @Test
         void rejectsUnknownMessageId() {
-            assertThrows(PeerWireException.class, () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 9)));
+            // 语义已变更：未知 ID 不再断连（互操作容忍），见 unknownIdsAreToleratedNotFatal
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 9)));
         }
 
         @Test
@@ -183,6 +185,32 @@ class PeerWireCodecTest {
         void rejectsPiecePayloadShorterThanHeader() {
             assertThrows(PeerWireException.class,
                 () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 7, 0, 0, 0, 1)));
+        }
+
+        @Test
+        void bep6MessagesDecode() {
+            assertEquals(HaveAll.INSTANCE, PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 14)));
+            assertEquals(HaveNone.INSTANCE, PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 15)));
+            assertEquals(new RejectRequest(1, 2, 3),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 13, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3)));
+        }
+
+        @Test
+        void unknownIdsAreToleratedNotFatal() {
+            // 真实客户端会发未实现的 ID（BEP10 扩展=20、BEP5 PORT=9、BEP6 Suggest=13）：
+            // 容忍解码为 UnsupportedMessage，由引擎忽略——绝不断连
+            assertEquals(new UnsupportedMessage(20),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 20, 1, 2, 3, 4, 5)));
+            assertEquals(new UnsupportedMessage(9),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 3, 9, 0x1F, (byte) 0x90)));
+            assertEquals(new UnsupportedMessage(13),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 13, 0, 0, 0, 7)));
+        }
+
+        @Test
+        void bep6SinglesEncode() {
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 14}, PeerWireCodec.encode(HaveAll.INSTANCE));
+            assertArrayEquals(new byte[]{0, 0, 0, 1, 15}, PeerWireCodec.encode(HaveNone.INSTANCE));
         }
     }
 }

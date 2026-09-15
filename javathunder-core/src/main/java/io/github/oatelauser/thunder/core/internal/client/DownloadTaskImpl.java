@@ -8,6 +8,7 @@ import io.github.oatelauser.thunder.api.TaskState;
 import io.github.oatelauser.thunder.core.internal.engine.DownloadSession;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** {@link DownloadTask} 的会话适配。 */
 public final class DownloadTaskImpl implements DownloadTask {
@@ -16,7 +17,30 @@ public final class DownloadTaskImpl implements DownloadTask {
 
     public DownloadTaskImpl(DownloadSession session, Runnable onFinished) {
         this.session = session;
-        session.future().whenComplete((result, error) -> onFinished.run());
+        // future 完成＝下载阶段结束，但 seedAfterComplete 任务此后仍以 SEEDING 存活
+        // （入站握手路由、announce、上传服务都要继续）。若此时就注销路由/释放并发槽，
+        // 做种客户端对外表现为"完成即下线"（A1 互操作：ttorrent 连我方监听端口握手即 EOF）。
+        // 因此：非做种任务在 future 完成时终止；做种任务延迟到真正终止（COMPLETED/CANCELLED/FAILED）。
+        AtomicBoolean finished = new AtomicBoolean();
+        Runnable finishOnce = () -> {
+            if (finished.compareAndSet(false, true)) {
+                onFinished.run();
+            }
+        };
+        session.future().whenComplete((result, error) -> {
+            if (session.state() == TaskState.SEEDING) {
+                session.addListener(new TaskListener() {
+                    @Override
+                    public void onStateChanged(TaskState from, TaskState to) {
+                        if (to == TaskState.COMPLETED || to == TaskState.CANCELLED || to == TaskState.FAILED) {
+                            finishOnce.run();
+                        }
+                    }
+                });
+            } else {
+                finishOnce.run();
+            }
+        });
     }
 
     @Override

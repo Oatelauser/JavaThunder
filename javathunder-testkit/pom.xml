@@ -35,10 +35,17 @@
       <version>${slf4j.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- 互操作裁判（test 作用域，非运行时依赖）：第三方 BT 实现，验证协议兼容性 -->
+    <dependency>
+      <groupId>com.turn</groupId>
+      <artifactId>ttorrent-core</artifactId>
+      <version>1.5</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <properties>
-    <surefire.excludedGroups>perf</surefire.excludedGroups>
+    <surefire.excludedGroups>perf,interop</surefire.excludedGroups>
   </properties>
   <build>
     <plugins>

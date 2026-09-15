@@ -23,13 +23,17 @@ import io.github.oatelauser.thunder.core.internal.wire.Cancel;
 import io.github.oatelauser.thunder.core.internal.wire.Choke;
 import io.github.oatelauser.thunder.core.internal.wire.Handshake;
 import io.github.oatelauser.thunder.core.internal.wire.Have;
+import io.github.oatelauser.thunder.core.internal.wire.HaveAll;
+import io.github.oatelauser.thunder.core.internal.wire.HaveNone;
 import io.github.oatelauser.thunder.core.internal.wire.Interested;
 import io.github.oatelauser.thunder.core.internal.wire.KeepAlive;
 import io.github.oatelauser.thunder.core.internal.wire.NotInterested;
 import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
 import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
+import io.github.oatelauser.thunder.core.internal.wire.RejectRequest;
 import io.github.oatelauser.thunder.core.internal.wire.Request;
 import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
+import io.github.oatelauser.thunder.core.internal.wire.UnsupportedMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,6 +46,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
@@ -355,6 +360,15 @@ public final class DownloadSession {
             channel.close();
             return;
         }
+        // BEP 3 以 peer id 为身份：同一客户端的第二条链路（入站 + 出站同时建立，或按监听地址
+        // 反复重连）一律丢弃。否则对端（如 ttorrent 按 host-id 去重）在关闭重复链路前，
+        // 其分片簿记已被重复会话扰乱，出现无效分片（A1 互操作实测）。
+        for (PeerSession existing : peers.values()) {
+            if (Arrays.equals(existing.channel.remotePeerId(), channel.remotePeerId())) {
+                channel.close();
+                return;
+            }
+        }
         PeerSession session = new PeerSession(key, channel, meta.pieceCount());
         PeerSession existing = peers.putIfAbsent(key, session);
         if (existing != null) {
@@ -363,6 +377,9 @@ public final class DownloadSession {
         }
         channel.setMessageListener(message -> handleMessage(session, message));
         channel.setCloseListener(cause -> peerClosed(session));
+        // BEP 3：bitfield 是可选消息（无数据的客户端常直接省略，只用 have 逐片通告）。
+        // 连接即注册空位图，否则 have-only 对端的分片永远不可见、调度器不会发出任何请求。
+        scheduler.peerConnected(session.key, session.remote);
         if (localCardinality() > 0) {
             channel.write(new BitfieldMessage(localBytes()));
         }
@@ -373,6 +390,7 @@ public final class DownloadSession {
     private void peerClosed(PeerSession session) {
         peers.remove(session.key);
         scheduler.peerDisconnected(session.key);
+        session.serveExecutor.shutdownNow();
         synchronized (session) {
             releaseAssignment(session);
             for (BlockRequest block : session.issued) {
@@ -418,6 +436,23 @@ public final class DownloadSession {
             }
             case Request r -> serveUpload(session, r);
             case PieceMessage p -> blockWorkers.execute(() -> processBlock(session, p));
+            case HaveAll h -> {
+                Bitfield all = new Bitfield(meta.pieceCount());
+                for (int i = 0; i < meta.pieceCount(); i++) {
+                    all.set(i);
+                }
+                session.remote = all;
+                scheduler.peerConnected(session.key, all);
+            }
+            case HaveNone h -> {
+            }
+            case RejectRequest r -> {
+                BlockRequest rejected = new BlockRequest(r.pieceIndex(), r.begin(), r.length());
+                session.issued.remove(rejected);
+                scheduler.clearInFlight(rejected); // 允许重新请求
+            }
+            case UnsupportedMessage u -> {
+            }
             case Cancel c -> {
             }
             case KeepAlive k -> {
@@ -666,7 +701,7 @@ public final class DownloadSession {
         if (session.weChokingThem || !localHas(request.pieceIndex())) {
             return;
         }
-        blockWorkers.execute(() -> {
+        session.serveExecutor.execute(() -> {
             try {
                 byte[] block = storage.readBlock(request.pieceIndex(), request.begin(), request.length());
                 config.globalUpload().acquire(block.length);
@@ -861,6 +896,13 @@ public final class DownloadSession {
         final PeerChannel channel;
         final ArrayDeque<BlockRequest> pending = new ArrayDeque<>();
         final Set<BlockRequest> issued = ConcurrentHashMap.newKeySet();
+        /**
+         * 上传服务 FIFO（虚拟线程）：按请求到达顺序应答。BEP 3 不禁止乱序块，但请求序应答
+         * 是主流实现事实标准，且 ttorrent 1.5 的 Piece.record 在收到 offset=0 的块时会重置
+         * 整片缓冲——乱序块 0 会静默抹掉已收块导致校验失败（A1 互操作实测）。
+         */
+        final ExecutorService serveExecutor =
+            Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
         volatile Bitfield remote;
         volatile boolean peerChokingUs = true;
         volatile boolean weChokingThem = true;
