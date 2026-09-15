@@ -121,14 +121,16 @@ try (TorrentClient client = TorrentClient.builder()
 | `listenPort` | 6881 | 入站 Peer 连接监听端口 |
 | `maxConcurrentTasks` | 3 | 全局最大同时下载任务数（其余排队 QUEUED） |
 | `maxPeersPerTask` | 50 | 单任务最大连接 Peer 数 |
-| `downloadRateLimit` / `uploadRateLimit` | 0（不限） | 全局令牌桶，上下行独立 |
+| `downloadLimitBytesPerSecond` / `uploadLimitBytesPerSecond` | 0（不限） | 全局令牌桶，上下行独立 |
+| `DownloadOptions.rateLimits(dl, ul)`（每任务） | 0（不限） | 任务级令牌桶，与全局桶串联（两级都需放行，取更慢者） |
 | `seedAfterComplete` | false | 完成后转 SEEDING 持续上传，否则转 COMPLETED |
 | `connectTimeout` | 10s | Peer TCP 连接/握手超时 |
 | `listenerExecutor` | 内置单线程事件线程 | 监听器回调投递线程，可注入 |
 | 阶段 2：`dht` / `pex` / `useUdpTracker` | true | 正交开关；`private` 种子强制关闭 |
 
-`DownloadOptions`（每任务）：`targetDir`、`fileNameOverride`、`resumeEnabled`（默认 true）、
-`verifyOnRestart`（默认 true）。
+`DownloadOptions`（每任务）：`targetDir`、`resumeEnabled`（默认 true）、
+`verifyOnRestart`（默认 true）、`seedAfterComplete`、`rateLimits(dl, ul)`（0 = 不限，
+wither 风格，见上表）。
 
 ### 3.3 `DownloadTask` 状态机
 
@@ -151,11 +153,15 @@ QUEUED ──▶ VERIFYING ──▶ DOWNLOADING ──▶ SEEDING（seedAfterCo
 | 事件 | 载荷要点 |
 |---|---|
 | `onStateChanged` | 前态、现态、原因 |
-| `onProgress` | fraction、已下/已传字节、下行/上行速率、连接 Peer 数、availability、ETA |
+| `onProgress` | 当前 `ProgressSnapshot`（字段见下） |
 | `onPieceComplete` | piece 序号（进度位图可由此构建，UI 绿/蓝分块展示由使用者实现） |
-| `onTrackerAnnounce` | tracker URL、成功/失败、interval、seed/leech 数 |
-| `onPeerConnected/Disconnected` | 地址、断开原因 |
+| `onTrackerAnnounce` | tracker URL、失败原因（null = 成功）、seeders/leechers |
+| `onPeerConnected` / `onPeerDisconnected` | 对端地址；断开附带原因（可 null） |
 | `onError` | 阶段、异常、任务是否因此终止 |
+
+`ProgressSnapshot` 字段：`fraction`、`downloadedBytes`/`uploadedBytes`、
+`downloadRateBps`/`uploadRateBps`（EMA 平滑，α=0.3，500ms 一档）、`connectedPeers`、
+`availability`、`etaMillis`（剩余字节 ÷ 平滑下行速率；速率为 0 或已完成时 null）。
 
 回调契约：默认投递到内置单线程事件线程（或注入的 Executor）；回调抛出的异常被吞并记日志，
 绝不影响协议线程；事件顺序不保证；`onProgress` 节流至 500ms 一档。
