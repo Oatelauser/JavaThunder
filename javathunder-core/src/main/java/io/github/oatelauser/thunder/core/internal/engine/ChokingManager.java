@@ -19,19 +19,22 @@ public final class ChokingManager {
     private static final int RECIPROCATION_SLOTS = 4;
 
     private final Random random;
-    private final Map<Object, Long> receivedFromPeer = new HashMap<>();
-    private final Map<Object, Long> sentToPeer = new HashMap<>();
+    /** 速率记账走并发容器（C5-2）：每块一次的 record* 不再进监视器。 */
+    private final java.util.concurrent.ConcurrentMap<Object, Long> receivedFromPeer =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentMap<Object, Long> sentToPeer =
+        new java.util.concurrent.ConcurrentHashMap<>();
     private Object optimisticPeer;
 
     public ChokingManager(Random random) {
         this.random = random;
     }
 
-    public synchronized void recordReceived(Object peerKey, int bytes) {
+    public void recordReceived(Object peerKey, int bytes) {
         receivedFromPeer.merge(peerKey, (long) bytes, Long::sum);
     }
 
-    public synchronized void recordSent(Object peerKey, int bytes) {
+    public void recordSent(Object peerKey, int bytes) {
         sentToPeer.merge(peerKey, (long) bytes, Long::sum);
     }
 

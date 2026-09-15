@@ -109,6 +109,8 @@ public final class DownloadSession {
     private final AtomicLong downloaded = new AtomicLong();
     private final AtomicLong uploaded = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** resume 降频：脏标记 + progressLoop ≤2s 刷一次（原每件一写，512 件/128MB → 数量级减少）。 */
+    private final AtomicBoolean resumeDirty = new AtomicBoolean(false);
 
     private volatile TaskState state = TaskState.QUEUED;
     private volatile int announceIntervalSeconds = 5;
@@ -668,38 +670,51 @@ public final class DownloadSession {
         }
     }
 
-    /** 齐件：块序列顺序喂摘要 → gather 落盘 → 位图/事件/广播 → 指派下一件。 */
+    /** 齐件：哈希与落盘在监视器外（不阻塞该 Peer 后续块的事件循环处理），状态变更短暂持锁。 */
     private void finishPiece(PieceAssembler assembler, int piece, PeerSession source) {
         synchronized (source) {
             if (localHas(piece)) {
                 verifyingPieces.remove(piece);
                 return; // 已被其他路径完成
             }
-            byte[] hash;
-            try {
-                MessageDigest digest = MessageDigest.getInstance("SHA-1");
-                for (byte[] block : assembler.blocks) {
-                    digest.update(block);
-                }
-                hash = digest.digest();
-            } catch (NoSuchAlgorithmException e) {
-                throw new IllegalStateException("JVM without SHA-1", e);
+        }
+        // —— 监视器外：CPU/磁盘重活，可与该 Peer 的后续块并行 ——
+        byte[] hash;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-1");
+            for (byte[] block : assembler.blocks) {
+                digest.update(block);
             }
-            if (MessageDigest.isEqual(hash, meta.pieceHash(piece))) {
-                try {
-                    ByteBuffer[] buffers = new ByteBuffer[assembler.blocks.length];
-                    for (int i = 0; i < buffers.length; i++) {
-                        buffers[i] = ByteBuffer.wrap(assembler.blocks[i]);
-                    }
-                    storage.writePieceBuffers(piece, buffers);
-                } catch (IOException e) {
-                    verifyingPieces.remove(piece);
-                    fail(e);
-                    return;
+            hash = digest.digest();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM without SHA-1", e);
+        }
+        boolean verified;
+        if (MessageDigest.isEqual(hash, meta.pieceHash(piece))) {
+            try {
+                ByteBuffer[] buffers = new ByteBuffer[assembler.blocks.length];
+                for (int i = 0; i < buffers.length; i++) {
+                    buffers[i] = ByteBuffer.wrap(assembler.blocks[i]);
+                }
+                storage.writePieceBuffers(piece, buffers);
+                verified = true;
+            } catch (IOException e) {
+                verifyingPieces.remove(piece);
+                fail(e);
+                return;
+            }
+        } else {
+            verified = false;
+        }
+        // —— 监视器内：状态变更与下一件指派 ——
+        synchronized (source) {
+            if (verified) {
+                if (localHas(piece)) {
+                    return; // 与并行路径竞争，对方已落定
                 }
                 localSet(piece);
                 verifyingPieces.remove(piece); // 好件：本地位图已覆盖，隐藏使命结束
-                saveResumeQuietly();
+                resumeDirty.set(true); // 降频：progressLoop 定时刷盘，不再每件一写
                 for (TaskListener listener : listeners) {
                     eventExecutor.execute(() -> {
                         try {
@@ -825,11 +840,18 @@ public final class DownloadSession {
         long lastDownloaded = downloaded.get();
         long lastUploaded = uploaded.get();
         long lastMillis = System.currentTimeMillis();
+        long lastResumeFlush = lastMillis;
         while (running.get()) {
             if (sleepMillis(500)) {
+                saveResumeQuietly(); // 退出前兜底刷
                 return;
             }
             long now = System.currentTimeMillis();
+            if (resumeDirty.get() && now - lastResumeFlush >= 2000) {
+                resumeDirty.set(false);
+                saveResumeQuietly();
+                lastResumeFlush = now;
+            }
             long dt = Math.max(1, now - lastMillis);
             // EMA 平滑（α=0.3）：瞬时抖动不至于让 ETA 上蹿下跳
             downloadRate = ema(downloadRate, (downloaded.get() - lastDownloaded) * 1000 / dt);
