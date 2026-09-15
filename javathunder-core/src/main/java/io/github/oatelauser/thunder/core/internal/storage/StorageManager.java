@@ -20,29 +20,48 @@ import java.util.Arrays;
  */
 public final class StorageManager implements AutoCloseable {
 
+    /** 写通道池大小：Windows 上单句柄位置写会串行化，分片解除多 Peer 并发写的互斥。 */
+    private static final int WRITE_CHANNELS = 4;
+
     private final TorrentMetadata meta;
     private final Path partFile;
     private final Path finalFile;
-    private final FileChannel channel;
+    private final FileChannel[] channels;
 
     public StorageManager(TorrentMetadata meta, Path targetDir) throws IOException {
         this.meta = meta;
         Files.createDirectories(targetDir);
         this.finalFile = targetDir.resolve(meta.name());
         this.partFile = targetDir.resolve(meta.name() + ".part");
-        this.channel = FileChannel.open(partFile,
-            StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-        // 预分配：截长防上次异常残留，再在末位写一字节撑出全尺寸（稀疏）
-        channel.truncate(meta.length());
-        if (meta.length() > 0) {
-            channel.write(ByteBuffer.wrap(new byte[1]), meta.length() - 1);
+        this.channels = new FileChannel[WRITE_CHANNELS];
+        for (int i = 0; i < WRITE_CHANNELS; i++) {
+            channels[i] = FileChannel.open(partFile,
+                StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         }
+        // 预分配：截长防上次异常残留，再在末位写一字节撑出全尺寸（稀疏）
+        channels[0].truncate(meta.length());
+        if (meta.length() > 0) {
+            channels[0].write(ByteBuffer.wrap(new byte[1]), meta.length() - 1);
+        }
+    }
+
+    private FileChannel channelFor(int pieceIndex) {
+        return channels[Math.floorMod(pieceIndex, channels.length)];
     }
 
     /** Block 落盘：写入位置 = pieceIndex × pieceLength + begin。 */
     public void writeBlock(int pieceIndex, int begin, byte[] block) throws IOException {
         checkBlock(pieceIndex, begin, block);
-        channel.write(ByteBuffer.wrap(block), pieceOffset(pieceIndex) + begin);
+        channelFor(pieceIndex).write(ByteBuffer.wrap(block), pieceOffset(pieceIndex) + begin);
+    }
+
+    /** 整 Piece 一次顺序写（引擎按件组装后的落盘路径，优于散写 Block）。 */
+    public void writePiece(int pieceIndex, byte[] data) throws IOException {
+        if (data.length != pieceLengthOf(pieceIndex)) {
+            throw new IllegalArgumentException("piece " + pieceIndex + " expects "
+                + pieceLengthOf(pieceIndex) + " bytes, got " + data.length);
+        }
+        channelFor(pieceIndex).write(ByteBuffer.wrap(data), pieceOffset(pieceIndex));
     }
 
     /** 读回整个 Piece 计算 SHA-1，与种子的分片哈希比对。 */
@@ -52,7 +71,7 @@ public final class StorageManager implements AutoCloseable {
         ByteBuffer buffer = ByteBuffer.allocate(length);
         long offset = pieceOffset(pieceIndex);
         while (buffer.hasRemaining()) {
-            if (channel.read(buffer, offset + buffer.position()) < 0) {
+            if (channelFor(pieceIndex).read(buffer, offset + buffer.position()) < 0) {
                 throw new IOException("unexpected end of " + partFile + " while verifying piece " + pieceIndex);
             }
         }
@@ -70,7 +89,7 @@ public final class StorageManager implements AutoCloseable {
         }
         ByteBuffer buffer = ByteBuffer.allocate(length);
         while (buffer.hasRemaining()) {
-            if (channel.read(buffer, pieceOffset(pieceIndex) + begin + buffer.position()) < 0) {
+            if (channelFor(pieceIndex).read(buffer, pieceOffset(pieceIndex) + begin + buffer.position()) < 0) {
                 throw new IOException("unexpected end of " + partFile + " serving piece " + pieceIndex);
             }
         }
@@ -85,7 +104,7 @@ public final class StorageManager implements AutoCloseable {
         long remaining = pieceLengthOf(pieceIndex);
         while (remaining > 0) {
             int chunk = (int) Math.min(zeros.length, remaining);
-            channel.write(ByteBuffer.wrap(zeros, 0, chunk), offset);
+            channelFor(pieceIndex).write(ByteBuffer.wrap(zeros, 0, chunk), offset);
             offset += chunk;
             remaining -= chunk;
         }
@@ -93,8 +112,10 @@ public final class StorageManager implements AutoCloseable {
 
     /** 全部 Piece 完成后：落盘并原子改名为最终文件名。 */
     public void finish() throws IOException {
-        channel.force(true);
-        channel.close();
+        for (FileChannel channel : channels) {
+            channel.force(true);
+            channel.close();
+        }
         Files.move(partFile, finalFile, StandardCopyOption.REPLACE_EXISTING);
     }
 
@@ -147,6 +168,8 @@ public final class StorageManager implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        channel.close();
+        for (FileChannel channel : channels) {
+            channel.close();
+        }
     }
 }

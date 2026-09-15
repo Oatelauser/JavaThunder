@@ -37,6 +37,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -88,8 +90,10 @@ public final class DownloadSession {
     private final ConcurrentHashMap<String, PeerSession> peers = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, Integer> badPiecesByPeer = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, Set<BlockRequest>> receivedBlocks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, PieceAssembler> assemblers = new ConcurrentHashMap<>();
     private final Set<Integer> activePieces = ConcurrentHashMap.newKeySet();
+    /** 组装器内存上限：min(64MB/pieceLength, maxPeers, 64) 个并发件。 */
+    private final int maxActivePieces;
     private final AtomicLong downloaded = new AtomicLong();
     private final AtomicLong uploaded = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -114,6 +118,8 @@ public final class DownloadSession {
         this.local = new Bitfield(meta.pieceCount());
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length(), random);
         this.choking = new ChokingManager(random);
+        this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
+            64L * 1024 * 1024 / Math.max(1, meta.pieceLength())));
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -428,9 +434,9 @@ public final class DownloadSession {
                 }
                 session.currentPiece = piece;
                 activePieces.add(piece);
-                Set<BlockRequest> received = receivedBlocks.get(piece);
+                PieceAssembler assembler = assemblers.get(piece);
                 for (BlockRequest block : scheduler.blocksOf(piece)) {
-                    boolean alreadyReceived = received != null && received.contains(block);
+                    boolean alreadyReceived = assembler != null && assembler.received.contains(block);
                     if (!alreadyReceived && !scheduler.isInFlight(block)) {
                         session.pending.addLast(block);
                     }
@@ -462,6 +468,9 @@ public final class DownloadSession {
             }
             int availability = scheduler.availability(i);
             if (!activePieces.contains(i)) {
+                if (assemblers.size() >= maxActivePieces) {
+                    continue; // 组装器满：不开新件（在途件仍可补块）
+                }
                 if (availability < bestFreeAvailability) {
                     bestFree = i;
                     bestFreeAvailability = availability;
@@ -475,12 +484,12 @@ public final class DownloadSession {
     }
 
     private boolean hasMissingBlock(int piece) {
-        Set<BlockRequest> received = receivedBlocks.get(piece);
-        if (received == null) {
+        PieceAssembler assembler = assemblers.get(piece);
+        if (assembler == null) {
             return true;
         }
         for (BlockRequest block : scheduler.blocksOf(piece)) {
-            if (!received.contains(block)) {
+            if (!assembler.received.contains(block)) {
                 return true;
             }
         }
@@ -496,83 +505,110 @@ public final class DownloadSession {
         }
     }
 
-    /** 磁盘写、校验与补发请求都在 worker 虚拟线程上（事件循环零阻塞的前提）。 */
+    /**
+     * 块到达：不限速时在选择器线程内联组装（仅 memcpy 级成本，零派发）；
+     * 限速或齐件后落盘在 worker 虚拟线程上（事件循环零阻塞）。
+     */
     private void processBlock(PeerSession session, PieceMessage message) {
+        BlockRequest block = new BlockRequest(message.pieceIndex(), message.begin(), message.block().length);
+        if (config.globalDownload().isUnlimited()) {
+            handleBlock(session, message, block);
+        } else {
+            blockWorkers.execute(() -> {
+                try {
+                    config.globalDownload().acquire(message.block().length);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                handleBlock(session, message, block);
+            });
+        }
+    }
+
+    private void handleBlock(PeerSession session, PieceMessage message, BlockRequest block) {
         synchronized (session) {
             int piece = message.pieceIndex();
             if (piece < 0 || piece >= meta.pieceCount()) {
                 return;
             }
-            BlockRequest block = new BlockRequest(piece, message.begin(), message.block().length);
-            Set<BlockRequest> received = receivedBlocks.get(piece);
-            if (localHas(piece) || received != null && received.contains(block)) {
+            PieceAssembler assembler = assemblers.get(piece);
+            if (localHas(piece) || assembler != null && assembler.received.contains(block)) {
                 session.issued.remove(block);
                 scheduler.clearInFlight(block);
                 return; // 重复投递
             }
-            try {
-                config.globalDownload().acquire(message.block().length);
-                storage.writeBlock(piece, message.begin(), message.block());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (IOException e) {
-                fail(e);
-                return;
+            if (assembler == null) {
+                PieceAssembler created = new PieceAssembler(storage.pieceLengthOf(piece),
+                    scheduler.blocksOf(piece).size());
+                PieceAssembler raced = assemblers.putIfAbsent(piece, created);
+                assembler = raced != null ? raced : created;
             }
+            System.arraycopy(message.block(), 0, assembler.data, message.begin(), message.block().length);
+            assembler.received.add(block);
             session.issued.remove(block);
             scheduler.clearInFlight(block);
             downloaded.addAndGet(message.block().length);
             choking.recordReceived(session.key, message.block().length);
-            receivedBlocks.computeIfAbsent(piece, k -> ConcurrentHashMap.newKeySet()).add(block);
-            if (receivedBlocks.get(piece).size() == scheduler.blocksOf(piece).size()) {
-                receivedBlocks.remove(piece);
+            if (assembler.received.size() == assembler.expectedBlocks) {
+                assemblers.remove(piece, assembler);
                 activePieces.remove(piece);
                 releaseAssignment(session);
-                onPieceComplete(piece, session);
-                refillRequests(session); // 立即指派下一个 piece
+                PieceAssembler done = assembler;
+                blockWorkers.execute(() -> finishPiece(done, piece, session));
             } else {
                 refillRequests(session);
             }
         }
     }
 
-    private void onPieceComplete(int piece, PeerSession source) {
-        boolean verified;
-        try {
-            verified = storage.verifyPiece(piece);
-        } catch (IOException e) {
-            fail(e);
-            return;
+    /** 齐件：哈希 → 整件顺序落盘 → 位图/事件/广播 → 指派下一件。 */
+    private void finishPiece(PieceAssembler assembler, int piece, PeerSession source) {
+        synchronized (source) {
+            if (localHas(piece)) {
+                return; // 已被其他路径完成
+            }
+            if (MessageDigest.isEqual(sha1(assembler.data), meta.pieceHash(piece))) {
+                try {
+                    storage.writePiece(piece, assembler.data);
+                } catch (IOException e) {
+                    fail(e);
+                    return;
+                }
+                localSet(piece);
+                saveResumeQuietly();
+                for (TaskListener listener : listeners) {
+                    eventExecutor.execute(() -> {
+                        try {
+                            listener.onPieceComplete(piece);
+                        } catch (RuntimeException ignored) {
+                        }
+                    });
+                }
+                broadcast(new Have(piece));
+                log.debug("piece {}/{} verified", piece + 1, meta.pieceCount());
+                if (localAllSet()) {
+                    complete();
+                    return;
+                }
+                refillRequests(source);
+            } else {
+                // 坏件从未落盘：丢弃组装器即可重下，无清盘成本
+                int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
+                log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
+                if (bad >= MAX_BAD_PIECES_PER_PEER) {
+                    source.channel.close(); // 恶意/损坏数据源
+                }
+                refillRequests(source);
+            }
         }
-        if (verified) {
-            localSet(piece);
-            saveResumeQuietly();
-            for (TaskListener listener : listeners) {
-                eventExecutor.execute(() -> {
-                    try {
-                        listener.onPieceComplete(piece);
-                    } catch (RuntimeException ignored) {
-                    }
-                });
-            }
-            broadcast(new Have(piece));
-            log.debug("piece {}/{} verified", piece + 1, meta.pieceCount());
-            if (localAllSet()) {
-                complete();
-            }
-        } else {
-            try {
-                storage.clearPiece(piece);
-            } catch (IOException e) {
-                fail(e);
-                return;
-            }
-            int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
-            log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
-            if (bad >= MAX_BAD_PIECES_PER_PEER) {
-                source.channel.close(); // 恶意/损坏数据源
-            }
+    }
+
+    private static byte[] sha1(byte[] data) {
+        try {
+            return MessageDigest.getInstance("SHA-1").digest(data);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM without SHA-1", e);
         }
     }
 
@@ -810,6 +846,18 @@ public final class DownloadSession {
             this.key = key;
             this.channel = channel;
             this.remote = new Bitfield(pieceCount);
+        }
+    }
+
+    /** 在内存中按偏移组装一个 Piece：容忍乱序，齐件后一次哈希 + 顺序落盘。 */
+    private static final class PieceAssembler {
+        final byte[] data;
+        final Set<BlockRequest> received = ConcurrentHashMap.newKeySet();
+        final int expectedBlocks;
+
+        PieceAssembler(int pieceLength, int expectedBlocks) {
+            this.data = new byte[pieceLength];
+            this.expectedBlocks = expectedBlocks;
         }
     }
 }
