@@ -35,10 +35,10 @@ public final class MetadataSeeder implements AutoCloseable {
     private final io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport transport;
     private final TorrentMetadata meta;
     private final byte[] infoDict;
-    private final byte[] content;
+    private final java.nio.channels.FileChannel content;
 
     private MetadataSeeder(io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport transport,
-                           TorrentMetadata meta, byte[] infoDict, byte[] content) {
+                           TorrentMetadata meta, byte[] infoDict, java.nio.channels.FileChannel content) {
         this.transport = transport;
         this.meta = meta;
         this.infoDict = infoDict;
@@ -51,7 +51,8 @@ public final class MetadataSeeder implements AutoCloseable {
         byte[] info = extractInfoDict(torrentBytes);
         io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport transport =
             new io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport(PeerIds.generate());
-        MetadataSeeder seeder = new MetadataSeeder(transport, meta, info, Files.readAllBytes(contentFile));
+        MetadataSeeder seeder = new MetadataSeeder(transport, meta, info,
+            java.nio.channels.FileChannel.open(contentFile, java.nio.file.StandardOpenOption.READ));
         transport.listen(0, infoHash ->
             Arrays.equals(infoHash, meta.infoHash()) ? seeder.handler() : null);
         return seeder;
@@ -96,8 +97,12 @@ public final class MetadataSeeder implements AutoCloseable {
                         if (message instanceof ExtendedMessage ext) {
                             responses.addAll(handleExtended(ext));
                         } else if (message instanceof Request request) {
-                            responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
-                                readBlock(request)));
+                            try {
+                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
+                                    readBlock(request)));
+                            } catch (IOException e) {
+                                return;
+                            }
                         }
                     }
                     channel.write(responses);
@@ -167,13 +172,23 @@ public final class MetadataSeeder implements AutoCloseable {
         return out;
     }
 
-    private byte[] readBlock(Request request) {
-        int offset = (int) (request.pieceIndex() * meta.pieceLength()) + request.begin();
-        return Arrays.copyOfRange(content, offset, offset + request.length());
+    private byte[] readBlock(Request request) throws IOException {
+        long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(request.length());
+        while (buffer.hasRemaining()) {
+            if (content.read(buffer, offset + buffer.position()) < 0) {
+                throw new IOException("unexpected eof at " + (offset + buffer.position()));
+            }
+        }
+        return buffer.array();
     }
 
     @Override
     public void close() {
         transport.close();
+        try {
+            content.close();
+        } catch (IOException ignored) {
+        }
     }
 }

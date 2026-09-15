@@ -4,7 +4,10 @@ JDK 21+ 的 BitTorrent 下载库：以第三方依赖的形式嵌入你的应用
 零框架依赖（运行时仅 `slf4j-api`），手写 NIO 事件循环承载 Peer 连接（ADR-0003）。
 
 ```java
-try (TorrentClient client = TorrentClient.builder()
+import io.github.oatelauser.thunder.api.*;
+import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+
+try (TorrentClient client = DefaultTorrentClient.builder()
         .listenPort(6881)
         .maxConcurrentTasks(3)
         .build()) {
@@ -13,7 +16,8 @@ try (TorrentClient client = TorrentClient.builder()
         Path.of("ubuntu.torrent"),
         DownloadOptions.defaults()
             .targetDir(Path.of("downloads"))
-            .rateLimits(2 * 1024 * 1024, 512 * 1024)); // ↓2MB/s ↑512KB/s（0 = 不限）
+            .rateLimits(2 * 1024 * 1024, 512 * 1024)   // ↓2MB/s ↑512KB/s（0 = 不限）
+            .restartVerify(RestartVerifyMode.SAMPLED)); // 大镜像：重启抽样校验（默认 FULL）
 
     task.addListener(new TaskListener() {
         @Override public void onProgress(ProgressSnapshot p) {
@@ -55,7 +59,7 @@ try (TorrentClient client = TorrentClient.builder()
   经 `PeerDiscoverySource` SPI 注入引擎，会话与磁力按 announce 周期补充候选：
 
   ```java
-  try (TorrentClient client = TorrentClient.builder()
+  try (TorrentClient client = DefaultTorrentClient.builder()
           .peerDiscovery(DhtPeerDiscovery.create())      // 公网默认 bootstrap
           // 内网自建：DhtPeerDiscovery.create(List.of("dht.lan:6881"))
           .build()) { ... }
@@ -66,7 +70,8 @@ try (TorrentClient client = TorrentClient.builder()
 - **PEX（BEP 11）**：与对端协商 ut_pex 后互换连接表（added/added.f 紧凑表，
   每 60s 广播一次），减少对 tracker 的轮询依赖；private 种子自动关闭
 - **引擎**：Piece 内存零拷贝组装、逐件 SHA-1 校验、`.part` 预分配 + gather 直写、
-  断点续传（`.jt-resume`，CRC32 + info-hash 绑定 + 重启重校验）、rarest-first 调度、
+  断点续传（`.jt-resume`，CRC32 + info-hash 绑定；重启校验三档
+  FULL/SAMPLED/NONE——TB 级镜像建议 SAMPLED）、rarest-first 调度、
   tit-for-tat choking + 乐观槽、endgame 判定、两级（全局 ∧ 任务）令牌桶限速
 - **互操作**：与 ttorrent 双向互通（下载与做种，阻塞/NIO 双传输），公网 Ubuntu ISO 实测下载
   （[docs/INTEROP.md](docs/INTEROP.md)）
@@ -84,7 +89,7 @@ try (TorrentClient client = TorrentClient.builder()
 ## Known Limits（设计量级，非目标）
 
 - 并发连接 ≤ 1000、单任务 ≤ 200 Peer 的场景；更大规模（DHT 爬虫级）不在当前设计内
-- 单文件种子（多文件是第二阶段）；DHT 为可选模块 `javathunder-dht`（查询模式，注入式接入）；
+- DHT 为可选模块 `javathunder-dht`（查询模式，注入式接入）；
   PEX 暂只广播 IPv4 连接表（added6 不支持）
 - 无连接加密（MSE/PE）——非 BEP 标准，明确不实现
 - Windows 上做种期间文件保持 `.part` 名（句柄占用），完成即改名

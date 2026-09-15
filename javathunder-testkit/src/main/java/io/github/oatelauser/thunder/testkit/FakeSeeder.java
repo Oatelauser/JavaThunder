@@ -23,17 +23,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** 已知良好的种子方：全量位图、立即 unchoke、按文件内容应答 request。 */
+/** 已知良好的种子方：全量位图、立即 unchoke、按文件分块读应答 request（D2：内存与文件大小无关）。 */
 public final class FakeSeeder implements AutoCloseable {
 
     private final ServerSocket serverSocket;
-    private final byte[] content;
+    private final java.nio.channels.FileChannel content;
     private final TorrentMetadata meta;
     private final byte[] peerId = PeerIds.generate();
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
-    private FakeSeeder(ServerSocket serverSocket, byte[] content, TorrentMetadata meta) {
+    private FakeSeeder(ServerSocket serverSocket, java.nio.channels.FileChannel content,
+                       TorrentMetadata meta) {
         this.serverSocket = serverSocket;
         this.content = content;
         this.meta = meta;
@@ -41,7 +42,9 @@ public final class FakeSeeder implements AutoCloseable {
 
     public static FakeSeeder start(Path contentFile, TorrentMetadata meta) throws IOException {
         ServerSocket serverSocket = new ServerSocket(0, 64, java.net.InetAddress.getLoopbackAddress());
-        FakeSeeder seeder = new FakeSeeder(serverSocket, Files.readAllBytes(contentFile), meta);
+        FakeSeeder seeder = new FakeSeeder(serverSocket,
+            java.nio.channels.FileChannel.open(contentFile, java.nio.file.StandardOpenOption.READ),
+            meta);
         seeder.threads.submit(seeder::acceptLoop);
         return seeder;
     }
@@ -86,23 +89,43 @@ public final class FakeSeeder implements AutoCloseable {
         }
     }
 
-    private byte[] readBlock(Request request) {
-        int offset = (int) (request.pieceIndex() * meta.pieceLength()) + request.begin();
-        return Arrays.copyOfRange(content, offset, offset + request.length());
+    private byte[] readBlock(Request request) throws IOException {
+        long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(request.length());
+        while (buffer.hasRemaining()) {
+            if (content.read(buffer, offset + buffer.position()) < 0) {
+                throw new IOException("unexpected eof at " + (offset + buffer.position()));
+            }
+        }
+        return buffer.array();
     }
 
-    /** 多文件形态：把拼接流读进内存后复用同一应答路径。 */
+    /** 多文件形态：目录树按拼接流顺序复制进一个临时文件后分块读（D2：内存有界）。 */
     public static FakeSeeder startMultiFile(TorrentMetadata meta, Path rootDir) throws IOException {
-        java.io.ByteArrayOutputStream concatenated = new java.io.ByteArrayOutputStream();
-        for (TorrentMetadata.TorrentFile file : meta.files()) {
-            Path path = rootDir;
-            for (String component : file.path()) {
-                path = path.resolve(component);
+        Path concatenatedFile = java.nio.file.Files.createTempFile("javathunder-multifile-", ".bin");
+        try (java.nio.channels.FileChannel out = java.nio.channels.FileChannel.open(concatenatedFile,
+            java.nio.file.StandardOpenOption.WRITE)) {
+            for (TorrentMetadata.TorrentFile file : meta.files()) {
+                Path path = rootDir;
+                for (String component : file.path()) {
+                    path = path.resolve(component);
+                }
+                if (file.length() > 0) {
+                    out.transferFrom(java.nio.channels.FileChannel.open(path,
+                        java.nio.file.StandardOpenOption.READ), out.size(), file.length());
+                }
             }
-            concatenated.writeBytes(Files.readAllBytes(path));
         }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                Files.deleteIfExists(concatenatedFile);
+            } catch (IOException ignored) {
+            }
+        }));
         ServerSocket serverSocket = new ServerSocket(0, 64, java.net.InetAddress.getLoopbackAddress());
-        FakeSeeder seeder = new FakeSeeder(serverSocket, concatenated.toByteArray(), meta);
+        FakeSeeder seeder = new FakeSeeder(serverSocket,
+            java.nio.channels.FileChannel.open(concatenatedFile, java.nio.file.StandardOpenOption.READ),
+            meta);
         seeder.threads.submit(seeder::acceptLoop);
         return seeder;
     }
@@ -112,6 +135,10 @@ public final class FakeSeeder implements AutoCloseable {
         running.set(false);
         try {
             serverSocket.close();
+        } catch (IOException ignored) {
+        }
+        try {
+            content.close();
         } catch (IOException ignored) {
         }
         threads.shutdownNow();
