@@ -17,7 +17,8 @@
 | C3：Piece 内存组装 + 齐件顺序落盘 + 内联块处理 + 写通道池（NIO） | **111 MB/s（3.2× 阻塞基线）** |
 | C4a：去块 clone + 齐件即时指派（含饥饿修复）+ 低水位补发 + NIO 对端（NioSeeder） | **87–91 MB/s** |
 | C4a-2：块网格零拷贝组装 + gather 落盘 + 批量请求编码（NIO） | **104–110 MB/s** |
-| 引擎 4 Peer 聚合（64MB，管线 32，阻塞传输） | 39 MB/s（仅 +11%，见下） |
+| 引擎 4 Peer 聚合（64MB，管线 32，阻塞传输，C3 前） | 39 MB/s（仅 +11%，见下） |
+| C4b：多 Peer 聚合扩展曲线（NIO+NioSeeder，128MB，1/4/8/16 Peer） | 92/100/98/79 MB/s——曲线水平，聚合红线未达（见下） |
 
 ### C3 之后的瓶颈（2026-09-15）
 
@@ -72,12 +73,43 @@ C4a-2 落地上节杠杆 1/2 的引擎侧部分：接收路径块网格零拷贝
 gather 直传）+ 引擎解码零拷贝（readBuffer slice 直挂网格），以及更深的管线摊薄唤醒。
 这些属传输层缓冲池化改造，暂列观察项。
 
-### 多 Peer 扩展性数据点
+### 多 Peer 扩展曲线与聚合红线判定（C4b，2026-09-15）
 
-4 个并发 seeder 只带来 +11% 聚合吞吐——连接数维度可扩展，聚合吞吐被串行化点封顶。
-嫌疑按优先级：① StorageManager 单 FileChannel 的位置写在 Windows 上串行化（4 Peer 写同一文件
-共享一个句柄）；② PieceScheduler 全局锁（每块收发都进入同一 monitor）。定位与修复列入
-高并发加固待办，修复后用 `-DmultiPeer.mb=64` 复测 8/16 seeder 扩展曲线。
+`MultiPeerAcceptanceTest` 参数化（`-Djavathunder.transport=nio -DmultiPeer.mb=128
+-DmultiPeer.seeders=N`）：NIO 引擎 + N 个对称 NioSeeder + 128MB，计时含连接/握手建立；
+N=4/8 各测两次以标定运行方差（±10%）：
+
+| seeder 数 | 聚合吞吐（各次） | 取较好 | 相对单 Peer 加速比 |
+|---|---|---|---|
+| 1 | 92 | 92 MB/s | 1.00× |
+| 4 | 96 / 100 | 100 MB/s | 1.09× |
+| 8 | 81 / 98 | 98 MB/s | 1.07× |
+| 16 | 79 | 79 MB/s | 0.86× |
+
+**聚合红线判定（ADR-0003：8 Peer ≥ 1GB/s）：未达标。** 实测 8 Peer 聚合 81–98 MB/s，
+距 1024 MB/s 差约 **10.4–12.6×**。扩展曲线在运行方差内基本水平，16 Peer 反而回撤——
+聚合上限 ≈ 单 Peer 上限（~100 MB/s），加连接不加吞吐。C3 写通道池落地后复测确认：
+旧"StorageManager 单句柄串行化"归因**排除**——4 通道分片写仅承载 ~100MB/s 聚合，
+而单通道顺序写实测 736MB/s+，存储层余量 7×，从来不是这轮测量的上限。
+
+瓶颈归因（按权重）：
+
+1. **引擎单选择器线程 = 聚合天花板**：NioTransport 全部连接共享一个 selector 平台线程；
+   不限速路径下每 16KiB 块的读、帧解码（分配 + memcpy）、零拷贝挂格、issued/inFlight
+   记账、低水位 refill 都在该线程内联完成。每块成本与单 Peer 完全相同，故聚合 ≈ 单 Peer；
+   多 Peer 只增加该线程的唤醒次数与监视器争用。
+2. **全局监视器链**：每块串行穿 3 把全局锁——PieceScheduler（markInFlight/clearInFlight，
+   synchronized）、ChokingManager（recordReceived，synchronized）、local 位图
+   （pickPieceFor 逐件 localHas，synchronized），全部落在 selector 线程上。
+3. **齐件收尾反压事件循环**：finishPiece 在 worker 虚拟线程上持有该 Peer 的 session
+   监视器做 SHA-1 + gather 落盘 + **每件一次 resume 文件写**（128MB = 512 次小文件写）
+   + Have 广播；selector 线程处理同 Peer 下一块需要同一监视器，事件循环被磁盘/校验
+   周期性卡停。16 Peer 时此类窗口与握手建立成本（计时内）叠加，聚合反降至 79MB/s。
+
+下一层杠杆（聚合向 8× 单 Peer 逼近的前提，按预期收益排序）：解码/组装/refill 从
+selector 线程卸载到按连接绑定的 worker（事件循环只做 I/O 批收发）；PieceScheduler /
+ChokingManager 分片锁或 CAS 化；resume 保存降频（脏标记 + 定时刷）；finishPiece
+脱离 session 监视器。
 
 ## 分析
 
