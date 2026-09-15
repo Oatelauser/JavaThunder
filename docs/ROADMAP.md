@@ -25,11 +25,11 @@
 |---|---|---|
 | BEP 10 | 扩展握手 | 一切扩展的载体 |
 | BEP 9 | ut_metadata 元数据交换 | 磁力链接 |
-| BEP 5 | DHT（Kademlia） | 去 Tracker 化 |
+| BEP 5 | DHT（Kademlia） | 去 Tracker 化。**已实现（查询模式）**：KRPC + 路由表 + 迭代查找 + get_peers/announce_peer；不做全功能节点（不响应他人 query），引擎接入（磁力无 tracker 时自动用 DHT）留待后续 |
 | BEP 11 | PEX | Peer 互相发现 |
 | BEP 15 | UDP Tracker | Tracker 通道冗余 |
 
-DHT 可能落为独立可选模块（`javathunder-dht`），轻量使用者无需引入该 jar。
+DHT 已落为独立可选模块（`javathunder-dht`，查询模式），轻量使用者无需引入该 jar。
 
 ## 第三阶段（按需/远期）
 
