@@ -34,9 +34,11 @@ public final class Main {
             task.addListener(new TaskListener() {
                 @Override
                 public void onProgress(ProgressSnapshot p) {
-                    System.out.printf("\r%.1f%%  ↓ %d KB/s  ↑ %d KB/s  peers=%d  health=%.1f  ",
+                    String eta = p.etaMillis() == null ? "--"
+                        : String.format("%dm%02ds", p.etaMillis() / 60000, p.etaMillis() / 1000 % 60);
+                    System.out.printf("\r%.1f%%  ↓ %d KB/s  ↑ %d KB/s  peers=%d  health=%.1f  eta=%s  ",
                         p.fraction() * 100, p.downloadRateBps() / 1024, p.uploadRateBps() / 1024,
-                        p.connectedPeers(), p.availability());
+                        p.connectedPeers(), p.availability(), eta);
                 }
 
                 @Override

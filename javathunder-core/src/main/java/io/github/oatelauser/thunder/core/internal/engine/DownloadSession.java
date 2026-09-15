@@ -34,6 +34,7 @@ import io.github.oatelauser.thunder.core.internal.wire.RejectRequest;
 import io.github.oatelauser.thunder.core.internal.wire.Request;
 import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
 import io.github.oatelauser.thunder.core.internal.wire.UnsupportedMessage;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,6 +79,9 @@ public final class DownloadSession {
     private final TorrentMetadata meta;
     private final DownloadOptions options;
     private final SessionConfig config;
+    /** 任务级限速（两级串联：全局桶 ∧ 任务桶都需放行；null = 任务直通只走全局）。 */
+    private final RateLimiter taskDownloadLimit;
+    private final RateLimiter taskUploadLimit;
     private final PeerTransport transport;
     private final TrackerClient trackerClient;
     private final byte[] peerId;
@@ -108,6 +112,8 @@ public final class DownloadSession {
 
     private volatile TaskState state = TaskState.QUEUED;
     private volatile int announceIntervalSeconds = 5;
+    /** 全部 tracker 失败后的指数退避基数（秒）；成功 announce 复位为 0。 */
+    private volatile int announceBackoffSeconds;
     private volatile long downloadRate;
     private volatile long uploadRate;
 
@@ -128,6 +134,10 @@ public final class DownloadSession {
         this.choking = new ChokingManager(random);
         this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
             64L * 1024 * 1024 / Math.max(1, meta.pieceLength())));
+        this.taskDownloadLimit = options.downloadLimitBytesPerSecond() > 0
+            ? new RateLimiter(options.downloadLimitBytesPerSecond()) : null;
+        this.taskUploadLimit = options.uploadLimitBytesPerSecond() > 0
+            ? new RateLimiter(options.uploadLimitBytesPerSecond()) : null;
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -287,25 +297,50 @@ public final class DownloadSession {
         long left = Math.max(0, meta.length() - localCardinality() * meta.pieceLength());
         AnnounceRequest request = new AnnounceRequest(meta.infoHash(), peerId, config.listenPort(),
             uploaded.get(), downloaded.get(), left, event, 50);
+        boolean anySuccess = false;
         for (List<String> tier : meta.trackerTiers()) {
             for (String url : tier) {
                 try {
                     var response = trackerClient.announce(url, request);
                     if (response.failureReason() != null) {
                         log.warn("tracker {} rejected announce: {}", url, response.failureReason());
+                        fireTrackerAnnounce(url, response.failureReason(), 0, 0);
                         continue;
                     }
                     announceIntervalSeconds = response.interval();
                     for (InetSocketAddress peer : response.peers()) {
                         offerCandidate(peer);
                     }
+                    fireTrackerAnnounce(url, null, response.seeders(), response.leechers());
+                    anySuccess = true;
+                    announceBackoffSeconds = 0; // 成功即复位
                     return;
                 } catch (TrackerException e) {
                     log.debug("tracker {} failed: {}", url, e.getMessage());
+                    fireTrackerAnnounce(url, e.getMessage(), 0, 0);
                 }
             }
         }
         log.warn("announce {} failed on all trackers", event);
+        if (!anySuccess) {
+            // 全部 tracker 失败：指数退避 interval×2^k，上限 30 分钟
+            announceBackoffSeconds = announceBackoffSeconds == 0
+                ? Math.max(2, announceIntervalSeconds) * 2
+                : Math.min(announceBackoffSeconds * 2, 30 * 60);
+            announceIntervalSeconds = announceBackoffSeconds;
+        }
+    }
+
+    private void fireTrackerAnnounce(String url, @Nullable String failure,
+                                     int seeders, int leechers) {
+        for (TaskListener listener : listeners) {
+            eventExecutor.execute(() -> {
+                try {
+                    listener.onTrackerAnnounce(url, failure, seeders, leechers);
+                } catch (RuntimeException ignored) {
+                }
+            });
+        }
     }
 
     private void offerCandidate(InetSocketAddress address) {
@@ -385,6 +420,14 @@ public final class DownloadSession {
         }
         channel.write(Interested.INSTANCE);
         log.debug("peer {} connected", key);
+        for (TaskListener listener : listeners) {
+            eventExecutor.execute(() -> {
+                try {
+                    listener.onPeerConnected(key);
+                } catch (RuntimeException ignored) {
+                }
+            });
+        }
     }
 
     private void peerClosed(PeerSession session) {
@@ -398,6 +441,15 @@ public final class DownloadSession {
             }
         }
         log.debug("peer {} disconnected", session.key);
+        for (TaskListener listener : listeners) {
+            String address = session.key;
+            eventExecutor.execute(() -> {
+                try {
+                    listener.onPeerDisconnected(address, null);
+                } catch (RuntimeException ignored) {
+                }
+            });
+        }
     }
 
     private void handleMessage(PeerSession session, PeerWireMessage message) {
@@ -553,12 +605,16 @@ public final class DownloadSession {
      */
     private void processBlock(PeerSession session, PieceMessage message) {
         BlockRequest block = new BlockRequest(message.pieceIndex(), message.begin(), message.block().length);
-        if (config.globalDownload().isUnlimited()) {
+        boolean downloadUnlimited = config.globalDownload().isUnlimited() && taskDownloadLimit == null;
+        if (downloadUnlimited) {
             handleBlock(session, message, block);
         } else {
             blockWorkers.execute(() -> {
                 try {
                     config.globalDownload().acquire(message.block().length);
+                    if (taskDownloadLimit != null) {
+                        taskDownloadLimit.acquire(message.block().length);
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -705,6 +761,9 @@ public final class DownloadSession {
             try {
                 byte[] block = storage.readBlock(request.pieceIndex(), request.begin(), request.length());
                 config.globalUpload().acquire(block.length);
+                if (taskUploadLimit != null) {
+                    taskUploadLimit.acquire(block.length);
+                }
                 session.channel.write(
                     new PieceMessage(request.pieceIndex(), request.begin(), block));
                 uploaded.addAndGet(block.length);
@@ -772,8 +831,9 @@ public final class DownloadSession {
             }
             long now = System.currentTimeMillis();
             long dt = Math.max(1, now - lastMillis);
-            downloadRate = (downloaded.get() - lastDownloaded) * 1000 / dt;
-            uploadRate = (uploaded.get() - lastUploaded) * 1000 / dt;
+            // EMA 平滑（α=0.3）：瞬时抖动不至于让 ETA 上蹿下跳
+            downloadRate = ema(downloadRate, (downloaded.get() - lastDownloaded) * 1000 / dt);
+            uploadRate = ema(uploadRate, (uploaded.get() - lastUploaded) * 1000 / dt);
             lastDownloaded = downloaded.get();
             lastUploaded = uploaded.get();
             lastMillis = now;
@@ -789,6 +849,10 @@ public final class DownloadSession {
         }
     }
 
+    private static long ema(long previous, long instantaneous) {
+        return (long) (0.3 * instantaneous + 0.7 * Math.max(0, previous));
+    }
+
     // ---------------------------------------------------------------- accessors
 
     public CompletableFuture<DownloadResult> future() {
@@ -801,8 +865,28 @@ public final class DownloadSession {
 
     public ProgressSnapshot snapshot() {
         double fraction = meta.pieceCount() == 0 ? 1.0 : (double) localCardinality() / meta.pieceCount();
+        long remaining = Math.max(0, meta.length() - downloadedRemainingBasis());
+        Long eta = downloadRate > 0 && remaining > 0 ? remaining * 1000 / downloadRate : null;
         return new ProgressSnapshot(fraction, downloaded.get(), uploaded.get(),
-            downloadRate, uploadRate, peers.size(), availability());
+            downloadRate, uploadRate, peers.size(), availability(), eta);
+    }
+
+    /** 已完成字节数（ETA 基数）：已落件 + 在途组装块，末件按实际长度截断。 */
+    private long downloadedRemainingBasis() {
+        long verifiedBytes = 0;
+        int lastPiece = meta.pieceCount() - 1;
+        for (int i = 0; i < meta.pieceCount(); i++) {
+            if (localHas(i)) {
+                verifiedBytes += (i == lastPiece)
+                    ? meta.length() - (long) lastPiece * meta.pieceLength()
+                    : meta.pieceLength();
+            }
+        }
+        long inFlightBytes = 0;
+        for (PieceAssembler assembler : assemblers.values()) {
+            inFlightBytes += (long) assembler.received.size() * PieceScheduler.BLOCK_SIZE;
+        }
+        return Math.min(verifiedBytes + inFlightBytes, meta.length());
     }
 
     public void addListener(TaskListener listener) {
