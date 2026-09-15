@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadResult;
@@ -78,12 +79,19 @@ public final class DownloadSession {
     public record SessionConfig(int maxPeers, int listenPort,
                                 RateLimiter globalDownload, RateLimiter globalUpload,
                                 @Nullable
-                                PeerDiscoverySource discovery) {
+                                PeerDiscoverySource discovery,
+                                @Nullable UdpTrackerClient udpTracker) {
 
         @Deprecated
         public SessionConfig(int maxPeers, int listenPort, RateLimiter globalDownload,
                              RateLimiter globalUpload) {
-            this(maxPeers, listenPort, globalDownload, globalUpload, null);
+            this(maxPeers, listenPort, globalDownload, globalUpload, null, null);
+        }
+
+        @Deprecated
+        public SessionConfig(int maxPeers, int listenPort, RateLimiter globalDownload,
+                             RateLimiter globalUpload, @Nullable PeerDiscoverySource discovery) {
+            this(maxPeers, listenPort, globalDownload, globalUpload, discovery, null);
         }
     }
 
@@ -332,7 +340,10 @@ public final class DownloadSession {
         for (List<String> tier : meta.trackerTiers()) {
             for (String url : tier) {
                 try {
-                    var response = trackerClient.announce(url, request);
+                    var response = UdpTrackerClient
+                        .supports(url) && config.udpTracker() != null
+                        ? config.udpTracker().announce(url, request)
+                        : trackerClient.announce(url, request);
                     if (response.failureReason() != null) {
                         log.warn("tracker {} rejected announce: {}", url, response.failureReason());
                         fireTrackerAnnounce(url, response.failureReason(), 0, 0);

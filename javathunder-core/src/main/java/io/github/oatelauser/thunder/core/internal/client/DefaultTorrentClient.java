@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.client;
 
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadTask;
@@ -107,6 +108,8 @@ public final class DefaultTorrentClient implements TorrentClient {
     private final Executor eventExecutor;
     private final ExecutorService ownedExecutor;
     private final TrackerClient trackerClient = new TrackerClient();
+    @Nullable
+    private final UdpTrackerClient udpTracker;
     private final RateLimiter globalDownload;
     private final RateLimiter globalUpload;
     private final byte[] peerId = PeerIds.generate();
@@ -120,6 +123,13 @@ public final class DefaultTorrentClient implements TorrentClient {
         this.maxPeersPerTask = builder.maxPeersPerTask;
         this.slots = new Semaphore(Math.max(1, builder.maxConcurrentTasks));
         this.peerDiscovery = builder.peerDiscovery;
+        UdpTrackerClient udp = null;
+        try {
+            udp = new UdpTrackerClient();
+        } catch (IOException e) {
+            // UDP 不可用（无网络栈等极端环境）：引擎自动回退 HTTP tracker
+        }
+        this.udpTracker = udp;
         this.globalDownload = builder.downloadLimitBytesPerSecond <= 0
             ? RateLimiter.unlimited()
             : new RateLimiter(builder.downloadLimitBytesPerSecond);
@@ -179,7 +189,7 @@ public final class DefaultTorrentClient implements TorrentClient {
             io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher fetcher =
                 new io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher(
                     magnet.infoHash(), magnet.trackers(), transport, trackerClient,
-                    transport.listeningPort(), peerDiscovery);
+                    transport.listeningPort(), peerDiscovery, udpTracker);
             io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask task =
                 new io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask(
                     fetcher.fetch().thenApply(infoBytes -> {
@@ -210,7 +220,7 @@ public final class DefaultTorrentClient implements TorrentClient {
         try {
             session = new DownloadSession(meta, options,
                 new DownloadSession.SessionConfig(maxPeersPerTask, transport.listeningPort(),
-                    globalDownload, globalUpload, peerDiscovery),
+                    globalDownload, globalUpload, peerDiscovery, udpTracker),
                 transport, trackerClient, eventExecutor, peerId);
         } catch (IOException | RuntimeException e) {
             slots.release();
@@ -239,6 +249,9 @@ public final class DefaultTorrentClient implements TorrentClient {
         }
         if (peerDiscovery != null) {
             peerDiscovery.close();
+        }
+        if (udpTracker != null) {
+            udpTracker.close();
         }
         transport.close();
         if (ownedExecutor != null) {

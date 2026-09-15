@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import org.jspecify.annotations.Nullable;
 import io.github.oatelauser.thunder.core.internal.bencode.BDict;
@@ -66,16 +67,27 @@ public final class MetadataFetcher {
         this(infoHash, trackers, transport, trackerClient, listenPort, null);
     }
 
+    @Nullable
+    private final UdpTrackerClient udpTracker;
+
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
                            TrackerClient trackerClient, int listenPort,
                            @Nullable
                            PeerDiscoverySource discovery) {
+        this(infoHash, trackers, transport, trackerClient, listenPort, discovery, null);
+    }
+
+    public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
+                           TrackerClient trackerClient, int listenPort,
+                           @Nullable PeerDiscoverySource discovery,
+                           @Nullable UdpTrackerClient udpTracker) {
         this.infoHash = infoHash.clone();
         this.trackers = List.copyOf(trackers);
         this.transport = transport;
         this.trackerClient = trackerClient;
         this.listenPort = listenPort;
         this.discovery = discovery;
+        this.udpTracker = udpTracker;
         this.peerId = PeerIds.generate();
     }
 
@@ -116,7 +128,10 @@ public final class MetadataFetcher {
             0, 0, 0, TrackerEvent.STARTED, 50);
         for (String url : trackers) {
             try {
-                var response = trackerClient.announce(url, request);
+                var response = UdpTrackerClient
+                    .supports(url) && udpTracker != null
+                    ? udpTracker.announce(url, request)
+                    : trackerClient.announce(url, request);
                 if (response.failureReason() == null) {
                     response.peers().forEach(candidates::offer);
                 }
