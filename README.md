@@ -44,8 +44,11 @@ try (TorrentClient client = TorrentClient.builder()
 
 ## 特性
 
-- **协议**：BEP 3（v1 种子 + 线协议）、BEP 12（多 Tracker 分层）、BEP 20（peer id 规范）、
+- **协议**：BEP 3（v1 种子 + 线协议）、BEP 10（扩展握手）+ BEP 9（ut_metadata 磁力链接）、
+  BEP 12（多 Tracker 分层）、BEP 20（peer id 规范）、
   BEP 23（紧凑 peer 表）、BEP 27（私有种子标志）；对 BEP 6/10 消息容忍解码不握手即断
+- **磁力链接**：`MagnetUri.parse(...)` → `client.download(...)`，info-hash SHA-1 自校验后
+  转正常下载；需 tracker 或 DHT（后续）发现持有元数据的 Peer
 - **引擎**：Piece 内存零拷贝组装、逐件 SHA-1 校验、`.part` 预分配 + gather 直写、
   断点续传（`.jt-resume`，CRC32 + info-hash 绑定 + 重启重校验）、rarest-first 调度、
   tit-for-tat choking + 乐观槽、endgame 判定、两级（全局 ∧ 任务）令牌桶限速

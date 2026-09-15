@@ -336,17 +336,27 @@ CPU 单核可服务（testkit 压测脚本验证）。
 
 ## 6. 第二阶段（完整模式）详细设计
 
-### 6.1 扩展握手（BEP 10）
+### 6.1 扩展握手（BEP 10，已实现）
 
-握手保留位第 43bit（0x10 字节第 7 位）置 1；握手后互发 `extended handshake`（消息 ID 20，
-子 ID 0）：`m` 字典声明各扩展的消息子 ID（如 `{"m":{"ut_metadata":1,"ut_pex":2}}`）+
-`metadata_size`。这是一切扩展的载体。
+握手保留位 `reserved[5] & 0x10`（从右数第 20 bit）置 1——注意 BEP 10 规范选定的是
+保留区第 6 字节，不是末字节（末字节 0x01 属 DHT/BEP 5）；握手后互发 `extended
+handshake`（消息 ID 20，子 ID 0）：`m` 字典声明各扩展的消息子 ID（如
+`{"m":{"ut_metadata":1,"ut_pex":2}}`）+ `metadata_size`。这是一切扩展的载体。
 
-### 6.2 磁力链接 + ut_metadata（BEP 9）
+实现：`Handshake` 编码置位/`supportsExtensions` 判位；`ExtendedMessage`（id 20，子 ID u8
++ bencoded 载荷）+ codec 编解码（空 sub-id 帧拒绝）；正常下载会话对扩展消息忽略容忍。
+
+### 6.2 磁力链接 + ut_metadata（BEP 9，已实现）
 
 - API：`client.download(MagnetUri.parse("magnet:?xt=urn:btih:…&dn=…&tr=…"))`；
 - 流程：解析 info-hash（hex/base32）与可选 tracker 列表 → 正常连 Peer（DHT/Tracker 发现）→
   `ut_metadata` 分 16KiB 块请求 info 字典 → 重组后 SHA-1 自校验 = info-hash → 转正常任务流程。
+
+实现要点：`MetadataFetcher` 从 tracker 取 Peer，扩展握手后按对端 `m` 子 ID + `metadata_size`
+分块请求；data 应答为 bencoded 头 + 原始字节，头部边界由解码器消费量决定（严格 decode 会
+因 trailing data 误拒）。SHA-1 不符丢弃换 Peer，60s 总超时。`MagnetDownloadTask` 两段式：
+元数据期映射 QUEUED/空快照，就绪后经事件线程切换到普通会话（槽位只占元数据阶段，避免与
+会话槽双持有死锁）。Peer 发现当前仅 tracker（DHT 阶段 2 接入）。
 
 ### 6.3 DHT（BEP 5，Kademlia）
 
