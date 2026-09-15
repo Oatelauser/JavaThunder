@@ -96,6 +96,6 @@ try (TorrentClient client = DefaultTorrentClient.builder()
 
 ## 文档
 
-- [需求与设计](docs/DESIGN.md) · [路线图/BEP 覆盖](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md)
+- [**集成手册**](docs/MANUAL.md) · [需求与设计](docs/DESIGN.md) · [路线图/BEP 覆盖](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md)
 - [互操作验收](docs/INTEROP.md) · [术语表](CONTEXT.md) · [ADR](docs/adr/)
 - Apache-2.0
