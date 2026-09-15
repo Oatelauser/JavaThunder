@@ -365,11 +365,23 @@ CPU 单核可服务（testkit 压测脚本验证）。
 16 字节精简报文协议：`connect`（60s 缓存 connection_id）→ `announce`；事务 ID 校验、
 指数退避重传；与 HTTP Tracker 并列为 Peer 来源，优先级相同。
 
-### 6.6 多文件种子
+### 6.6 多文件种子（B3，已实现）
 
-`info.files[]`（`path[]` + `length`）按累积偏移映射到同一 Piece 流，落盘与单文件一致
-（Piece 可跨文件边界，写时按区间拆分）；启动时创建目录结构。**安全约束**：来自种子的
-路径组件拒绝 `..`、绝对路径、盘符、反斜杠、Windows 保留设备名与控制字符（防路径穿越）。
+`info.files[]`（`path[]` + `length`）按累积偏移映射到同一 Piece 流：`TorrentMetadata.files`
+记录每个文件的拼接流偏移，`length` = 总和，Piece 可跨文件边界。引擎按种子形态经
+`TorrentStorage` 接口二选一：单文件走 `StorageManager`（原路径不动），多文件走
+`MultiFileStorage`——读写以拼接流偏移 scatter 拆分（单个缓冲可跨文件边界），
+零拷贝 `writePieceBuffers` 的 gather 顺序与拼接流一致。
+
+**暂存编号文件策略**：下载期数据写 `<name>.part/00000..N`（按文件序号的稀疏预分配
+中间文件），半成品不以真实文件名出现在目标目录；`finish()` 时按种子 `path[]` 建目录树、
+`move` 落位改名并删除暂存目录（空文件直接建占位）。resume 文件仍以 `<name>.jt-resume`
+挂在暂存目录旁。
+
+**路径穿越防护清单**（解析期拒绝，防恶意种子逃出目标目录）：空组件、`..`、`/`、`\`、
+`:`（含盘符）、控制字符（<0x20）、Windows 保留设备名 `CON|PRN|AUX|NUL|COM1-9|LPT1-9`
+（含带扩展名的 stem 提取，如 `com1.txt`）；另校验 `files` 非空列表、逐件 `length >= 0`、
+总长为正、Piece 数对总长一致。验收：跨文件边界件端到端字节比对 + ttorrent 多文件做种互操作。
 
 ### 6.7 阶段二验收
 
