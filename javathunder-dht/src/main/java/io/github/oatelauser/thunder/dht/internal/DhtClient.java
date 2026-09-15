@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -32,29 +34,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class DhtClient implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(DhtClient.class);
+
     private static final int ALPHA = 3;
     private static final int QUERY_TIMEOUT_MILLIS = 2000;
+    public static final List<String> DEFAULT_BOOTSTRAP = List.of("router.bittorrent.com:6881",
+            "dht.transmissionbt.com:6881", "router.utorrent.com:6881");
 
-    public static final List<String> DEFAULT_BOOTSTRAP = List.of(
-        "router.bittorrent.com:6881", "dht.transmissionbt.com:6881", "router.utorrent.com:6881");
-
-    /** 待处理事务：事务ID → future。 */
-    private final ConcurrentHashMap<String, CompletableFuture<Parsed>> transactions =
-        new ConcurrentHashMap<>();
-    private final RoutingTable table;
     private final NodeId selfId;
+    private final RoutingTable table;
     private final DatagramSocket socket;
-    private final Thread receiveThread;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final SecureRandom random = new SecureRandom();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    /**
+     * 待处理事务：事务ID → future。
+     */
+    private final ConcurrentHashMap<String, CompletableFuture<Parsed>> transactions = new ConcurrentHashMap<>();
 
     public DhtClient(int port) throws IOException {
         this.selfId = randomId();
         this.table = new RoutingTable(selfId);
         this.socket = new DatagramSocket(port);
         this.socket.setSoTimeout(250);
-        this.receiveThread = Thread.ofPlatform().name("javathunder-dht").daemon(true)
-            .start(this::receiveLoop);
+        Thread.ofVirtual().name("THUNDER-DHT").start(this::receiveLoop);
     }
 
     public static NodeId randomId() {
@@ -71,7 +72,9 @@ public final class DhtClient implements AutoCloseable {
         return table.size();
     }
 
-    /** 自举：向种子节点发起 find_node(self)，随后若干轮迭代填充路由表。 */
+    /**
+     * 自举：向种子节点发起 find_node(self)，随后若干轮迭代填充路由表。
+     */
     public void bootstrap(List<String> bootstrapNodes) {
         for (String spec : bootstrapNodes) {
             InetSocketAddress address = parse(spec);
@@ -79,8 +82,8 @@ public final class DhtClient implements AutoCloseable {
                 continue;
             }
             sendQuery(address, Builder.query(newTransactionId(), "find_node")
-                .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(selfId.bytes()))
-                .id(selfId));
+                    .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(selfId.bytes()))
+                    .id(selfId));
         }
         // 迭代收敛：几轮 nearest 查询填充
         for (int round = 0; round < 3 && table.size() < 64; round++) {
@@ -90,7 +93,9 @@ public final class DhtClient implements AutoCloseable {
         log.info("dht bootstrapped: {} nodes known", table.size());
     }
 
-    /** 按 info-hash 查找持有该种子的对端（迭代 get_peers），聚合 values 与 token 持有者。 */
+    /**
+     * 按 info-hash 查找持有该种子的对端（迭代 get_peers），聚合 values 与 token 持有者。
+     */
     public CompletableFuture<List<InetSocketAddress>> getPeers(byte[] infoHash) {
         NodeId target = new NodeId(infoHash);
         return CompletableFuture.supplyAsync(() -> {
@@ -109,8 +114,8 @@ public final class DhtClient implements AutoCloseable {
                     }
                     InetSocketAddress address = new InetSocketAddress(entry.host(), entry.port());
                     Parsed response = roundTrip(address, Builder.query(newTransactionId(), "get_peers")
-                        .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
-                        .id(selfId));
+                            .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
+                            .id(selfId));
                     if (response == null) {
                         continue;
                     }
@@ -121,10 +126,10 @@ public final class DhtClient implements AutoCloseable {
                     if (token != null && announced.add(entry.id().hex())) {
                         // announce_peer：向给出 token 的节点宣告我们持有该 info-hash
                         roundTrip(address, Builder.query(newTransactionId(), "announce_peer")
-                            .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
-                            .arg("port", new io.github.oatelauser.thunder.core.internal.bencode.BInteger(port()))
-                            .arg("token", new io.github.oatelauser.thunder.core.internal.bencode.BString(token))
-                            .id(selfId));
+                                .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
+                                .arg("port", new io.github.oatelauser.thunder.core.internal.bencode.BInteger(port()))
+                                .arg("token", new io.github.oatelauser.thunder.core.internal.bencode.BString(token))
+                                .id(selfId));
                     }
                     for (PeerAddr closer : response.nodes()) {
                         if (closer.nodeId() == null) {
@@ -136,7 +141,7 @@ public final class DhtClient implements AutoCloseable {
                     }
                 }
                 frontier.sort((a, b) -> RoutingTable.compareBytes(
-                    a.id().distanceTo(target), b.id().distanceTo(target)));
+                        a.id().distanceTo(target), b.id().distanceTo(target)));
                 if (frontier.size() > 32) {
                     frontier = new ArrayList<>(frontier.subList(0, 32));
                 }
@@ -148,7 +153,9 @@ public final class DhtClient implements AutoCloseable {
         }, java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
     }
 
-    /** 通用迭代 find_node：返回过程中发现的全部节点（也用于路由表保养）。 */
+    /**
+     * 通用迭代 find_node：返回过程中发现的全部节点（也用于路由表保养）。
+     */
     List<RoutingTable.Entry> iterativeFindNode(NodeId target) {
         Set<String> queried = new HashSet<>();
         List<RoutingTable.Entry> found = new ArrayList<>();
@@ -157,16 +164,16 @@ public final class DhtClient implements AutoCloseable {
         while (!frontier.isEmpty() && rounds < 8) {
             rounds++;
             List<RoutingTable.Entry> batch = new ArrayList<>(
-                frontier.subList(0, Math.min(ALPHA, frontier.size())));
+                    frontier.subList(0, Math.min(ALPHA, frontier.size())));
             frontier = new ArrayList<>(frontier.subList(Math.min(ALPHA, frontier.size()), frontier.size()));
             for (RoutingTable.Entry entry : batch) {
                 if (!queried.add(entry.id().hex())) {
                     continue;
                 }
                 Parsed response = roundTrip(new InetSocketAddress(entry.host(), entry.port()),
-                    Builder.query(newTransactionId(), "find_node")
-                        .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(target.bytes()))
-                        .id(selfId));
+                        Builder.query(newTransactionId(), "find_node")
+                                .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(target.bytes()))
+                                .id(selfId));
                 if (response == null) {
                     continue;
                 }
@@ -181,7 +188,7 @@ public final class DhtClient implements AutoCloseable {
                 }
             }
             frontier.sort((a, b) -> RoutingTable.compareBytes(
-                a.id().distanceTo(target), b.id().distanceTo(target)));
+                    a.id().distanceTo(target), b.id().distanceTo(target)));
             if (frontier.size() > 32) {
                 frontier = new ArrayList<>(frontier.subList(0, 32));
             }
@@ -202,9 +209,7 @@ public final class DhtClient implements AutoCloseable {
             transactions.put(key(transactionId), future);
             socket.send(new DatagramPacket(wire, wire.length, address.getAddress(), address.getPort()));
             return future.get(QUERY_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
-        } catch (SocketTimeoutException | InterruptedException | java.util.concurrent.TimeoutException e) {
-            return null;
-        } catch (IOException | java.util.concurrent.ExecutionException e) {
+        } catch (InterruptedException | TimeoutException | IOException | ExecutionException e) {
             return null;
         } finally {
             if (transactionId != null) {
@@ -281,7 +286,7 @@ public final class DhtClient implements AutoCloseable {
         try {
             int colon = spec.lastIndexOf(':');
             InetSocketAddress address = new InetSocketAddress(spec.substring(0, colon),
-                Integer.parseInt(spec.substring(colon + 1)));
+                    Integer.parseInt(spec.substring(colon + 1)));
             // 未解析（DNS 失败/断网）时返回 null 跳过该节点：DatagramPacket 不接受 null 地址，
             // 否则 sendQuery 会以未捕获的 RuntimeException 中断整个 bootstrap
             return address.isUnresolved() ? null : address;

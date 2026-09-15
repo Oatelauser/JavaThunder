@@ -38,8 +38,7 @@ class QuickStartTest {
         long[] frames = {0};
 
         try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
-            DownloadTask task = client.download(
-                torrent,
+            DownloadTask task = client.download(torrent,
                 DownloadOptions.defaults().targetDir(Path.of("D:\\下载软件包\\ubuntu")));
 
             task.addListener(new TaskListener() {
