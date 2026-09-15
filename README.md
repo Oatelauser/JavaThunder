@@ -1,101 +1,111 @@
-# JavaThunder
+# ⚡ JavaThunder
 
-JDK 21+ 的 BitTorrent 下载库：以第三方依赖的形式嵌入你的应用，轻量或完整地获得 P2P 下载能力。
-零框架依赖（运行时仅 `slf4j-api`），手写 NIO 事件循环承载 Peer 连接（ADR-0003）。
+**嵌入你 Java 应用的 BitTorrent 引擎** —— 给它一个 `.torrent` 或磁力链接，它还你一个 SHA-1 校验通过的本地文件；同时你的进程自动成为 P2P 网络节点（边下边传、可做种）。
+
+*An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
+
+![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.2.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
+
+## 为什么是它
+
+- **库，不是应用** —— 无 UI、无守护进程；几行代码嵌进你的服务、工具或 Agent
+- **零框架税** —— 运行时仅依赖 `slf4j-api`；没有 Netty/Guava，Bencode/协议/存储全部手写
+- **轻量与完整是同一套 API** —— 默认配置即轻量（少量连接、下完即停）；注入 DHT、开做种、放开连接数即完整形态，无模式切换
+- **可验证的工程质量** —— 与 ttorrent 双向互操作 + 公网 Ubuntu ISO 实测；双传输差分验收；127 个测试；japicmp 守护 API 兼容性
+
+## 30 秒上手
 
 ```java
 import io.github.oatelauser.thunder.api.*;
 import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
 
-try (TorrentClient client = DefaultTorrentClient.builder()
-        .listenPort(6881)
-        .maxConcurrentTasks(3)
-        .build()) {
-
+try (TorrentClient client = DefaultTorrentClient.builder().build()) {
     DownloadTask task = client.download(
         Path.of("ubuntu.torrent"),
         DownloadOptions.defaults()
             .targetDir(Path.of("downloads"))
-            .rateLimits(2 * 1024 * 1024, 512 * 1024)   // ↓2MB/s ↑512KB/s（0 = 不限）
-            .restartVerify(RestartVerifyMode.SAMPLED)); // 大镜像：重启抽样校验（默认 FULL）
+            .rateLimits(2 * 1024 * 1024, 512 * 1024)    // ↓2MB/s ↑512KB/s（0=不限）
+            .restartVerify(RestartVerifyMode.SAMPLED));  // 大镜像断点恢复：抽样校验
 
     task.addListener(new TaskListener() {
         @Override public void onProgress(ProgressSnapshot p) {
-            System.out.printf("%.1f%%  ↓%dKB/s  peers=%d  eta=%s%n",
+            System.out.printf("%.1f%%  ↓%dKB/s  peers=%d  eta=%ss%n",
                 p.fraction() * 100, p.downloadRateBps() / 1024,
-                p.connectedPeers(), p.etaMillis());
+                p.connectedPeers(), p.etaMillis() == null ? "-" : p.etaMillis() / 1000);
         }
     });
 
-    DownloadResult result = task.future().join(); // 每个 Piece 均已通过 SHA-1 校验
-    task.pause(); task.resume();
-    task.cancel(false); // true = 连同本地数据一起删除
+    DownloadResult result = task.future().join();  // 返回即所有分片 SHA-1 校验通过
 }
 ```
 
-## 坐标（0.1.0 发布准备中）
+命令行体验（示例模块）：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`
+
+更多场景（磁力链接的生成与使用、做种、内网大模型镜像分发拓扑、断点续传、监控集成、集成测试模板……）见 **[集成手册](docs/MANUAL.md)**。
+
+## 模块
+
+| 模块 | 作用 | 什么时候需要 |
+|---|---|---|
+| `javathunder-api` | 纯接口与值类型（稳定契约） | 总是（随 core 传递引入） |
+| `javathunder-core` | 引擎实现 | 总是 |
+| `javathunder-dht` | BEP 5 DHT（去 tracker 节点发现） | 磁力无 tracker / 去 tracker 分发时 |
+| `javathunder-testkit` | 内嵌 tracker、种子生成器、测试对端 | 造种子 / 写集成测试时 |
+| `javathunder-cli` | 可执行示例 | 参考/体验 |
+
+## 安装
+
+**尚未发布到 Maven Central**（计划中）。当前从源码构建：
+
+```bash
+git clone https://github.com/oatelauser/JavaThunder.git
+cd JavaThunder && mvn clean install
+```
 
 ```xml
 <dependency>
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder-core</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
+<!-- 运行时请自带 slf4j 后端（如 slf4j-simple / logback），否则日志静默 -->
 ```
 
-`javathunder-api`（纯接口，供编译期引用）、`javathunder-testkit`（内嵌 Tracker / 种子生成器 /
-假种子方，供你的集成测试）与 `javathunder-dht`（可选 DHT 模块）同 group 下可用。CLI 示例见 `javathunder-cli`。
+## 特性一览
 
-## 特性
+- **协议**：BEP 3（v1 单/多文件）、BEP 9+10（磁力链接，元数据 SHA-1 自校验）、BEP 11（PEX）、BEP 12（多 tracker）、BEP 15（UDP tracker，`udp://` 自动分派）、BEP 23/20/27；BEP 5 DHT 为可选模块；对未知/BEP 6 消息容忍解码不断连
+- **引擎**：rarest-first 调度、tit-for-tat choking + 乐观槽、endgame、逐件 SHA-1、`.part` 预分配 + gather 直写、断点续传（重启校验 FULL/SAMPLED/NONE 三档）、两级双向令牌桶限速
+- **安全**：多文件路径穿越防护；磁力元数据哈希强校验；帧/长度/深度多级解析防护
+- **传输**：阻塞（默认，简单稳健）与 NIO 事件循环（`-Djavathunder.transport=nio`）双实现，同一套验收差分回归
+- **观测**：进度/速率(EMA)/ETA/健康度快照 + 7 类事件回调（独立事件线程，可注入自定义 Executor）
 
-- **协议**：BEP 3（v1 种子 + 线协议）、BEP 10（扩展握手）+ BEP 9（ut_metadata 磁力链接）、
-  BEP 11（PEX）、BEP 12（多 Tracker 分层）、BEP 15（UDP Tracker）、
-  BEP 20（peer id 规范）、BEP 23（紧凑 peer 表）、BEP 27（私有种子标志——自动禁用 PEX/DHT）、
-  BEP 5（DHT，可选模块）；对 BEP 6/10 消息容忍解码不握手即断
-- **磁力链接**：`MagnetUri.parse(...)` → `client.download(...)`，info-hash SHA-1 自校验后
-  转正常下载；tracker 之外可注入 DHT 作为元数据/Peer 来源（见下）
-- **DHT（BEP 5，可选模块 `javathunder-dht`）**：KRPC over UDP + 简化 Kademlia 路由表 +
-  迭代 find_node/get_peers/announce_peer 的对等发现源（查询模式，不响应他人 query）。
-  经 `PeerDiscoverySource` SPI 注入引擎，会话与磁力按 announce 周期补充候选：
+## 性能（回环实测，JDK 21 / Windows）
 
-  ```java
-  try (TorrentClient client = DefaultTorrentClient.builder()
-          .peerDiscovery(DhtPeerDiscovery.create())      // 公网默认 bootstrap
-          // 内网自建：DhtPeerDiscovery.create(List.of("dht.lan:6881"))
-          .build()) { ... }
-  ```
+| 指标 | 数值 |
+|---|---|
+| 单连接吞吐（NIO） | 110 MB/s（≈880Mbps，真实网络先撞带宽上限） |
+| 多连接聚合 | ~100–180 MB/s（上限归因与下一层杠杆见 [PERFORMANCE.md](docs/PERFORMANCE.md)） |
+| 限速精度 | 目标 512KB/s → 实测 537KB/s |
 
-- **UDP Tracker（BEP 15）**：`udp://` announce 自动走 UDP 客户端（connect 60s 缓存、
-  事务 ID 校验、指数退避重试；UDP 栈不可用自动回退 HTTP），与 HTTP tracker 混用无感
-- **PEX（BEP 11）**：与对端协商 ut_pex 后互换连接表（added/added.f 紧凑表，
-  每 60s 广播一次），减少对 tracker 的轮询依赖；private 种子自动关闭
-- **引擎**：Piece 内存零拷贝组装、逐件 SHA-1 校验、`.part` 预分配 + gather 直写、
-  断点续传（`.jt-resume`，CRC32 + info-hash 绑定；重启校验三档
-  FULL/SAMPLED/NONE——TB 级镜像建议 SAMPLED）、rarest-first 调度、
-  tit-for-tat choking + 乐观槽、endgame 判定、两级（全局 ∧ 任务）令牌桶限速
-- **互操作**：与 ttorrent 双向互通（下载与做种，阻塞/NIO 双传输），公网 Ubuntu ISO 实测下载
-  （[docs/INTEROP.md](docs/INTEROP.md)）
-- **传输**：可切换双实现——NIO 事件循环（默认开发中）与阻塞参照实现
-  （差分验收与调试工具，`-Djavathunder.transport=nio|blocking`）
-- **观测**：EMA 平滑速率、ETA、availability、tracker/peer/piece/state 全事件回调
-  （专用事件线程，回调异常不影响协议）
+## 协议兼容性
 
-## 性能（回环实测，Windows / JDK 21）
+已验证与 ttorrent 双向互通（下载与做种）、公网真实种子下载（Ubuntu ISO，[INTEROP.md](docs/INTEROP.md)）。
+BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）。
 
-单连接 110 MB/s（≈880Mbps）；真实网络下先撞带宽上限。
-多连接聚合 ~100 MB/s 封顶（引擎单选择器线程内联处理所致，与传输实现无关——
-见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) 的归因与下一层杠杆）。
+## Known Limits
 
-## Known Limits（设计量级，非目标）
-
-- 并发连接 ≤ 1000、单任务 ≤ 200 Peer 的场景；更大规模（DHT 爬虫级）不在当前设计内
-- DHT 为可选模块 `javathunder-dht`（查询模式，注入式接入）；
-  PEX 暂只广播 IPv4 连接表（added6 不支持）
-- 无连接加密（MSE/PE）——非 BEP 标准，明确不实现
-- Windows 上做种期间文件保持 `.part` 名（句柄占用），完成即改名
+- 设计量级：≤1000 并发连接、单任务 ≤200 Peer（DHT 爬虫级非目标）
+- PEX 仅 IPv4；Windows 做种期间文件保持 `.part` 名（句柄占用，完成即改名）
+- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.2.0 vs 0.1.0 = MINOR）
 
 ## 文档
 
-- [**集成手册**](docs/MANUAL.md) · [需求与设计](docs/DESIGN.md) · [路线图/BEP 覆盖](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md)
-- [互操作验收](docs/INTEROP.md) · [术语表](CONTEXT.md) · [ADR](docs/adr/)
-- Apache-2.0
+[**集成手册**](docs/MANUAL.md)（从这里开始） · [设计文档](docs/DESIGN.md) · [路线图](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md) · [互操作](docs/INTEROP.md) · [术语表](CONTEXT.md) · [ADR](docs/adr/)
+
+## 参与贡献
+
+问题与 PR 欢迎。提交规范：conventional commits（`feat:` / `fix:` / `docs:` / `perf:` / `build:`）；每个功能一个提交，测试先行；`mvn verify` 全绿是合并前提（CI 会跑 JDK 21/25 矩阵 + 互操作 + 性能探针）。
+
+## License
+
+[Apache-2.0](LICENSE)
