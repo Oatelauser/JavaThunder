@@ -276,6 +276,8 @@ DownloadTask task = client.download(magnet,
 
 机制（自动完成，无需干预）：连 Peer → 协商扩展协议（BEP 10）→ 从 Peer 拉取种子元数据（BEP 9）→ **SHA-1 与磁力里的哈希比对，不符换源** → 转入正常下载。元数据阶段 `state()==QUEUED`、进度 0，属正常。
 
+元数据获取的容错（同样自动）：tracker announce 按周期重试——单轮全部失败时指数退避（间隔 ×2 逐轮放大、任一 tracker 成功即复位），60 秒总窗口内持续补充 Peer；注入了 `peerDiscovery`（§4.2.3）时 DHT 与 tracker 同时供源、互为备份。窗口内仍拿不到元数据则任务转 FAILED，异常信息含已连接/待试 Peer 数便于定位。
+
 #### 4.2.2 磁力从哪来？——从 .torrent 生成
 
 磁力本质上就是 `info-hash + 可选 tracker 表`。三种获得方式：
@@ -530,6 +532,11 @@ TorrentClient.builder()
 
 不确定就用默认（NIO）；排查传输层问题时切 BLOCKING 对照。
 
+**版本注记（0.3 → 0.4）**：默认传输由 BLOCKING 翻转为 NIO（对齐 ADR-0003 的生产路径
+定位）。对外行为不变（协议、API、限速语义都相同），差异是连接 I/O 的承载形态
+（每 Peer 一线程 → 单事件循环，回环吞吐约 3×）；保持旧行为显式指定
+`.transport(TorrentClient.Transport.BLOCKING)` 或全局 `-Djavathunder.transport=blocking`。
+
 ### 6.4 回调跑在你自己的线程上（如 UI 线程）
 
 **依赖**：仅 core。
@@ -545,7 +552,8 @@ TorrentClient.builder()
 **依赖**：core（test）+ javathunder-tools（test）。完整可抄模板见 tools 模块的
 `LoopbackAcceptanceTest`；三件套 = EmbeddedTracker（传递依赖 tracker 模块提供）
 + TorrentGenerator + FakeSeeder，
-另可用 `-Djavathunder.transport=nio` 让同一测试双传输各跑一遍（差分）。
+另可用 `-Djavathunder.transport=blocking` 让同一测试切到阻塞参照实现各跑一遍（差分；
+默认 NIO 与生产一致）。
 
 ### 6.6 框架接入（Spring Boot 为例）
 
@@ -647,6 +655,9 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
                   ← tracker（内嵌/生产 HTTP tracker）· tools（造种子/测试对端）· cli（示例）
 ```
 
+入口一律走 api：`TorrentClient.create()` / `builder()`（ServiceLoader 自动发现 core 实现，
+无需 import 实现类）。
+
 线程模型：NIO 时一个 selector 平台线程管全部连接 I/O；磁盘与哈希在虚拟线程池；事件回调在独立事件线程。深入读 [DESIGN.md](DESIGN.md)（需求与详设）与 [ADR](adr/)（三份关键决策记录）。
 
 ## 第 9 章 协议兼容（BEP）速查
@@ -666,9 +677,9 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 | 现象 | 原因与处理 |
 |---|---|
 | 完全没速度、peers=0 | 种子里 tracker 失效且未引 DHT（§4.2.3）；或 6881 未放行只影响上传不影响连出 |
-| 磁力任务一直 QUEUED | 没有 tracker 也没注入 peerDiscovery；或当前网络取不到元数据持有者 |
+| 磁力任务一直 QUEUED | 没有 tracker 也没注入 peerDiscovery；有 tracker 但短暂全挂时会自动周期重试（指数退避，60s 总超时，§4.2.1），等不到 Peer 持有元数据则 FAILED |
 | 没有任何日志 | 缺 slf4j 后端（§2.0 第二个依赖） |
-| 速度低于预期 | 先确认带宽/对端；引擎侧再试 `-Djavathunder.transport=nio`（§6.3） |
+| 速度低于预期 | 先确认带宽/对端；引擎默认已是 NIO（§6.3），排查传输层问题时用 `-Djavathunder.transport=blocking` 切参照实现对照 |
 | 重启后从头下载 | `targetDir` 变了，或 `.jt-resume` 被删；续传要求同目录 |
 | Windows 做种时文件叫 `.part` | 已知限制（句柄占用），完成/停止后改名 |
 | IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.2 示例已修正） |

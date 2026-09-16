@@ -68,7 +68,7 @@ api 模块在编译期阻断实现类型进入公共签名（见 ADR-0002）；`
 | 决策 | 理由 | 详见 |
 |---|---|---|
 | JDK 21 编译目标，运行矩阵 21/25/26 | 覆盖当前 LTS 与用户所述部署目标 | — |
-| 虚拟线程 + 阻塞 Socket，每 Peer 一线程 | 数百连接量级下代码最朴素；不引入框架依赖 | ADR-0001 |
+| 手写 NIO 事件循环（Peer I/O）+ 混合线程拓扑（磁盘/校验走虚拟线程） | 零传递依赖下逼近事件驱动性能；Kafka 先例 | ADR-0003 |
 | 运行时依赖仅 `slf4j-api` | 库的依赖是转嫁给使用者的税；Bencode/SHA-1/位图/限速全手写 | — |
 | Maven 多模块 + JSpecify 可空标注 | API 纪律从第一天编译期强制 | ADR-0002 |
 | 0.x 期间 API 可破坏；MVP + API 走查后 1.0 冻结 | 先跑通再承诺 | ROADMAP |
@@ -76,14 +76,20 @@ api 模块在编译期阻断实现类型进入公共签名（见 ADR-0002）；`
 ### 2.3 运行视图：一条下载任务的组件协作
 
 ```
-TorrentClient（门面，持有全局资源：限速器、事件线程、监听端口）
-   └─ DownloadTask（每个种子一个；状态机 + Resume 状态文件）
-        ├─ TrackerClient        HTTP announce，产出候选 Peer 地址
-        ├─ PeerManager          连接池、握手、Bitfield 聚合、choking 决策
-        │    └─ PeerConnection  每个 Peer 一条虚拟线程（阻塞 Socket）
-        ├─ PieceScheduler       rarest-first 选块、请求管线、endgame
-        ├─ StorageManager       预分配、Block 直写、Piece 读回校验
-        └─ EventBus             监听器回调统一投递到事件线程
+TorrentClient（api 门面：create()/builder() 经 ServiceLoader 发现实现，消费者不触实现包）
+   └─ DefaultTorrentClient（实现：全局资源、入站连接按 info-hash 路由、任务槽位）
+        └─ DownloadSession（编排根：生命周期状态机、连接管理、消息分发、
+             piece 流水线协调、上传服务）
+             ├─ TrackerAnnouncer      announce tier 失败转移 + 全败指数退避
+             ├─ TrackerGateway        announce URL 的 HTTP/UDP 路由（与磁力元数据阶段共用）
+             ├─ PexManager            BEP 10/11 对等交换（private 种子禁用）
+             ├─ PieceScheduler        远端位图单源、在途块表、确定性 rarest-first 选件
+             ├─ PieceVerifier         齐件 SHA-1 校验 + gather 落盘（纯函数）
+             ├─ ResumeStore           .jt-resume 持久化与重启采样
+             ├─ SessionStats          计数与 EMA 速率
+             ├─ TaskEventDispatcher   监听回调统一投递到事件线程
+             ├─ PeerSession           单 Peer 会话状态（pending/issued 由其监视器守护）
+             └─ PeerTransport         NioTransport（事件循环，缺省）/ BlockingTransport（参照实现）
 ```
 
 ---
@@ -254,25 +260,28 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 | 5 | bitfield | 位图字节 | 仅允许作为握手后首条消息 |
 | 6 | request | index、begin、length（=16KiB） | 仅在被 unchoke 且已声明 interested 后发送 |
 | 7 | piece | index、begin、数据 | begin+len 不得越界 |
-| 8 | cancel | 同 request | endgame 收到重复块后取消其余请求 |
+| 8 | cancel | 同 request | 引擎目前不发送（无 endgame 重复请求），收到即忽略 |
 
 异常帧（长度前缀越界、piece 越界、未知 ID）→ 断开该 Peer。
 
 ### 5.5 存储层（core.internal.storage）
 
-- **预分配**：任务启动即按 `length` 创建目标文件（`.part` 后缀，完成后改名），Windows 下
-  `setLength` 预留空间，既防中途磁盘不足又减少碎片；
-- **Block 直写**：收到的 Block 直接 `pwrite` 到 `pieceOffset + begin` 的最终偏移——内存占用
-  与 Piece 大小无关（对比"内存攒整 Piece"方案：4MB Piece × 50 Peer 的峰值内存不可控）；
-- **Piece 读回校验**：一个 Piece 的全部 Block 齐后，顺序读回该区间计算 SHA-1 与 `pieces`
-  比对：通过 → 位图置位、`flush`；失败 → 该区间清零重下，并给来源 Peer 记一次坏块
-  （同一 Peer 累计 2 次坏块 → 任务内永久拉黑，防恶意注入）。
+- **暂存与落位**：下载期数据写 `.part`（单文件）或编号暂存目录（多文件），全部 Piece
+  校验通过后 `finish()` 一次性落位为最终文件/目录树；路径穿越防护在种子解析层拒绝；
+- **块网格组装**：收到的 Block 按槽位零拷贝挂入内存网格（16KiB 对齐校验，未请求的块
+  直接丢弃），齐件后顺序喂 SHA-1，通过则 gather 各块缓冲一次落盘——无读回拷贝；
+- **坏件处置**：哈希不符的 Piece 从未落盘，丢弃网格即可重下（无清盘成本），并给来源
+  Peer 记一次坏块（同一 Peer 累计 2 次 → 断开拉黑，防恶意注入）；
+- **组装内存上限**：并发件数 ≤ min(64MB/pieceLength, maxPeers, 64)，内存峰值与
+  Peer 数解耦。
 
 ### 5.6 分片下载引擎
 
-- 请求管线：每 Peer 同时在途 request ≤ 5（16KiB × 5 ≈ 80KB 窗口，虚拟线程阻塞读天然背压）；
-- 流量控制即"固定小窗口 + 停等补充"，不实现 TCP 之外的复杂窗口算法；
-- 上行：被 unchoke 的 Peer 的 request 及时响应 `piece`（做种/互惠上传），受上传限速器约束。
+- 请求管线：每 Peer 同时在途 request ≤ 32（16KiB × 32 = 512KiB 窗口）；
+- 推送模型（ADR-0003）：连接与消息由 `PeerTransport` 回调驱动，磁盘写与校验在虚拟线程
+  worker 上执行——事件循环零阻塞；低水位批量补发摊薄每块唤醒成本；
+- 上行：被 unchoke 的 Peer 的 request 按到达序应答 `piece`（做种/互惠上传），受
+  两级令牌桶限速约束。
 
 ### 5.7 断点续传（`.jt-resume` 状态文件）
 
@@ -290,19 +299,20 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 | … | 8 | lastActiveEpochMs u64 |
 | … | 4 | 全文 CRC32 |
 
-写入时机：每完成一个 Piece + 任务暂停/关闭时。重启流程：`.part` + `.jt-resume` 都存在 →
-先按 `verifyOnRestart` 对位图中已置位的 Piece 重校验（防文件被外部改动），损坏位清零，
-进入 DOWNLOADING 续传；不存在则全量新下。**第三阶段**优化为抽样校验（格式已预留版本号）。
+写入时机：脏标记 + progressLoop ≥2s 降频刷盘（任务暂停/关闭/循环退出兜底即刷），
+写放大与 Piece 数解耦。重启流程：`.part` + `.jt-resume` 都存在 → 按重启校验档位
+（api `RestartVerifyMode`：FULL 全量 / SAMPLED ~10% 抽样+首末件 / NONE 信任位图）
+对已置位 Piece 重校验（防文件被外部改动），损坏位清零，进入 DOWNLOADING 续传；
+不存在则全量新下。
 
 ### 5.8 Piece 调度器
 
-- 统计 availability：聚合所有已连接 Peer 的 Bitfield 得每 Piece 持有数；
-- **首块随机**：任务初期随机选块，尽快凑出可交换的完整 Piece；
-- **rarest-first**：此后在被任一连接 Peer 持有的 Piece 中选持有数最少者（并列随机），
-  维持 Swarm 健康度；
-- **endgame**：当所有未完成 Piece 都已有在途请求时进入终局模式——向所有持有者重复请求
-  缺失 Block，收到一个即对其余发 `cancel`，消除长尾等待；
-- 同一 Peer 内同一时间只调度它持有的 Piece。
+- availability：聚合所有已连接 Peer 的 Bitfield（远端位图以调度器为单源）得每 Piece 持有数；
+- **确定性 rarest-first**：在被该 Peer 持有、本地缺失的 Piece 中选 availability 最小者
+  （严格比较、并列取先遍历到者——无随机相位，行为可复现）；优先未被任何会话占用的
+  空闲件，组装器满员时只允许在途件补块；
+- 校验中的 Piece 从选中器隐藏（verifyingPieces），防本地位图落定前被重复选中；
+- 在途块表（16KiB 粒度）全体 Peer 共享去重，重复投递即丢弃。
 
 ### 5.9 Choking 算法（标准 tit-for-tat）
 
@@ -357,18 +367,21 @@ handshake`（消息 ID 20，子 ID 0）：`m` 字典声明各扩展的消息子 
 - 流程：解析 info-hash（hex/base32）与可选 tracker 列表 → 正常连 Peer（DHT/Tracker 发现）→
   `ut_metadata` 分 16KiB 块请求 info 字典 → 重组后 SHA-1 自校验 = info-hash → 转正常任务流程。
 
-实现要点：`MetadataFetcher` 从 tracker 取 Peer，扩展握手后按对端 `m` 子 ID + `metadata_size`
+实现要点：`MetadataFetcher` 的 announce 与下载会话同源（tier 失败转移 + 全败指数退避，
+周期重试至超时），DHT（`PeerDiscoverySource` 注入）与 tracker 候选统一过滤自连回声；
+扩展握手后按对端 `m` 子 ID + `metadata_size`
 分块请求；data 应答为 bencoded 头 + 原始字节，头部边界由解码器消费量决定（严格 decode 会
 因 trailing data 误拒）。SHA-1 不符丢弃换 Peer，60s 总超时。`MagnetDownloadTask` 两段式：
 元数据期映射 QUEUED/空快照，就绪后经事件线程切换到普通会话（槽位只占元数据阶段，避免与
-会话槽双持有死锁）。Peer 发现当前仅 tracker（DHT 阶段 2 接入）。
+会话槽双持有死锁）。Peer 发现为 tracker + DHT（`builder().peerDiscovery(...)` 注入，
+private 种子除外）。
 
 ### 6.3 DHT（BEP 5，Kademlia）
 
 - 独立模块 `javathunder-dht`（core 的可选依赖）：160-bit ID 空间、K-bucket 路由表（K=8）、
   KRPC over UDP（`ping` / `find_node` / `get_peers` / `announce_peer`，bencoded 字典报文）；
 - bootstrap：`router.bittorrent.com:6881` 等公共节点 + 种子内 `nodes` 字段；
-- 集成点：DHT 是 Peer 来源之一，产出的地址进 PeerManager 候选池，与 Tracker 来源合并；
+- 集成点：DHT 是 Peer 来源之一，产出的地址进会话候选队列，与 Tracker 来源合并；
 - **`private` 种子（BEP 27）强制禁用 DHT 与 PEX**。
 
 ### 6.4 PEX（BEP 11）

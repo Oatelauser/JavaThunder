@@ -5,6 +5,7 @@ import io.github.oatelauser.thunder.core.internal.tracker.AnnounceResponse;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerException;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerGateway;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,6 +19,8 @@ import java.util.function.LongSupplier;
  * reason）转移同一 tier 的下一个 URL 及后续 tier；任一 tracker 成功即返回并复位
  * 退避。全部 tracker 失败时指数退避——interval×2^k，上限 30 分钟，成功一次即复位。
  * 应答中的 peer 全部交给候选队列（去重由候选消费方负责）。
+ *
+ * <p>dispatcher 可为 null：磁力元数据阶段没有任务监听面，事件只落日志。
  */
 final class TrackerAnnouncer {
 
@@ -30,6 +33,7 @@ final class TrackerAnnouncer {
     private final int listenPort;
     private final List<List<String>> tiers;
     private final TrackerGateway gateway;
+    @Nullable
     private final TaskEventDispatcher dispatcher;
     private final LongSupplier remainingBytes;
     private final Consumer<InetSocketAddress> candidateSink;
@@ -43,9 +47,9 @@ final class TrackerAnnouncer {
     private volatile int backoffSeconds;
 
     TrackerAnnouncer(byte[] infoHash, byte[] peerId, int listenPort, List<List<String>> tiers,
-            TrackerGateway gateway, TaskEventDispatcher dispatcher, LongSupplier remainingBytes,
-            Consumer<InetSocketAddress> candidateSink, LongSupplier uploadedSupplier,
-            LongSupplier downloadedSupplier) {
+            TrackerGateway gateway, @Nullable TaskEventDispatcher dispatcher,
+            LongSupplier remainingBytes, Consumer<InetSocketAddress> candidateSink,
+            LongSupplier uploadedSupplier, LongSupplier downloadedSupplier) {
         this.infoHash = infoHash.clone();
         this.peerId = peerId.clone();
         this.listenPort = listenPort;
@@ -73,20 +77,26 @@ final class TrackerAnnouncer {
                     AnnounceResponse response = gateway.announce(url, request);
                     if (response.failureReason() != null) {
                         log.warn("tracker {} rejected announce: {}", url, response.failureReason());
-                        dispatcher.trackerAnnounce(url, response.failureReason(), 0, 0);
+                        if (dispatcher != null) {
+                            dispatcher.trackerAnnounce(url, response.failureReason(), 0, 0);
+                        }
                         continue;
                     }
                     intervalSeconds = response.interval();
                     for (InetSocketAddress peer : response.peers()) {
                         candidateSink.accept(peer);
                     }
-                    dispatcher.trackerAnnounce(url, null, response.seeders(), response.leechers());
+                    if (dispatcher != null) {
+                        dispatcher.trackerAnnounce(url, null, response.seeders(), response.leechers());
+                    }
                     anySuccess = true;
                     backoffSeconds = 0; // 成功即复位
                     return;
                 } catch (TrackerException e) {
                     log.debug("tracker {} failed: {}", url, e.getMessage());
-                    dispatcher.trackerAnnounce(url, e.getMessage(), 0, 0);
+                    if (dispatcher != null) {
+                        dispatcher.trackerAnnounce(url, e.getMessage(), 0, 0);
+                    }
                 }
             }
         }

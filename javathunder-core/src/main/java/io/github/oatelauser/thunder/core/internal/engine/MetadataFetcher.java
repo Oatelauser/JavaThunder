@@ -6,15 +6,12 @@ import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
-import io.github.oatelauser.thunder.core.internal.tracker.AnnounceRequest;
-import io.github.oatelauser.thunder.core.internal.tracker.AnnounceResponse;
-import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
-import io.github.oatelauser.thunder.core.internal.tracker.TrackerException;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerGateway;
 import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
@@ -44,6 +41,9 @@ import java.util.concurrent.LinkedBlockingQueue;
  * 声明 ut_metadata）→ 对端回自己的扩展握手（含 metadata_size 与它的 ut_metadata 子 ID）
  * → 按 16KiB 分块请求 {@code {msg_type:0, piece:n}} → 重组 info 字典 →
  * SHA-1 必须等于磁力的 info-hash（防错元数据）→ 交给正常下载会话。
+ *
+ * <p>announce 走 {@link TrackerAnnouncer}（与下载会话同源的 tier 失败转移 +
+ * 全败指数退避；无监听面），候选入队过滤自连回声（{@link PeerAddresses}）。
  */
 public final class MetadataFetcher {
 
@@ -56,7 +56,7 @@ public final class MetadataFetcher {
     private final byte[] peerId;
     private final List<String> trackers;
     private final PeerTransport transport;
-    private final TrackerGateway trackerGateway;
+    private final TrackerAnnouncer announcer;
     private final int listenPort;
     private final CompletableFuture<byte[]> result = new CompletableFuture<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
@@ -70,29 +70,60 @@ public final class MetadataFetcher {
         this.infoHash = infoHash.clone();
         this.trackers = List.copyOf(trackers);
         this.transport = transport;
-        this.trackerGateway = new TrackerGateway(trackerClient, udpTracker);
+        this.peerId = PeerIds.generate();
+        // 磁力阶段无已传输量/剩余量概念（元数据大小未知）：uploaded/downloaded/left 恒 0；
+        // peer id 与线协议握手同一份（BEP 20 身份一致）
+        this.announcer = new TrackerAnnouncer(infoHash, peerId, listenPort,
+                List.of(List.copyOf(trackers)), new TrackerGateway(trackerClient, udpTracker),
+                null, () -> 0L, this::offerCandidate, () -> 0L, () -> 0L);
         this.listenPort = listenPort;
         this.discovery = discovery;
-        this.peerId = PeerIds.generate();
     }
 
     @Nullable
     private final PeerDiscoverySource discovery;
 
     /**
-     * 异步拉取，完成后给出 info 字典的原始字节。
+     * 异步拉取，完成后给出 info 字典的原始字节。announce 周期循环与连接循环
+     * 各占一条虚拟线程：announce 持续补给候选，连接循环消费直到成功或超时。
      */
     public CompletableFuture<byte[]> fetch() {
+        Thread.ofVirtual().name("javathunder-metadata-announce").start(() -> {
+            try {
+                announceLoop();
+            } catch (Throwable t) {
+                result.completeExceptionally(t);
+            }
+        });
         Thread.ofVirtual().name("javathunder-metadata").start(() -> {
             try {
-                announceTrackers();
-                discoverPeers(); // DHT 等去中心化来源（磁力无 tracker 时的主通道）
                 connectLoop();
             } catch (Throwable t) {
                 result.completeExceptionally(t);
             }
         });
         return result.whenComplete((ignored, error) -> finished.countDown());
+    }
+
+    /**
+     * announce 周期循环（与下载会话的 trackerLoop 同构）：首轮 STARTED、之后按
+     * tracker 应答 interval 周期 NONE；tier 失败转移与全败指数退避由
+     * {@link TrackerAnnouncer} 承担。每拍顺带补充 DHT 等去中心化候选
+     * （磁力无 tracker 时的主通道）。
+     */
+    private void announceLoop() {
+        long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
+        boolean first = true;
+        while (!result.isDone() && System.currentTimeMillis() < deadline) {
+            if (!trackers.isEmpty()) {
+                announcer.announce(first ? TrackerEvent.STARTED : TrackerEvent.NONE);
+            }
+            first = false;
+            discoverPeers();
+            if (sleepMillis(Math.max(2, announcer.intervalSeconds()) * 1000L)) {
+                return;
+            }
+        }
     }
 
     private void discoverPeers() {
@@ -105,23 +136,18 @@ public final class MetadataFetcher {
                 return;
             }
             for (InetSocketAddress peer : peers) {
-                candidates.offer(peer);
+                offerCandidate(peer);
             }
         });
     }
 
-    private void announceTrackers() {
-        AnnounceRequest request = new AnnounceRequest(infoHash, peerId, listenPort,
-                0, 0, 0, TrackerEvent.STARTED, 50);
-        for (String url : trackers) {
-            try {
-                AnnounceResponse response = trackerGateway.announce(url, request);
-                if (response.failureReason() == null) {
-                    response.peers().forEach(candidates::offer);
-                }
-            } catch (TrackerException e) {
-                log.debug("magnet tracker {} failed: {}", url, e.getMessage());
-            }
+    /** 候选入队：过滤自连回声与已连接会话——与下载会话同一判定（{@link PeerAddresses}）。 */
+    private void offerCandidate(InetSocketAddress address) {
+        if (PeerAddresses.isSelfConnection(address, listenPort)) {
+            return; // 我们自己
+        }
+        if (!sessions.containsKey(PeerAddresses.key(address))) {
+            candidates.offer(address);
         }
     }
 
@@ -136,7 +162,7 @@ public final class MetadataFetcher {
             if (sessions.size() >= 8) {
                 continue;
             }
-            String key = address.getAddress().getHostAddress() + ":" + address.getPort();
+            String key = PeerAddresses.key(address);
             if (sessions.containsKey(key)) {
                 continue;
             }
@@ -304,11 +330,14 @@ public final class MetadataFetcher {
         }
     }
 
-    private static void sleepMillis(long millis) {
+    /** @return true = 被中断（调用方据此退出循环）。 */
+    private static boolean sleepMillis(long millis) {
         try {
             Thread.sleep(millis);
+            return false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return true;
         }
     }
 

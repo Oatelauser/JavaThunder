@@ -215,7 +215,7 @@ public final class MultiFileStorage implements TorrentStorage {
         }
     }
 
-    /** 拼接流偏移 scatter 写：一个缓冲可跨多个文件边界。 */
+    /** 拼接流偏移 scatter 写：一个缓冲可跨多个文件边界；0 字节文件无 channel，跳过其零长段。 */
     private void scatterWrite(long streamOffset, List<byte[]> chunks) throws IOException {
         int fileIndex = fileIndexFor(streamOffset);
         long fileOffset = streamOffset - files[fileIndex].offset();
@@ -224,9 +224,11 @@ public final class MultiFileStorage implements TorrentStorage {
             while (chunkOff < chunk.length) {
                 int writable = (int) Math.min(chunk.length - chunkOff,
                     files[fileIndex].length() - fileOffset);
-                channels[fileIndex].write(ByteBuffer.wrap(chunk, chunkOff, writable), fileOffset);
-                fileOffset += writable;
-                chunkOff += writable;
+                if (writable > 0) {
+                    channels[fileIndex].write(ByteBuffer.wrap(chunk, chunkOff, writable), fileOffset);
+                    fileOffset += writable;
+                    chunkOff += writable;
+                }
                 if (fileOffset >= files[fileIndex].length() && chunkOff < chunk.length) {
                     fileIndex++;
                     fileOffset = 0;

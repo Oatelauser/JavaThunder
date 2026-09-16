@@ -8,10 +8,9 @@
      理由：ttorrent 的 TrackerClient 与 core 的 TrackerClient 简单类名冲突，保留一处全路径
 -->
 <suppressions>
-  <!-- 理由: TtorrentInteropTest.refereeAvailable 的 Class.forName("com.turn.ttorrent.client.Client")
-       为字符串字面量探测可选运行时依赖（ttorrent 缺席时须走 ClassNotFoundException 分支而非
-       NoClassDefFoundError，不能换成已 import 类的类字面量）；ttorrent 的 TrackerClient 与
-       core 的 TrackerClient 简单类名冲突经核实不存在，无需其他豁免。期限: 存续至 ttorrent
-       依赖探测方式重构（暂无计划）。 -->
+  <!-- 理由: TtorrentInteropTest 第 42 行 Class.forName("com.turn.ttorrent.client.Client") 为
+       字符串字面量探测可选运行时依赖（ttorrent 缺席时须走 ClassNotFoundException 分支而非
+       NoClassDefFoundError，不能换成已 import 类的类字面量）。期限: 存续至 ttorrent 依赖
+       探测方式重构（暂无计划）。其余历史豁免（三个测试长方法）已随整改消解移除。 -->
   <suppress files="TtorrentInteropTest\.java" checks="RegexpSinglelineJava"/>
 </suppressions>

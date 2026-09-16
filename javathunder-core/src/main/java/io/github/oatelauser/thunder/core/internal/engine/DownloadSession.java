@@ -383,12 +383,12 @@ public final class DownloadSession {
         });
     }
 
+    /** 候选入队：过滤自连回声（tracker/PEX/DHT 把我们自己回给我们）与已连接会话。 */
     private void offerCandidate(InetSocketAddress address) {
-        if (address.getPort() == config.listenPort()
-                && (address.getAddress().isLoopbackAddress() || address.getAddress().isAnyLocalAddress())) {
+        if (PeerAddresses.isSelfConnection(address, config.listenPort())) {
             return; // 我们自己
         }
-        String key = key(address);
+        String key = PeerAddresses.key(address);
         if (!peers.containsKey(key)) {
             candidates.offer(address);
         }
@@ -405,7 +405,7 @@ public final class DownloadSession {
                 }
                 continue;
             }
-            if (peers.size() >= config.maxPeers() || peers.containsKey(key(address))) {
+            if (peers.size() >= config.maxPeers() || peers.containsKey(PeerAddresses.key(address))) {
                 continue;
             }
             transport.connect(address, meta.infoHash(), transportHandler);
@@ -432,7 +432,7 @@ public final class DownloadSession {
             channel.close();
             return;
         }
-        String key = key(channel.remoteAddress());
+        String key = PeerAddresses.key(channel.remoteAddress());
         if (rejectDuplicateLink(channel, key)) {
             return;
         }
@@ -999,10 +999,5 @@ public final class DownloadSession {
             Thread.currentThread().interrupt();
             return true;
         }
-    }
-
-    private static String key(InetSocketAddress address) {
-        return (address.getAddress() != null ? address.getAddress().getHostAddress()
-                : address.getHostString()) + ":" + address.getPort();
     }
 }

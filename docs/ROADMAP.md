@@ -15,9 +15,9 @@
 | BEP 23 | Tracker 紧凑响应 | compact=1 解析 |
 | BEP 27 | 私有种子标记 | 解析并暴露 `private` 标志；阶段 2 起 DHT/PEX 遇此标志强制关闭 |
 
-引擎能力：预分配 + Block 直写最终偏移、SHA-1 逐 Piece 校验、断点续传（`.jt-resume` 状态文件、
-重启重校验）、rarest-first + 首块随机 + endgame 调度、标准 tit-for-tat choking、令牌桶限速
-（全局 + 单任务、上下行独立）。
+引擎能力：块网格内存组装 + gather 落盘（并发件数限流，内存峰值与 Peer 数解耦）、
+SHA-1 逐 Piece 校验、断点续传（`.jt-resume` 状态文件、重启三档重校验 FULL/SAMPLED/NONE）、
+确定性 rarest-first 调度、标准 tit-for-tat choking、令牌桶限速（全局 + 单任务、上下行独立）。
 
 ## 第二阶段（完整模式）
 
