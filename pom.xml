@@ -16,7 +16,8 @@
     <module>javathunder-api</module>
     <module>javathunder-core</module>
     <module>javathunder-dht</module>
-    <module>javathunder-testkit</module>
+    <module>javathunder-tracker</module>
+    <module>javathunder-tools</module>
     <module>javathunder-cli</module>
   </modules>
 
