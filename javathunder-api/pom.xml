@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
   </parent>
 
   <artifactId>javathunder-api</artifactId>
@@ -28,7 +28,7 @@
 
   <build>
     <plugins>
-      <!-- 公共 API 守门员：0.1.0 tag 之后，任何破坏性 API 变更令构建失败 -->
+        <!-- 公共 API 守门员：任何破坏性 API 变更令构建失败（基线始终对上一个发布 tag） -->
       <plugin>
         <groupId>com.github.siom79.japicmp</groupId>
         <artifactId>japicmp-maven-plugin</artifactId>
@@ -38,7 +38,7 @@
             <dependency>
               <groupId>${project.groupId}</groupId>
               <artifactId>${project.artifactId}</artifactId>
-              <version>0.1.0</version><!-- API 基线：始终对上一个发布 tag -->
+              <version>0.2.0</version><!-- API 基线：始终对上一个发布 tag -->
             </dependency>
           </oldVersion>
           <newVersion>

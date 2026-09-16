@@ -4,7 +4,7 @@
 
 *An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
 
-![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.2.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
+![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.3.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
 
 ## 为什么是它
 
@@ -70,7 +70,7 @@ cd JavaThunder && mvn clean install
 <dependency>
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder-core</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
 </dependency>
 <!-- 运行时请自带 slf4j 后端（如 slf4j-simple / logback），否则日志静默 -->
 ```
@@ -100,7 +100,7 @@ BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）�
 
 - 设计量级：≤1000 并发连接、单任务 ≤200 Peer（DHT 爬虫级非目标）
 - PEX 仅 IPv4；Windows 做种期间文件保持 `.part` 名（句柄占用，完成即改名）
-- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.2.0 vs 0.1.0 = MINOR）
+- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.3.0 vs 0.2.0 = PATCH：api 零变更；新公共 API 在 tracker 模块，自 0.3.0 起发布）
 
 ## 文档
 

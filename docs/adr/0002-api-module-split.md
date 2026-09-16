@@ -2,7 +2,7 @@
 
 库定位为第三方依赖，公共 API 的稳定性是一等约束。Maven 多模块切分为
 `javathunder-api`（纯接口与值类型，唯一依赖是 JSpecify 注解）、`javathunder-core`（引擎实现，
-依赖 api）、`javathunder-tracker`（生产级/内嵌 HTTP Tracker，0.2.0 自 testkit 拆出）、
+依赖 api）、`javathunder-tracker`（生产级/内嵌 HTTP Tracker，0.3.0 自 testkit 拆出）、
 `javathunder-tools`（原 testkit：种子生成器、假 Peer，供使用者写集成测试；目录与
 artifactId 已更名，Java 包名保留 `...thunder.testkit` 避免 import 级联改动）、
 `javathunder-cli`（可执行示例）。api 模块在编译期阻断实现类型漏进公共签名——core 若想

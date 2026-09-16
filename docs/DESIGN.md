@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | 0.1（与 0.1.0-SNAPSHOT 对应） |
+| 版本 | 0.3（与 0.3.0 对应） |
 | 日期 | 2026-09-14 |
 | 状态 | 已评审共识稿（grilling 会话产出） |
 | 配套文档 | [CONTEXT.md](../CONTEXT.md)（术语表）· [ROADMAP.md](./ROADMAP.md)（协议覆盖边界）· [ADR-0001](./adr/0001-virtual-threads-over-nio.md) · [ADR-0002](./adr/0002-api-module-split.md) |
@@ -322,7 +322,7 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 
 ### 5.11 tools/tracker 与 CLI（阶段收尾）
 
-- `javathunder-tracker`（0.2.0 自 testkit 拆出）：`EmbeddedTracker`（基于
+- `javathunder-tracker`（0.3.0 自 testkit 拆出）：`EmbeddedTracker`（基于
   `com.sun.net.httpserver`，实现 announce 协议、内存 Peer 表；生产化：固定端口重载、
   Peer 过期清理、stopped 摘除、stats 统计，响应复用 core 的 bencode 编码器）、
   `TrackerServer`（生产外观：0.0.0.0 / 默认 6881 / 1800s）、`TrackerMain`（可执行 jar）；

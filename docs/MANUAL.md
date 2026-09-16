@@ -1,6 +1,6 @@
 # JavaThunder 使用手册
 
-版本：v0.2.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
+版本：v0.3.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
 
 **怎么读这本手册**：第 1 章建立正确的心智模型（角色、上传下载的真实关系、"机器越多越快"的原理）；第 2 章是完整可运行的快速入门；第 3 章回答"什么时候引哪个包"；**第 4 章下载场景 / 第 5 章上传与分发场景**按你的意图二选一进入；第 6 章两类共用；第 7–11 章是速查与排错。
 
@@ -107,7 +107,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
     <dependency>
         <groupId>io.github.oatelauser</groupId>
         <artifactId>javathunder-core</artifactId>
-        <version>0.2.0</version>
+        <version>0.3.0</version>
     </dependency>
     <!-- 日志后端：本库只依赖 slf4j-api，不带后端会静默无日志。示例用 simple，生产换 logback -->
     <dependency>
@@ -118,9 +118,9 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 </dependencies>
 ```
 
-> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.2.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.3.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
 > ```bash
-> java -cp javathunder-core-0.2.0-with-dependencies.jar QuickStart.java
+> java -cp javathunder-core-0.3.0-with-dependencies.jar QuickStart.java
 > ```
 > 不带分类器的主 jar 保持瘦 jar 供构建工具做依赖解析——不要把 fat jar 当依赖引入。
 
@@ -134,7 +134,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-tools</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -327,7 +327,7 @@ public class Magnet {
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-dht</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -413,7 +413,7 @@ task.future().join();                      // future 完成 ≠ 做种结束
 
 **5.1.2 我要做"原始种子源"**（内网分发的第一台机器）：先用 5.2 造种子 → 在源机器上以 `seedAfterComplete` 跑一次完整下载 → 保持进程在线，它就是 Seed。之后每台目标机器下载完成也会自动成为种子源（§1.5 的供给增长）。
 
-**5.1.3 从本地已有文件直接做种**：0.2.0 的推荐路径是"完整下载一次后转做种"；跳过下载直接对已有数据做种属高级用法——预填 `.part` 与 `.jt-resume` 状态文件（格式见 DESIGN §5.7，参考测试 `RestartVerifyModeTest` 里的预填代码）。公共 API 化的"导入已有文件"在路线图中。
+**5.1.3 从本地已有文件直接做种**：0.3.0 的推荐路径是"完整下载一次后转做种"；跳过下载直接对已有数据做种属高级用法——预填 `.part` 与 `.jt-resume` 状态文件（格式见 DESIGN §5.7，参考测试 `RestartVerifyModeTest` 里的预填代码）。公共 API 化的"导入已有文件"在路线图中。
 
 ### 5.2 生成种子（分发的第一步）
 
