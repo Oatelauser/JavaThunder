@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  独立示例项目：parent 不指向 JavaThunder 根 pom，也不在主 reactor 的 <modules> 里。
+  先在主仓库根目录执行一次：
+      mvn -B -ntp -pl javathunder-tools -am install -DskipTests
+  （会一并安装 api / core / tracker / tools 到本地仓库；demo profile 需要 tools）
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.4</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.example</groupId>
+  <artifactId>javathunder-spring-boot-example</artifactId>
+  <version>0.2.0</version>
+  <name>JavaThunder :: Spring Boot Example</name>
+  <description>Spring Boot integration example: TorrentClient as a singleton bean, REST + SSE progress exposure, graceful shutdown.</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <javathunder.version>0.2.0</javathunder.version>
+  </properties>
+
+  <dependencies>
+    <!-- BitTorrent 引擎（传递引入 javathunder-api）。日志后端由 spring-boot-starter 提供（logback） -->
+    <dependency>
+      <groupId>io.github.oatelauser</groupId>
+      <artifactId>javathunder-core</artifactId>
+      <version>${javathunder.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- 仅 demo profile 使用：造种子 + 假 seeder + 内嵌 tracker（传递引入 javathunder-tracker）。
+         生产集成不需要它，也不需要内嵌 tracker——生产 tracker 是独立进程（TrackerMain 可执行 jar）。 -->
+    <dependency>
+      <groupId>io.github.oatelauser</groupId>
+      <artifactId>javathunder-tools</artifactId>
+      <version>${javathunder.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

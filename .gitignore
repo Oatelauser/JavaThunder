@@ -9,3 +9,5 @@ target/
 dependency-reduced-pom.xml
 *.log
 .DS_Store
+# examples/spring-boot demo profile 运行时产物（种子/内容/下载输出）
+examples/spring-boot/demo/

@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: javathunder-spring-boot-example
+
+server:
+  port: 8080
+
+javathunder:
+  # BitTorrent 入站监听端口（对等节点连进来拿分片；放行可提升互惠上传，见 MANUAL 第 10 章）
+  listen-port: 6881
+  # 全局并发任务槽（排队任务 state=QUEUED）
+  max-concurrent-tasks: 3
