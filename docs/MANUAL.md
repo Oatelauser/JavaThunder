@@ -411,9 +411,24 @@ task.future().join();                      // future 完成 ≠ 做种结束
 // task.state() == TaskState.SEEDING；想停：task.cancel(false) 或 client.close()
 ```
 
-**5.1.2 我要做"原始种子源"**（内网分发的第一台机器）：先用 5.2 造种子 → 在源机器上以 `seedAfterComplete` 跑一次完整下载 → 保持进程在线，它就是 Seed。之后每台目标机器下载完成也会自动成为种子源（§1.5 的供给增长）。
+**5.1.2 我要做"原始种子源"**（内网分发的第一台机器）：先用 5.2 造种子 → 数据已在源机器上就直接 **5.1.3 的 `seed()`**（免下载）；数据在别处则下载一次（`seedAfterComplete`）→ 保持进程在线，它就是 Seed。之后每台目标机器下载完成也会自动成为种子源（§1.5 的供给增长）。
 
-**5.1.3 从本地已有文件直接做种**：0.3.0 的推荐路径是"完整下载一次后转做种"；跳过下载直接对已有数据做种属高级用法——预填 `.part` 与 `.jt-resume` 状态文件（格式见 DESIGN §5.7，参考测试 `RestartVerifyModeTest` 里的预填代码）。公共 API 化的"导入已有文件"在路线图中。
+**5.1.3 从本地已有文件直接做种**（G2 新增，镜像源机器免下载）：
+
+```java
+// 数据已在 dataDir（单文件找 dataDir/<name>；多文件找 dataDir/<name>/目录树）
+DownloadTask task = client.seed(
+    Path.of("model-x.torrent"),
+    SeedOptions.defaults()
+        .dataDir(Path.of("/data"))
+        .uploadLimitBytesPerSecond(10 * 1024 * 1024));  // 可选：↑10MB/s
+
+// 行为：VERIFYING（对已有数据全量 SHA-1 校验）→ 全过即 SEEDING，开始供种
+//      任一件校验失败 → FAILED（提示改用 download() 让引擎只补缺件）
+//      future() 不会完成（做种持续）；停止用 cancel(false) 或 client.close()
+```
+
+适合内网分发第一台机器：造种子（§5.2）→ 对已有数据 `seed()` → 在线即是种子源，**省掉"先完整下载一次"**。
 
 ### 5.2 生成种子（分发的第一步）
 
@@ -458,7 +473,7 @@ var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of
           │                                                                    │
  源机器 seed-01                       目标机器 ×N（同一份种子文件）              │
  ┌─────────────────────┐             ┌─────────────────────┐                   │
- │ 造种子(5.2) + 下载转 │   ② 发现面 │ download +           │ ◀─────────────────┘
+ │ 造种子(5.2) + seed   │   ② 发现面 │ download +           │ ◀─────────────────┘
  │ 做种(5.1.2) 持续在线 │◀──tracker──▶│ seedAfterComplete    │
  └─────────────────────┘  (或 DHT)   └──────────┬──────────┘
         ▲                                        │ ③ 数据面：N 台目标
@@ -624,9 +639,10 @@ snapshot 轮询 + 事件推送、关闭时收尾这四件事完全相同（SSE �
 
 | 类/接口 | 常用成员 | 一句话 |
 |---|---|---|
-| `TorrentClient` | `download(Path/MagnetUri, options)` `close()` | 门面 |
+| `TorrentClient` | `download(Path/MagnetUri, options)` `seed(torrent, SeedOptions)` `close()` | 门面 |
 | `DownloadTask` | `future()` `state()` `snapshot()` `pause()` `resume()` `cancel(boolean)` `addListener(...)` | 任务句柄 |
 | `DownloadOptions` | `defaults()` `targetDir()` `rateLimits()` `restartVerify()` | 单任务配置 |
+| `SeedOptions` | `defaults()` `dataDir()` `uploadLimitBytesPerSecond()` | 纯做种配置（配合 `client.seed()`） |
 | `MagnetUri` | `parse(String)` | 磁力解析 |
 | `TaskListener` | onStateChanged/onProgress/onPieceComplete/onTrackerAnnounce/onPeerConnected/onPeerDisconnected/onError | 事件 |
 | `ProgressSnapshot` | fraction(字节级)/rates/connectedPeers/availability/etaMillis | 快照 |
