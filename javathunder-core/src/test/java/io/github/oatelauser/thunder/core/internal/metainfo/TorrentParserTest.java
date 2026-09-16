@@ -10,9 +10,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -99,7 +99,7 @@ class TorrentParserTest {
             buf.flip();
             buf.get(raw);
 
-            assertArrayEquals(sha1(java.util.Arrays.copyOfRange(raw, infoStart, infoEnd)),
+            assertArrayEquals(sha1(Arrays.copyOfRange(raw, infoStart, infoEnd)),
                 TorrentParser.parse(raw).infoHash());
         }
 

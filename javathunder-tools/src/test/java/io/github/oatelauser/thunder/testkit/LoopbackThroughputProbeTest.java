@@ -4,7 +4,7 @@ import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Tag;
@@ -66,8 +66,8 @@ class LoopbackThroughputProbeTest {
             TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(generated.torrentFile()));
             try (NioSeeder seeder = NioSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select()).build()) {
                     t = System.nanoTime();
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));

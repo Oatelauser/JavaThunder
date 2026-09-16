@@ -1,5 +1,7 @@
 package io.github.oatelauser.thunder.core.internal.peer.transport;
 
+import java.net.InetSocketAddress;
+
 /**
  * Peer 连接传输层（ADR-0003）。两种实现：
  * {@link BlockingTransport}（每连接一虚拟线程的参照实现）与 NIO 事件循环实现（C2）。
@@ -17,7 +19,7 @@ public interface PeerTransport extends AutoCloseable {
     int listen(int preferredPort, HandshakeRouter router);
 
     /** 发起出站连接（含握手，目标 info-hash 按连接传入——一个 transport 服务多个会话）。 */
-    void connect(java.net.InetSocketAddress address, byte[] infoHash, TransportHandler handler);
+    void connect(InetSocketAddress address, byte[] infoHash, TransportHandler handler);
 
     /** 已绑定的监听端口；未监听返回 -1。 */
     int listeningPort();

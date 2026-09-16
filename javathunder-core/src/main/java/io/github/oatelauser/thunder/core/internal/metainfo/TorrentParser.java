@@ -7,6 +7,8 @@ import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 
+import org.jspecify.annotations.Nullable;
+
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -32,12 +34,20 @@ public final class TorrentParser {
         return build(scanned);
     }
 
+    /** 从 .torrent 原始字节切出 info 字典的原始字节区间（ut_metadata 供元数据用；纯定位，不做 announce 等业务校验）。 */
+    public static byte[] extractInfoDict(byte[] bytes) {
+        if (bytes.length > Bencode.MAX_INPUT_BYTES) {
+            throw new IllegalArgumentException("torrent exceeds input limit: " + bytes.length);
+        }
+        return scan(bytes).infoRawBytes();
+    }
+
     private record Scanned(
-        @org.jspecify.annotations.Nullable String announce,
+        @Nullable String announce,
         List<List<String>> announceList,
-        @org.jspecify.annotations.Nullable String comment,
-        @org.jspecify.annotations.Nullable String createdBy,
-        @org.jspecify.annotations.Nullable Long creationDateSec,
+        @Nullable String comment,
+        @Nullable String createdBy,
+        @Nullable Long creationDateSec,
         BDict info,
         byte[] infoRawBytes) {
     }
@@ -47,14 +57,20 @@ public final class TorrentParser {
         if (!buf.hasRemaining() || (buf.get() & 0xFF) != 'd') {
             throw new IllegalArgumentException("top level must be a bencoded dict");
         }
-        String announce = null;
-        List<List<String>> announceList = List.of();
-        String comment = null;
-        String createdBy = null;
-        Long creationDateSec = null;
-        BDict info = null;
-        int infoStart = -1;
-        int infoEnd = -1;
+        TopLevel top = scanTopLevel(buf);
+        if (buf.hasRemaining()) {
+            throw new IllegalArgumentException("trailing data after top-level dict");
+        }
+        if (top.info == null || top.infoStart < 0) {
+            throw new IllegalArgumentException("missing info dict");
+        }
+        return new Scanned(top.announce, top.announceList, top.comment, top.createdBy,
+                top.creationDateSec, top.info, sliceInfoRaw(buf, top));
+    }
+
+    /** 逐条扫描顶层字典直到 'e'；info 值记录原始字节边界（info-hash 语义，见类注释）。 */
+    private static TopLevel scanTopLevel(ByteBuffer buf) {
+        TopLevel top = new TopLevel();
         while (true) {
             if (!buf.hasRemaining()) {
                 throw new IllegalArgumentException("top-level dict not terminated");
@@ -62,63 +78,69 @@ public final class TorrentParser {
             int tag = buf.get(buf.position()) & 0xFF;
             if (tag == 'e') {
                 buf.get();
-                break;
+                return top;
             }
             if (tag < '0' || tag > '9') {
                 throw new IllegalArgumentException("top-level key must be a byte string");
             }
-            BencodeValue keyValue = Bencode.decodeValue(buf);
-            String key = ((BString) keyValue).text();
+            String key = ((BString) Bencode.decodeValue(buf)).text();
             if ("info".equals(key)) {
-                infoStart = buf.position();
-                BencodeValue value = Bencode.decodeValue(buf);
-                infoEnd = buf.position();
-                if (!(value instanceof BDict infoDict)) {
-                    throw new IllegalArgumentException("info must be a dict");
-                }
-                info = infoDict;
+                readInfo(buf, top);
             } else {
-                BencodeValue value = Bencode.decodeValue(buf);
-                switch (key) {
-                    case "announce" -> announce = asString(value, "announce");
-                    case "announce-list" -> announceList = asTiers(value);
-                    case "comment" -> comment = asString(value, "comment");
-                    case "created by" -> createdBy = asString(value, "created by");
-                    case "creation date" -> creationDateSec = asInteger(value, "creation date").value();
-                    default -> {
-                    }
-                }
+                readTopLevelField(key, Bencode.decodeValue(buf), top);
             }
         }
-        if (buf.hasRemaining()) {
-            throw new IllegalArgumentException("trailing data after top-level dict");
+    }
+
+    /** 解析 info 值并记录其原始字节区间 [infoStart, infoEnd)。 */
+    private static void readInfo(ByteBuffer buf, TopLevel top) {
+        top.infoStart = buf.position();
+        BencodeValue value = Bencode.decodeValue(buf);
+        top.infoEnd = buf.position();
+        if (!(value instanceof BDict infoDict)) {
+            throw new IllegalArgumentException("info must be a dict");
         }
-        if (info == null || infoStart < 0) {
-            throw new IllegalArgumentException("missing info dict");
+        top.info = infoDict;
+    }
+
+    /** 顶层已知字段分发；未知键静默跳过（前向兼容未知扩展）。 */
+    private static void readTopLevelField(String key, BencodeValue value, TopLevel top) {
+        switch (key) {
+            case "announce" -> top.announce = asString(value, "announce");
+            case "announce-list" -> top.announceList = asTiers(value);
+            case "comment" -> top.comment = asString(value, "comment");
+            case "created by" -> top.createdBy = asString(value, "created by");
+            case "creation date" -> top.creationDateSec = asInteger(value, "creation date").value();
+            default -> {
+            }
         }
-        byte[] infoRaw = new byte[infoEnd - infoStart];
-        buf.position(infoStart);
+    }
+
+    /** 回退 position 从原始字节切出 info 字典区间（纯读取，不影响已完成的扫描）。 */
+    private static byte[] sliceInfoRaw(ByteBuffer buf, TopLevel top) {
+        byte[] infoRaw = new byte[top.infoEnd - top.infoStart];
+        buf.position(top.infoStart);
         buf.get(infoRaw);
-        return new Scanned(announce, announceList, comment, createdBy, creationDateSec, info, infoRaw);
+        return infoRaw;
+    }
+
+    /** 顶层字典扫描的累积结果：announce 等已知字段 + info 值与其字节边界。 */
+    private static final class TopLevel {
+        @Nullable String announce;
+        List<List<String>> announceList = List.of();
+        @Nullable String comment;
+        @Nullable String createdBy;
+        @Nullable Long creationDateSec;
+        @Nullable BDict info;
+        int infoStart = -1;
+        int infoEnd = -1;
     }
 
     /** 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。 */
     public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoHash, List<String> trackers) {
-        java.util.Map<BString, BencodeValue> top = new java.util.TreeMap<>(BString.UNSIGNED_ORDER);
-        if (!trackers.isEmpty()) {
-            top.put(BString.of("announce"), BString.of(trackers.get(0)));
-            if (trackers.size() > 1) {
-                java.util.List<BencodeValue> tier = new java.util.ArrayList<>();
-                for (String url : trackers) {
-                    tier.add(BString.of(url));
-                }
-                top.put(BString.of("announce-list"), new BList(java.util.List.of(new BList(tier))));
-            }
-        }
-        top.put(BString.of("info"), info);
-        java.util.List<java.util.List<String>> tiers = trackers.isEmpty()
-            ? java.util.List.of()
-            : java.util.List.of(java.util.List.copyOf(trackers));
+        List<List<String>> tiers = trackers.isEmpty()
+            ? List.of()
+            : List.of(List.copyOf(trackers));
         Scanned scanned = new Scanned(
             trackers.isEmpty() ? null : trackers.get(0),
             tiers,

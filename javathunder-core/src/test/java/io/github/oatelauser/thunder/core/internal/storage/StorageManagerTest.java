@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -97,7 +98,7 @@ class StorageManagerTest {
             byte[] written = new byte[64];
             try (FileChannel channel = FileChannel.open(part, StandardOpenOption.READ)) {
                 channel.position(PIECE_LENGTH + 128);
-                channel.read(java.nio.ByteBuffer.wrap(written));
+                channel.read(ByteBuffer.wrap(written));
             }
             assertArrayEquals(block, written);
         }

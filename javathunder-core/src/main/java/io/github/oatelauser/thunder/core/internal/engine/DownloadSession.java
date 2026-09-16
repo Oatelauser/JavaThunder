@@ -1,35 +1,77 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
-import io.github.oatelauser.thunder.api.*;
-import io.github.oatelauser.thunder.core.internal.bencode.*;
+import io.github.oatelauser.thunder.api.DownloadOptions;
+import io.github.oatelauser.thunder.api.DownloadResult;
+import io.github.oatelauser.thunder.api.PeerDiscoverySource;
+import io.github.oatelauser.thunder.api.ProgressSnapshot;
+import io.github.oatelauser.thunder.api.TaskListener;
+import io.github.oatelauser.thunder.api.TaskState;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
 import io.github.oatelauser.thunder.core.internal.ratelimit.RateLimiter;
-import io.github.oatelauser.thunder.core.internal.storage.*;
-import io.github.oatelauser.thunder.core.internal.tracker.*;
-import io.github.oatelauser.thunder.core.internal.wire.*;
+import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
+import io.github.oatelauser.thunder.core.internal.storage.MultiFileStorage;
+import io.github.oatelauser.thunder.core.internal.storage.ResumeState;
+import io.github.oatelauser.thunder.core.internal.storage.ResumeStore;
+import io.github.oatelauser.thunder.core.internal.storage.StorageManager;
+import io.github.oatelauser.thunder.core.internal.storage.TorrentStorage;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerGateway;
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
+import io.github.oatelauser.thunder.core.internal.wire.BitfieldMessage;
+import io.github.oatelauser.thunder.core.internal.wire.Cancel;
+import io.github.oatelauser.thunder.core.internal.wire.Choke;
+import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
+import io.github.oatelauser.thunder.core.internal.wire.Have;
+import io.github.oatelauser.thunder.core.internal.wire.HaveAll;
+import io.github.oatelauser.thunder.core.internal.wire.HaveNone;
+import io.github.oatelauser.thunder.core.internal.wire.Interested;
+import io.github.oatelauser.thunder.core.internal.wire.KeepAlive;
+import io.github.oatelauser.thunder.core.internal.wire.NotInterested;
+import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
+import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
+import io.github.oatelauser.thunder.core.internal.wire.RejectRequest;
+import io.github.oatelauser.thunder.core.internal.wire.Request;
+import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
+import io.github.oatelauser.thunder.core.internal.wire.UnsupportedMessage;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 单个种子的下载会话（推送模型，ADR-0003）：连接与消息由 {@link PeerTransport} 回调驱动，
- * 磁盘写与校验在虚拟线程 worker 上执行（Selector 线程零阻塞的前提）。
+ * 单下载会话的编排根（推送模型，ADR-0003）：连接与消息由 {@link PeerTransport} 回调驱动，
+ * 磁盘写与校验在虚拟线程 worker 上执行（Selector 线程零阻塞的前提）。持有生命周期
+ * 状态机、连接管理、消息分发、piece 流水线协调与上传服务。
+ *
+ * <p>协作者：{@link TaskEventDispatcher}——监听事件扇出（固定事件执行器，单监听器
+ * 异常不扩散）；{@link TrackerAnnouncer}——announce 的 tier 失败转移与全败指数退避；
+ * {@link TrackerGateway}——announce URL 的 HTTP/UDP 路由 seam；{@link PexManager}——
+ * BEP 10/11 对等交换（BEP 27 私有种子禁用）；{@link ResumeStore}——断点持久化与
+ * 降频刷盘；{@link PieceVerifier}——齐件 SHA-1 校验与落盘；{@link SessionStats}——
+ * 计数与 EMA 速率；{@link PieceScheduler}——远端位图单源 / 在途表 / 生产选件；
+ * {@link ChokingManager}——tit-for-tat unchoke 决策。
  */
 public final class DownloadSession {
 
@@ -37,28 +79,12 @@ public final class DownloadSession {
 
     private static final int PIPELINE_DEPTH = 32;
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
-    /**
-     * BEP 11：我们侧 ut_pex 子 ID（对端用协商值发给我们，我们统一用 2）。
-     */
-    private static final int UT_PEX_ID = 2;
 
     public record SessionConfig(int maxPeers, int listenPort,
                                 RateLimiter globalDownload, RateLimiter globalUpload,
                                 @Nullable
                                 PeerDiscoverySource discovery,
                                 @Nullable UdpTrackerClient udpTracker) {
-
-        @Deprecated
-        public SessionConfig(int maxPeers, int listenPort, RateLimiter globalDownload,
-                RateLimiter globalUpload) {
-            this(maxPeers, listenPort, globalDownload, globalUpload, null, null);
-        }
-
-        @Deprecated
-        public SessionConfig(int maxPeers, int listenPort, RateLimiter globalDownload,
-                RateLimiter globalUpload, @Nullable PeerDiscoverySource discovery) {
-            this(maxPeers, listenPort, globalDownload, globalUpload, discovery, null);
-        }
     }
 
     private final TorrentMetadata meta;
@@ -70,9 +96,7 @@ public final class DownloadSession {
     private final RateLimiter taskDownloadLimit;
     private final RateLimiter taskUploadLimit;
     private final PeerTransport transport;
-    private final TrackerClient trackerClient;
     private final byte[] peerId;
-    private final Executor eventExecutor;
     private final TorrentStorage storage;
     private final Path resumeFile;
     private final PieceScheduler scheduler;
@@ -83,7 +107,12 @@ public final class DownloadSession {
 
     private final Bitfield local;
     private final CompletableFuture<DownloadResult> future = new CompletableFuture<>();
-    private final CopyOnWriteArrayList<TaskListener> listeners = new CopyOnWriteArrayList<>();
+    private final TaskEventDispatcher dispatcher;
+    private final SessionStats stats;
+    private final ResumeStore store;
+    private final TrackerGateway gateway;
+    private final TrackerAnnouncer announcer;
+    private final PexManager pex;
     private final ConcurrentHashMap<String, PeerSession> peers = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, Integer> badPiecesByPeer = new ConcurrentHashMap<>();
@@ -97,24 +126,11 @@ public final class DownloadSession {
      * 组装器内存上限：min(64MB/pieceLength, maxPeers, 64) 个并发件。
      */
     private final int maxActivePieces;
-    private final AtomicLong downloaded = new AtomicLong();
-    private final AtomicLong uploaded = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean(false);
-    /**
-     * resume 降频：脏标记 + progressLoop ≤2s 刷一次（原每件一写，512 件/128MB → 数量级减少）。
-     */
-    private final AtomicBoolean resumeDirty = new AtomicBoolean(false);
 
     private volatile TaskState state = TaskState.QUEUED;
     /** pause() 前的活跃态（DOWNLOADING/SEEDING）：resume() 回原态——做种暂停后恢复仍是做种。 */
     private TaskState pausedFrom;
-    private volatile int announceIntervalSeconds = 5;
-    /**
-     * 全部 tracker 失败后的指数退避基数（秒）；成功 announce 复位为 0。
-     */
-    private volatile int announceBackoffSeconds;
-    private volatile long downloadRate;
-    private volatile long uploadRate;
 
     public DownloadSession(TorrentMetadata meta, DownloadOptions options,
             SessionConfig config, PeerTransport transport, TrackerClient trackerClient,
@@ -133,15 +149,13 @@ public final class DownloadSession {
         this.options = options;
         this.config = config;
         this.transport = transport;
-        this.trackerClient = trackerClient;
-        this.eventExecutor = eventExecutor;
         this.peerId = peerId.clone();
         this.storage = meta.multiFile()
                 ? new MultiFileStorage(meta, options.targetDir(), seedOnly)
                 : new StorageManager(meta, options.targetDir(), seedOnly);
         this.resumeFile = storage.partFile().resolveSibling(meta.name() + ".jt-resume");
         this.local = new Bitfield(meta.pieceCount());
-        this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length(), random);
+        this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length());
         this.choking = new ChokingManager(random);
         this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
                 64L * 1024 * 1024 / Math.max(1, meta.pieceLength())));
@@ -149,6 +163,15 @@ public final class DownloadSession {
                 ? new RateLimiter(options.downloadLimitBytesPerSecond()) : null;
         this.taskUploadLimit = options.uploadLimitBytesPerSecond() > 0
                 ? new RateLimiter(options.uploadLimitBytesPerSecond()) : null;
+        this.stats = new SessionStats();
+        this.dispatcher = new TaskEventDispatcher(new CopyOnWriteArrayList<>(), eventExecutor);
+        this.store = new ResumeStore(resumeFile, meta, stats::uploaded, stats::downloaded);
+        this.gateway = new TrackerGateway(trackerClient, config.udpTracker());
+        this.announcer = new TrackerAnnouncer(meta.infoHash(), peerId, config.listenPort(),
+                meta.trackerTiers(), gateway, dispatcher,
+                () -> Math.max(0, meta.length() - localCardinality() * meta.pieceLength()),
+                this::offerCandidate, stats::uploaded, stats::downloaded);
+        this.pex = new PexManager(meta, config.maxPeers());
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -194,7 +217,7 @@ public final class DownloadSession {
         // ClosedChannelException（complete() 的 seed 分支同样跳过 finish 以保住通道）。
         running.set(true);
         setState(TaskState.SEEDING);
-        announce(TrackerEvent.STARTED);
+        announcer.announce(TrackerEvent.STARTED);
         spawnLoops();
     }
 
@@ -222,7 +245,7 @@ public final class DownloadSession {
         pausedFrom = state;
         running.set(false);
         closeAllPeers();
-        announce(TrackerEvent.STOPPED);
+        announcer.announce(TrackerEvent.STOPPED);
         saveResumeQuietly();
         setState(TaskState.PAUSED);
     }
@@ -243,7 +266,7 @@ public final class DownloadSession {
         }
         running.set(false);
         closeAllPeers();
-        announce(TrackerEvent.STOPPED);
+        announcer.announce(TrackerEvent.STOPPED);
         try {
             storage.close();
         } catch (IOException ignored) {
@@ -254,7 +277,7 @@ public final class DownloadSession {
                 Files.deleteIfExists(storage.partFile());
             } catch (IOException ignored) {
             }
-            ResumeState.delete(resumeFile);
+            store.delete();
         } else {
             saveResumeQuietly();
         }
@@ -270,14 +293,7 @@ public final class DownloadSession {
         } catch (IOException ignored) {
         }
         log.error("task {} failed", meta.name(), error);
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onError(error);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatcher.error(error);
         setState(TaskState.FAILED);
         future.completeExceptionally(error);
     }
@@ -288,13 +304,16 @@ public final class DownloadSession {
         if (!options.resumeEnabled() || !Files.exists(resumeFile)) {
             return;
         }
+        ResumeState resume = store.load();
+        if (resume == null) {
+            return; // 状态文件不可用：从零开始（原因已在 store 内记录）
+        }
         try {
-            ResumeState resume = ResumeState.load(resumeFile, meta.infoHash(), meta.pieceCount());
-            downloaded.set(resume.downloaded());
-            uploaded.set(resume.uploaded());
+            stats.addDownloaded(resume.downloaded());
+            stats.addUploaded(resume.uploaded());
             if (resume.completed().cardinality() > 0) {
                 setState(TaskState.VERIFYING);
-                java.util.Set<Integer> sampled = pickRestartSample(resume.completed());
+                Set<Integer> sampled = store.restartSample(resume.completed());
                 for (int i = 0; i < meta.pieceCount(); i++) {
                     if (!resume.completed().has(i)) {
                         continue;
@@ -314,62 +333,31 @@ public final class DownloadSession {
             }
             log.info("resume: {}/{} pieces trusted (mode={})", localCardinality(),
                     meta.pieceCount(), options.restartVerifyMode());
-        } catch (ResumeException e) {
-            log.info("resume state unusable, starting fresh: {}", e.getMessage());
         } catch (IOException e) {
             log.warn("resume verification I/O failure, starting fresh", e);
         }
     }
 
-    /**
-     * SAMPLED 档的抽样子集：均匀随机 10% + 边界件（首/末）。
-     */
-    private java.util.Set<Integer> pickRestartSample(Bitfield completed) {
-        java.util.Set<Integer> sample = new java.util.HashSet<>();
-        int count = meta.pieceCount();
-        if (count > 0 && completed.has(0)) {
-            sample.add(0);
-        }
-        if (count > 1 && completed.has(count - 1)) {
-            sample.add(count - 1);
-        }
-        // 上限取 min(已完成件数, 10%)：只完成少量件就恢复时（如 5/1000），
-        // 若按总件数定 target，样本永远凑不齐 → 死循环
-        // 上限取 min(已完成件数, 10%)：只完成少量件就恢复时（如 5/1000），
-        // 若按总件数定 target，样本永远凑不齐 → 死循环
-        int target = Math.max(1, Math.min(completed.cardinality(), count / 10));
-        while (sample.size() < target) {
-            int candidate = random.nextInt(count);
-            if (completed.has(candidate)) {
-                sample.add(candidate);
-            }
-        }
-        return sample;
+    private void saveResumeQuietly() {
+        store.saveNow(resumeSnapshot());
     }
 
-    private void saveResumeQuietly() {
-        try {
-            Bitfield snapshot;
-            synchronized (local) {
-                snapshot = Bitfield.fromBytes(local.toBytes(), meta.pieceCount());
-            }
-            ResumeState.save(resumeFile, new ResumeState(meta.infoHash(), meta.pieceCount(),
-                    snapshot, uploaded.get(), downloaded.get(), System.currentTimeMillis()));
-        } catch (IOException e) {
-            log.warn("cannot save resume state", e);
+    private Bitfield resumeSnapshot() {
+        synchronized (local) {
+            return Bitfield.fromBytes(local.toBytes(), meta.pieceCount());
         }
     }
 
     // ---------------------------------------------------------------- tracker
 
     private void trackerLoop() {
-        announce(TrackerEvent.STARTED);
+        announcer.announce(TrackerEvent.STARTED);
         while (running.get()) {
-            if (sleepMillis(Math.max(2, announceIntervalSeconds) * 1000L)) {
+            if (sleepMillis(Math.max(2, announcer.intervalSeconds()) * 1000L)) {
                 return;
             }
             if (running.get()) {
-                announce(TrackerEvent.NONE);
+                announcer.announce(TrackerEvent.NONE);
                 replenishFromDiscovery(); // tracker 之外：DHT 等来源周期补充候选
             }
         }
@@ -388,64 +376,11 @@ public final class DownloadSession {
         }
         discovery.getPeers(meta.infoHash()).whenComplete((peers, error) -> {
             if (error == null) {
-                for (java.net.InetSocketAddress peer : peers) {
+                for (InetSocketAddress peer : peers) {
                     offerCandidate(peer);
                 }
             }
         });
-    }
-
-    private void announce(TrackerEvent event) {
-        long left = Math.max(0, meta.length() - localCardinality() * meta.pieceLength());
-        AnnounceRequest request = new AnnounceRequest(meta.infoHash(), peerId, config.listenPort(),
-                uploaded.get(), downloaded.get(), left, event, 50);
-        boolean anySuccess = false;
-        for (List<String> tier : meta.trackerTiers()) {
-            for (String url : tier) {
-                try {
-                    var response = UdpTrackerClient
-                            .supports(url) && config.udpTracker() != null
-                            ? config.udpTracker().announce(url, request)
-                            : trackerClient.announce(url, request);
-                    if (response.failureReason() != null) {
-                        log.warn("tracker {} rejected announce: {}", url, response.failureReason());
-                        fireTrackerAnnounce(url, response.failureReason(), 0, 0);
-                        continue;
-                    }
-                    announceIntervalSeconds = response.interval();
-                    for (InetSocketAddress peer : response.peers()) {
-                        offerCandidate(peer);
-                    }
-                    fireTrackerAnnounce(url, null, response.seeders(), response.leechers());
-                    anySuccess = true;
-                    announceBackoffSeconds = 0; // 成功即复位
-                    return;
-                } catch (TrackerException e) {
-                    log.debug("tracker {} failed: {}", url, e.getMessage());
-                    fireTrackerAnnounce(url, e.getMessage(), 0, 0);
-                }
-            }
-        }
-        log.warn("announce {} failed on all trackers", event);
-        if (!anySuccess) {
-            // 全部 tracker 失败：指数退避 interval×2^k，上限 30 分钟
-            announceBackoffSeconds = announceBackoffSeconds == 0
-                    ? Math.max(2, announceIntervalSeconds) * 2
-                    : Math.min(announceBackoffSeconds * 2, 30 * 60);
-            announceIntervalSeconds = announceBackoffSeconds;
-        }
-    }
-
-    private void fireTrackerAnnounce(String url, @Nullable String failure,
-            int seeders, int leechers) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onTrackerAnnounce(url, failure, seeders, leechers);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
     }
 
     private void offerCandidate(InetSocketAddress address) {
@@ -498,9 +433,26 @@ public final class DownloadSession {
             return;
         }
         String key = key(channel.remoteAddress());
+        if (rejectDuplicateLink(channel, key)) {
+            return;
+        }
+        PeerSession session = new PeerSession(key, channel);
+        if (!registerSession(session, channel)) {
+            return;
+        }
+        sendInitialHandshake(session, channel);
+        log.debug("peer {} connected", key);
+        dispatcher.peerConnected(key);
+    }
+
+    /**
+     * 重复链路丢弃：同 host:port 的第二条连接直接关；再按 BEP 3 peer-id 去重。
+     * 返回 true 表示该连接已被关闭拒绝。
+     */
+    private boolean rejectDuplicateLink(PeerChannel channel, String key) {
         if (peers.containsKey(key)) {
             channel.close();
-            return;
+            return true;
         }
         // BEP 3 以 peer id 为身份：同一客户端的第二条链路（入站 + 出站同时建立，或按监听地址
         // 反复重连）一律丢弃。否则对端（如 ttorrent 按 host-id 去重）在关闭重复链路前，
@@ -508,14 +460,21 @@ public final class DownloadSession {
         for (PeerSession existing : peers.values()) {
             if (Arrays.equals(existing.channel.remotePeerId(), channel.remotePeerId())) {
                 channel.close();
-                return;
+                return true;
             }
         }
-        PeerSession session = new PeerSession(key, channel, meta.pieceCount());
-        PeerSession existing = peers.putIfAbsent(key, session);
+        return false;
+    }
+
+    /**
+     * 注册会话：挂载消息 / 关闭监听，并向调度器登记空位图。与并发注册竞态时关闭
+     * 新连接并返回 false。
+     */
+    private boolean registerSession(PeerSession session, PeerChannel channel) {
+        PeerSession existing = peers.putIfAbsent(session.key, session);
         if (existing != null) {
             channel.close();
-            return;
+            return false;
         }
         channel.setMessageListener(messages -> {
             for (PeerWireMessage message : messages) {
@@ -525,28 +484,25 @@ public final class DownloadSession {
         channel.setCloseListener(cause -> peerClosed(session));
         // BEP 3：bitfield 是可选消息（无数据的客户端常直接省略，只用 have 逐片通告）。
         // 连接即注册空位图，否则 have-only 对端的分片永远不可见、调度器不会发出任何请求。
-        scheduler.peerConnected(session.key, session.remote);
+        scheduler.peerConnected(session.key, new Bitfield(meta.pieceCount()));
+        return true;
+    }
+
+    /**
+     * 初始通告：本地位图（有数据才发）+ interested + BEP 10 PEX 协商。
+     */
+    private void sendInitialHandshake(PeerSession session, PeerChannel channel) {
         if (localCardinality() > 0) {
             channel.write(new BitfieldMessage(localBytes()));
         }
         channel.write(Interested.INSTANCE);
         // BEP 10/11：声明 ut_pex（子 ID 2）——对端支持即协商 PEX。
         // BEP 27：private 种子禁用 PEX（不做对等交换，仅 tracker 通道）。
-        if (channel.remoteSupportsExtensions() && !meta.privateFlag()) {
-            Map<BString, BencodeValue> m = new TreeMap<>(BString.UNSIGNED_ORDER);
-            m.put(BString.of("ut_pex"), new BInteger(UT_PEX_ID));
-            Map<BString, BencodeValue> handshake = new TreeMap<>(BString.UNSIGNED_ORDER);
-            handshake.put(BString.of("m"), new BDict(m));
-            channel.write(new ExtendedMessage(0, Bencode.encode(new BDict(handshake))));
-        }
-        log.debug("peer {} connected", key);
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onPeerConnected(key);
-                } catch (RuntimeException ignored) {
-                }
-            });
+        if (channel.remoteSupportsExtensions()) {
+            ExtendedMessage handshake = pex.ourHandshake();
+            if (handshake != null) {
+                channel.write(handshake);
+            }
         }
     }
 
@@ -561,15 +517,7 @@ public final class DownloadSession {
             }
         }
         log.debug("peer {} disconnected", session.key);
-        for (TaskListener listener : listeners) {
-            String address = session.key;
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onPeerDisconnected(address, null);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatcher.peerDisconnected(session.key, null);
     }
 
     private void handleMessage(PeerSession session, PeerWireMessage message) {
@@ -582,40 +530,19 @@ public final class DownloadSession {
             }
             case Unchoke u -> {
                 session.peerChokingUs = false;
-                if (state == TaskState.DOWNLOADING) {
-                    blockWorkers.execute(() -> {
-                        synchronized (session) {
-                            refillRequests(session);
-                        }
-                    });
-                }
+                requestRefillAsync(session);
             }
             case Interested i -> session.remoteInterested = true;
             case NotInterested n -> session.remoteInterested = false;
             case Have h -> {
                 scheduler.peerHave(session.key, h.pieceIndex());
-                if (state == TaskState.DOWNLOADING) {
-                    blockWorkers.execute(() -> {
-                        synchronized (session) {
-                            refillRequests(session);
-                        }
-                    });
-                }
+                requestRefillAsync(session);
             }
-            case BitfieldMessage b -> {
-                session.remote = Bitfield.fromBytes(b.bits(), meta.pieceCount());
-                scheduler.peerConnected(session.key, session.remote);
-            }
+            case BitfieldMessage b -> scheduler.peerConnected(session.key,
+                    Bitfield.fromBytes(b.bits(), meta.pieceCount()));
             case Request r -> serveUpload(session, r);
             case PieceMessage p -> blockWorkers.execute(() -> processBlock(session, p));
-            case HaveAll h -> {
-                Bitfield all = new Bitfield(meta.pieceCount());
-                for (int i = 0; i < meta.pieceCount(); i++) {
-                    all.set(i);
-                }
-                session.remote = all;
-                scheduler.peerConnected(session.key, all);
-            }
+            case HaveAll h -> scheduler.peerConnected(session.key, Bitfield.allSet(meta.pieceCount()));
             case HaveNone h -> {
             }
             case RejectRequest r -> {
@@ -623,11 +550,11 @@ public final class DownloadSession {
                 session.issued.remove(rejected);
                 scheduler.clearInFlight(rejected); // 允许重新请求
             }
-            case io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage e -> {
+            case ExtendedMessage e -> {
                 if (e.extendedId() == 0) {
-                    handleExtensionHandshake(session, e.payload());
-                } else if (e.extendedId() == UT_PEX_ID) {
-                    handlePex(session, e.payload());
+                    pex.onRemoteHandshake(session, e.payload());
+                } else if (e.extendedId() == PexManager.UT_PEX_ID) {
+                    pex.onPex(session, e.payload(), peers, this::offerCandidate);
                 }
                 // 其余扩展消息本会话不消费
             }
@@ -640,124 +567,27 @@ public final class DownloadSession {
         }
     }
 
-    /**
-     * BEP 10 扩展握手（对端 → 我们）：记录其 ut_pex 子 ID（有则开启 PEX 接收）。
-     */
-    private void handleExtensionHandshake(PeerSession session, byte[] payload) {
-        try {
-            var value = io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(
-                    java.nio.ByteBuffer.wrap(payload));
-            if (value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict dict
-                    && dict.get("m") instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict m
-                    && m.get("ut_pex") instanceof io.github.oatelauser.thunder.core.internal.bencode.BInteger id) {
-                session.remotePexId = (int) id.value();
-                if (session.remotePexId > 0) {
-                    log.debug("pex negotiated with {} (remote ut_pex id {})", session.key,
-                            session.remotePexId);
+    /** Have/Unchoke 后的异步补发：worker 线程内持 session 监视器重填请求管线。 */
+    private void requestRefillAsync(PeerSession session) {
+        if (state == TaskState.DOWNLOADING) {
+            blockWorkers.execute(() -> {
+                synchronized (session) {
+                    refillRequests(session);
                 }
-            }
-        } catch (RuntimeException e) {
-            log.debug("peer {} sent unreadable extension handshake", session.key);
+            });
         }
-    }
-
-    /**
-     * BEP 11 ut_pex：解析 added 紧凑表并入候选队列。
-     */
-    private void handlePex(PeerSession session, byte[] payload) {
-        if (meta.privateFlag()) {
-            return; // BEP 27：private 种子不参与对等交换（我们也不广播，此处双保险）
-        }
-        try {
-            var value = io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(
-                    java.nio.ByteBuffer.wrap(payload));
-            if (!(value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict dict)
-                    || !(dict.get("added") instanceof io.github.oatelauser.thunder.core.internal.bencode.BString added)) {
-                return;
-            }
-            byte[] data = added.value();
-            if (data.length % 6 != 0) {
-                return;
-            }
-            int introduced = 0;
-            for (int i = 0; i + 6 <= data.length; i += 6) {
-                // added.f 为可选字段（BEP 11），即使缺失也照常取地址；位图语义（加密等）我们不用
-                if (peers.size() >= config.maxPeers()) {
-                    break;
-                }
-                String host = (data[i] & 0xFF) + "." + (data[i + 1] & 0xFF) + "."
-                        + (data[i + 2] & 0xFF) + "." + (data[i + 3] & 0xFF);
-                int port = ((data[i + 4] & 0xFF) << 8) | (data[i + 5] & 0xFF);
-                offerCandidate(new java.net.InetSocketAddress(host, port));
-                introduced++;
-            }
-            log.debug("pex from {}: {} candidates", session.key, introduced);
-        } catch (RuntimeException e) {
-            log.debug("peer {} sent unreadable pex", session.key);
-        }
-    }
-
-    /**
-     * BEP 11：向已协商 PEX 的对端周期广播当前连接表（added 紧凑表）。
-     */
-    private void broadcastPex() {
-        if (meta.privateFlag()) {
-            return; // BEP 27：private 种子不广播连接表
-        }
-        java.io.ByteArrayOutputStream compact = new java.io.ByteArrayOutputStream();
-        java.io.ByteArrayOutputStream flags = new java.io.ByteArrayOutputStream();
-        int count = 0;
-        for (PeerSession session : peers.values()) {
-            java.net.InetSocketAddress address = session.channel.remoteAddress();
-            if (address.getAddress() == null) {
-                continue;
-            }
-            byte[] ip = address.getAddress().getAddress();
-            if (ip.length != 4) {
-                continue; // IPv6 PEX 需 added6，暂不支持
-            }
-            compact.write(ip, 0, 4);
-            compact.write(address.getPort() >> 8);
-            compact.write(address.getPort() & 0xFF);
-            flags.write(0x00); // 无特殊语义位
-            count++;
-        }
-        if (count == 0) {
-            return;
-        }
-        java.util.Map<io.github.oatelauser.thunder.core.internal.bencode.BString,
-                io.github.oatelauser.thunder.core.internal.bencode.BencodeValue> dict =
-                new java.util.TreeMap<>(io.github.oatelauser.thunder.core.internal.bencode.BString.UNSIGNED_ORDER);
-        dict.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("added"),
-                new io.github.oatelauser.thunder.core.internal.bencode.BString(compact.toByteArray()));
-        dict.put(io.github.oatelauser.thunder.core.internal.bencode.BString.of("added.f"),
-                new io.github.oatelauser.thunder.core.internal.bencode.BString(flags.toByteArray()));
-        byte[] payload = io.github.oatelauser.thunder.core.internal.bencode.Bencode.encode(
-                new io.github.oatelauser.thunder.core.internal.bencode.BDict(dict));
-        int recipients = 0;
-        for (PeerSession session : peers.values()) {
-            if (session.remotePexId > 0) {
-                try {
-                    session.channel.write(
-                            new io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage(
-                                    session.remotePexId, payload));
-                    recipients++;
-                } catch (RuntimeException ignored) {
-                    // 通道关闭竞态：写失败由 close 路径收尾
-                }
-            }
-        }
-        log.debug("pex broadcast: {} peers listed, {} recipients", count, recipients);
     }
 
     private void refillRequests(PeerSession session) {
-        java.util.ArrayList<PeerWireMessage> batch = new java.util.ArrayList<>();
+        ArrayList<PeerWireMessage> batch = new ArrayList<>();
         while (session.issued.size() + batch.size() < PIPELINE_DEPTH) {
             if (session.pending.isEmpty()) {
                 if (session.currentPiece >= 0) {
                     break; // 当前 piece 的 block 已全部发出，等待响应
                 }
-                int piece = pickPieceFor(session);
+                int piece = scheduler.pickFor(session.key, local, new PieceConstraints(
+                        activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
+                        this::hasMissingBlock));
                 if (piece < 0) {
                     break;
                 }
@@ -787,32 +617,6 @@ public final class DownloadSession {
         if (!batch.isEmpty()) {
             session.channel.write(batch); // 单缓冲一次刷出
         }
-    }
-
-    private int pickPieceFor(PeerSession session) {
-        int bestFree = -1;
-        int bestFreeAvailability = Integer.MAX_VALUE;
-        int bestBusy = -1;
-        int bestBusyAvailability = Integer.MAX_VALUE;
-        for (int i = 0; i < meta.pieceCount(); i++) {
-            if (localHas(i) || verifyingPieces.contains(i) || !session.remote.has(i) || !hasMissingBlock(i)) {
-                continue;
-            }
-            int availability = scheduler.availability(i);
-            if (!activePieces.contains(i)) {
-                if (assemblers.size() >= maxActivePieces) {
-                    continue; // 组装器满：不开新件（在途件仍可补块）
-                }
-                if (availability < bestFreeAvailability) {
-                    bestFree = i;
-                    bestFreeAvailability = availability;
-                }
-            } else if (availability < bestBusyAvailability) {
-                bestBusy = i;
-                bestBusyAvailability = availability;
-            }
-        }
-        return bestFree >= 0 ? bestFree : bestBusy;
     }
 
     private boolean hasMissingBlock(int piece) {
@@ -895,7 +699,7 @@ public final class DownloadSession {
             assembler.received.add(block);
             session.issued.remove(block);
             scheduler.clearInFlight(block);
-            downloaded.addAndGet(message.block().length);
+            stats.addDownloaded(message.block().length);
             choking.recordReceived(session.key, message.block().length);
             if (assembler.received.size() == assembler.expectedBlocks) {
                 assemblers.remove(piece, assembler);
@@ -922,73 +726,56 @@ public final class DownloadSession {
             }
         }
         // —— 监视器外：CPU/磁盘重活，可与该 Peer 的后续块并行 ——
-        byte[] hash;
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            for (byte[] block : assembler.blocks) {
-                digest.update(block);
-            }
-            hash = digest.digest();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("JVM without SHA-1", e);
-        }
         boolean verified;
-        if (MessageDigest.isEqual(hash, meta.pieceHash(piece))) {
-            try {
-                ByteBuffer[] buffers = new ByteBuffer[assembler.blocks.length];
-                for (int i = 0; i < buffers.length; i++) {
-                    buffers[i] = ByteBuffer.wrap(assembler.blocks[i]);
-                }
-                storage.writePieceBuffers(piece, buffers);
-                verified = true;
-            } catch (IOException e) {
-                verifyingPieces.remove(piece);
-                fail(e);
-                return;
-            }
-        } else {
-            verified = false;
+        try {
+            verified = PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+        } catch (IOException e) {
+            verifyingPieces.remove(piece);
+            fail(e);
+            return;
         }
         // —— 监视器内：状态变更与下一件指派 ——
         synchronized (source) {
             if (verified) {
-                if (localHas(piece)) {
-                    return; // 与并行路径竞争，对方已落定
-                }
-                localSet(piece);
-                verifyingPieces.remove(piece); // 好件：本地位图已覆盖，隐藏使命结束
-                resumeDirty.set(true); // 降频：progressLoop 定时刷盘，不再每件一写
-                for (TaskListener listener : listeners) {
-                    eventExecutor.execute(() -> {
-                        try {
-                            listener.onPieceComplete(piece);
-                        } catch (RuntimeException ignored) {
-                        }
-                    });
-                }
-                broadcast(new Have(piece));
-                log.debug("piece {}/{} verified", piece + 1, meta.pieceCount());
-                if (localAllSet()) {
-                    complete();
-                    return;
-                }
-                refillRequests(source);
+                onVerifiedPiece(source, piece);
             } else {
-                // 坏件从未落盘：丢弃组装器即可重下，无清盘成本
-                verifyingPieces.remove(piece); // 坏件：允许重选重下
-                int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
-                log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
-                if (bad >= MAX_BAD_PIECES_PER_PEER) {
-                    source.channel.close(); // 恶意/损坏数据源
-                }
-                refillRequests(source);
+                onBadPiece(source, piece);
             }
         }
     }
 
+    /** 校验通过的状态迁移（须在 source 监视器内调用）。 */
+    private void onVerifiedPiece(PeerSession source, int piece) {
+        if (localHas(piece)) {
+            return; // 与并行路径竞争，对方已落定
+        }
+        localSet(piece);
+        verifyingPieces.remove(piece); // 好件：本地位图已覆盖，隐藏使命结束
+        store.markDirty(); // 降频：progressLoop 定时刷盘，不再每件一写
+        dispatcher.pieceComplete(piece);
+        broadcast(new Have(piece));
+        log.debug("piece {}/{} verified", piece + 1, meta.pieceCount());
+        if (localAllSet()) {
+            complete();
+            return;
+        }
+        refillRequests(source);
+    }
+
+    /** 坏件处置（须在 source 监视器内调用）：从未落盘，丢弃组装器即可重下，无清盘成本。 */
+    private void onBadPiece(PeerSession source, int piece) {
+        verifyingPieces.remove(piece); // 坏件：允许重选重下
+        int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
+        log.warn("piece {} failed verification from {} (bad #{})", piece, source.key, bad);
+        if (bad >= MAX_BAD_PIECES_PER_PEER) {
+            source.channel.close(); // 恶意/损坏数据源
+        }
+        refillRequests(source);
+    }
+
     private void complete() {
         boolean seed = options.seedAfterComplete();
-        announce(TrackerEvent.COMPLETED);
+        announcer.announce(TrackerEvent.COMPLETED);
         if (!seed) {
             try {
                 storage.finish();
@@ -1024,7 +811,7 @@ public final class DownloadSession {
                 }
                 session.channel.write(
                         new PieceMessage(request.pieceIndex(), request.begin(), block));
-                uploaded.addAndGet(block.length);
+                stats.addUploaded(block.length);
                 choking.recordSent(session.key, block.length);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -1077,48 +864,23 @@ public final class DownloadSession {
             }
             tick++;
             if (tick % 6 == 0) { // choking 每 10s 一拍：PEX 每 60s 一轮
-                broadcastPex();
+                pex.broadcast(peers);
             }
         }
     }
 
     private void progressLoop() {
-        long lastDownloaded = downloaded.get();
-        long lastUploaded = uploaded.get();
-        long lastMillis = System.currentTimeMillis();
-        long lastResumeFlush = lastMillis;
+        stats.tickRates(System.currentTimeMillis()); // 采样基线（等价原循环入口的 last* 初始化）
         while (running.get()) {
             if (sleepMillis(500)) {
                 saveResumeQuietly(); // 退出前兜底刷
                 return;
             }
             long now = System.currentTimeMillis();
-            if (resumeDirty.get() && now - lastResumeFlush >= 2000) {
-                resumeDirty.set(false);
-                saveResumeQuietly();
-                lastResumeFlush = now;
-            }
-            long dt = Math.max(1, now - lastMillis);
-            // EMA 平滑（α=0.3）：瞬时抖动不至于让 ETA 上蹿下跳
-            downloadRate = ema(downloadRate, (downloaded.get() - lastDownloaded) * 1000 / dt);
-            uploadRate = ema(uploadRate, (uploaded.get() - lastUploaded) * 1000 / dt);
-            lastDownloaded = downloaded.get();
-            lastUploaded = uploaded.get();
-            lastMillis = now;
-            ProgressSnapshot snapshot = snapshot();
-            for (TaskListener listener : listeners) {
-                eventExecutor.execute(() -> {
-                    try {
-                        listener.onProgress(snapshot);
-                    } catch (RuntimeException ignored) {
-                    }
-                });
-            }
+            store.flushIfDue(now, this::resumeSnapshot);
+            stats.tickRates(now);
+            dispatcher.progress(snapshot());
         }
-    }
-
-    private static long ema(long previous, long instantaneous) {
-        return (long) (0.3 * instantaneous + 0.7 * Math.max(0, previous));
     }
 
     // ---------------------------------------------------------------- accessors
@@ -1137,9 +899,10 @@ public final class DownloadSession {
         double fraction = meta.length() == 0 ? 1.0
             : Math.min(1.0, (double) downloadedRemainingBasis() / meta.length());
         long remaining = Math.max(0, meta.length() - downloadedRemainingBasis());
-        Long eta = downloadRate > 0 && remaining > 0 ? remaining * 1000 / downloadRate : null;
-        return new ProgressSnapshot(fraction, downloaded.get(), uploaded.get(),
-                downloadRate, uploadRate, peers.size(), availability(), eta);
+        Long eta = stats.downloadRate() > 0 && remaining > 0
+                ? remaining * 1000 / stats.downloadRate() : null;
+        return new ProgressSnapshot(fraction, stats.downloaded(), stats.uploaded(),
+                stats.downloadRate(), stats.uploadRate(), peers.size(), availability(), eta);
     }
 
     /**
@@ -1163,7 +926,7 @@ public final class DownloadSession {
     }
 
     public void addListener(TaskListener listener) {
-        listeners.add(listener);
+        dispatcher.add(listener);
     }
 
     public Path partFile() {
@@ -1177,12 +940,13 @@ public final class DownloadSession {
         return transportHandler;
     }
 
+    /** 全片段最小持有者数（本地位图 + 调度器远端位图单源）。 */
     private double availability() {
         int min = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {
             int count = localHas(i) ? 1 : 0;
-            for (PeerSession session : peers.values()) {
-                if (session.remote.has(i)) {
+            for (Bitfield remote : scheduler.remotes()) {
+                if (remote.has(i)) {
                     count++;
                 }
             }
@@ -1194,14 +958,7 @@ public final class DownloadSession {
     private void setState(TaskState to) {
         TaskState from = state;
         state = to;
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onStateChanged(from, to);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatcher.stateChanged(from, to);
     }
 
     private boolean localHas(int index) {
@@ -1247,73 +1004,5 @@ public final class DownloadSession {
     private static String key(InetSocketAddress address) {
         return (address.getAddress() != null ? address.getAddress().getHostAddress()
                 : address.getHostString()) + ":" + address.getPort();
-    }
-
-    /**
-     * 单个 Peer 的会话状态。pending/issued/currentPiece 由持有者线程在 session 监视器下访问。
-     */
-    private static final class PeerSession {
-        final String key;
-        final PeerChannel channel;
-        final ArrayDeque<BlockRequest> pending = new ArrayDeque<>();
-        final Set<BlockRequest> issued = ConcurrentHashMap.newKeySet();
-        /**
-         * 上传服务 FIFO（虚拟线程）：按请求到达顺序应答。BEP 3 不禁止乱序块，但请求序应答
-         * 是主流实现事实标准，且 ttorrent 1.5 的 Piece.record 在收到 offset=0 的块时会重置
-         * 整片缓冲——乱序块 0 会静默抹掉已收块导致校验失败（A1 互操作实测）。
-         */
-        final ExecutorService serveExecutor =
-                Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
-        volatile Bitfield remote;
-        volatile boolean peerChokingUs = true;
-        volatile boolean weChokingThem = true;
-        volatile boolean remoteInterested;
-        /**
-         * 对端协商的 ut_pex 子 ID（>0 表示 PEX 已协商，按此值发送）。
-         */
-        volatile int remotePexId = -1;
-        int currentPiece = -1;
-
-        PeerSession(String key, PeerChannel channel, int pieceCount) {
-            this.key = key;
-            this.channel = channel;
-            this.remote = new Bitfield(pieceCount);
-        }
-    }
-
-    /**
-     * 在内存中按块槽位零拷贝组装：解码块直接挂引用，齐件后顺序喂摘要 + gather 落盘。
-     */
-    private static final class PieceAssembler {
-        final byte[][] blocks;
-        final int[] blockLengths;
-        final int pieceLength;
-        final Set<BlockRequest> received = ConcurrentHashMap.newKeySet();
-        final int expectedBlocks;
-
-        PieceAssembler(int pieceLength, List<BlockRequest> blocksOfPiece) {
-            this.pieceLength = pieceLength;
-            this.expectedBlocks = blocksOfPiece.size();
-            this.blocks = new byte[expectedBlocks][];
-            this.blockLengths = new int[expectedBlocks];
-            for (BlockRequest block : blocksOfPiece) {
-                int slot = block.begin() / PieceScheduler.BLOCK_SIZE;
-                blockLengths[slot] = block.length();
-            }
-        }
-
-        /**
-         * 槽位校验：begin/length 必须与该槽的请求对齐（协议上对端只回我们请求过的块）。
-         */
-        int slotOf(int begin, int length) {
-            if (begin % PieceScheduler.BLOCK_SIZE != 0) {
-                return -1;
-            }
-            int slot = begin / PieceScheduler.BLOCK_SIZE;
-            if (slot >= blockLengths.length || blockLengths[slot] != length) {
-                return -1;
-            }
-            return slot;
-        }
     }
 }

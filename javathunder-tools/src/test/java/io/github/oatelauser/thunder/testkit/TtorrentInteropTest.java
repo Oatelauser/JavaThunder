@@ -7,7 +7,7 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -17,6 +17,7 @@ import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
@@ -54,8 +55,8 @@ class TtorrentInteropTest {
 
             Client seeder = startTtorrentSeeder(generated, "seed");
             try {
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select()).build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
                     DownloadResult result = task.future().get(90, TimeUnit.SECONDS);
@@ -79,8 +80,8 @@ class TtorrentInteropTest {
 
             // 阶段 A：ttorrent 做种，我们下载并转入做种
             Client seeder = startTtorrentSeeder(generated, "seed-a");
-            try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                    .transportFactory(Transports.fromSystemProperty()).build()) {
+            try (TorrentClient client = TorrentClient.builder()
+                    .transport(Transports.select()).build()) {
                 DownloadOptions seedOptions = new DownloadOptions(
                     dir.resolve("out"), true, true, true, 0, 0); // resume + verify + seed, 不限速
                 DownloadTask task = client.download(generated.torrentFile(), seedOptions);
@@ -119,10 +120,10 @@ class TtorrentInteropTest {
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
             // 多文件（B3）：件 2 跨 weights.bin/config.json 边界，验证跨界拼装与第三方一致
             TorrentGenerator.GeneratedMultiFileTorrent generated =
-                TorrentGenerator.generateMultiFile(dir, "interop-dir", java.util.List.of(
-                    java.util.List.of(java.util.List.of("weights.bin"), 600_000),
-                    java.util.List.of(java.util.List.of("nested", "config.json"), 130_000),
-                    java.util.List.of(java.util.List.of("tokenizer"), 256)),
+                TorrentGenerator.generateMultiFile(dir, "interop-dir", List.of(
+                    List.of(List.of("weights.bin"), 600_000),
+                    List.of(List.of("nested", "config.json"), 130_000),
+                    List.of(List.of("tokenizer"), 256)),
                     256 * 1024, tracker.announceUrl(), new Random(33));
 
             // ttorrent 多文件布局：parentDir 下以种子 name 为根；generateMultiFile 已写 dir/interop-dir/
@@ -130,8 +131,8 @@ class TtorrentInteropTest {
                 new SharedTorrent(Files.readAllBytes(generated.torrentFile()), dir.toFile()));
             seeder.share();
             try {
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select()).build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
                     task.future().get(90, TimeUnit.SECONDS);

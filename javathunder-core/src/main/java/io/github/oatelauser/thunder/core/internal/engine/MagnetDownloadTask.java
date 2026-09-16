@@ -9,8 +9,12 @@ import io.github.oatelauser.thunder.api.TaskListener;
 import io.github.oatelauser.thunder.api.TaskState;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -21,8 +25,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class MagnetDownloadTask implements DownloadTask {
 
-    private static final org.slf4j.Logger log =
-        org.slf4j.LoggerFactory.getLogger(MagnetDownloadTask.class);
+    private static final Logger log =
+        LoggerFactory.getLogger(MagnetDownloadTask.class);
 
     private final CompletableFuture<TorrentMetadata> metadataFuture;
     private final MagnetUri magnet;
@@ -31,7 +35,7 @@ public final class MagnetDownloadTask implements DownloadTask {
     private final Runnable slotRelease;
     private final Executor eventExecutor;
     private final CompletableFuture<DownloadResult> result = new CompletableFuture<>();
-    private final java.util.List<TaskListener> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<TaskListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicReference<@Nullable DownloadTask> delegate = new AtomicReference<>();
 
     @FunctionalInterface

@@ -8,6 +8,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

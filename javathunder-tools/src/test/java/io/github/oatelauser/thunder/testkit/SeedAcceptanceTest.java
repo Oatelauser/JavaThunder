@@ -6,7 +6,7 @@ import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.SeedOptions;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
@@ -42,9 +42,9 @@ class SeedAcceptanceTest {
                 dir, "seed-me.bin", 300_000, tracker.announceUrl(), new Random(41));
             // generate 已把数据文件写在 dir/seed-me.bin——即"已有数据"预置形态
 
-            try (DefaultTorrentClient seeder = DefaultTorrentClient.builder()
+            try (TorrentClient seeder = TorrentClient.builder()
                     .listenPort(17000 + new Random().nextInt(20000))
-                    .transportFactory(Transports.fromSystemProperty()).build()) {
+                    .transport(Transports.select()).build()) {
                 DownloadTask seedTask = seeder.seed(generated.torrentFile(),
                     SeedOptions.defaults().dataDir(dir));
                 assertEquals(TaskState.SEEDING, seedTask.state());
@@ -52,9 +52,9 @@ class SeedAcceptanceTest {
                 assertEquals(TaskState.SEEDING, seedTask.state());
 
                 // 第二个真实客户端：我们是 swarm 里唯一的种子源，下完即证明上传路径工作
-                try (DefaultTorrentClient leecher = DefaultTorrentClient.builder()
+                try (TorrentClient leecher = TorrentClient.builder()
                         .listenPort(17000 + new Random().nextInt(20000))
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                        .transport(Transports.select()).build()) {
                     DownloadTask leechTask = leecher.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("leech-out")));
                     DownloadResult result = leechTask.future().get(90, TimeUnit.SECONDS);
@@ -83,9 +83,9 @@ class SeedAcceptanceTest {
                     List.of(List.of("tokenizer"), 256)),
                     256, tracker.announceUrl(), new Random(43));
 
-            try (DefaultTorrentClient seeder = DefaultTorrentClient.builder()
+            try (TorrentClient seeder = TorrentClient.builder()
                     .listenPort(17000 + new Random().nextInt(20000))
-                    .transportFactory(Transports.fromSystemProperty()).build()) {
+                    .transport(Transports.select()).build()) {
                 DownloadTask seedTask = seeder.seed(generated.torrentFile(),
                     SeedOptions.defaults().dataDir(dir));
                 assertEquals(TaskState.SEEDING, seedTask.state());
@@ -110,9 +110,9 @@ class SeedAcceptanceTest {
             data[TorrentGenerator.DEFAULT_PIECE_LENGTH + 1_000] ^= 0x55;
             Files.write(generated.contentFile(), data);
 
-            try (DefaultTorrentClient seeder = DefaultTorrentClient.builder()
+            try (TorrentClient seeder = TorrentClient.builder()
                     .listenPort(17000 + new Random().nextInt(20000))
-                    .transportFactory(Transports.fromSystemProperty()).build()) {
+                    .transport(Transports.select()).build()) {
                 DownloadTask seedTask = seeder.seed(generated.torrentFile(),
                     SeedOptions.defaults().dataDir(dir));
 
@@ -132,9 +132,9 @@ class SeedAcceptanceTest {
             TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(
                 dir, "pause-seed.bin", 300_000, tracker.announceUrl(), new Random(53));
 
-            try (DefaultTorrentClient seeder = DefaultTorrentClient.builder()
+            try (TorrentClient seeder = TorrentClient.builder()
                     .listenPort(17000 + new Random().nextInt(20000))
-                    .transportFactory(Transports.fromSystemProperty()).build()) {
+                    .transport(Transports.select()).build()) {
                 DownloadTask seedTask = seeder.seed(generated.torrentFile(),
                     SeedOptions.defaults().dataDir(dir));
                 assertEquals(TaskState.SEEDING, seedTask.state());
@@ -173,9 +173,9 @@ class SeedAcceptanceTest {
                 TorrentParser.parse(Files.readAllBytes(generated.torrentFile()));
             try (FakeSeeder seeder = FakeSeeder.start(pristineCopy, meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
+                try (TorrentClient client = TorrentClient.builder()
                         .listenPort(17000 + new Random().nextInt(20000))
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                        .transport(Transports.select()).build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir));
                     DownloadResult result = task.future().get(90, TimeUnit.SECONDS);

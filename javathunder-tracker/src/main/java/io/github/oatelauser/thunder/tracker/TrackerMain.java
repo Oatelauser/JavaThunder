@@ -1,6 +1,7 @@
 package io.github.oatelauser.thunder.tracker;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,7 +16,7 @@ import org.jspecify.annotations.Nullable;
  *       [--port 6881] [--announce-interval 1800]
  *       [--udp-port 6881] [--whitelist &lt;hex-infohash&gt;[,&lt;hex&gt;...]|@file]
  * </pre>
- * {@code --port} 默认 {@link TrackerServer#DEFAULT_PORT}（0=随机）；
+ * {@code --port} 默认 6881（0=随机）；
  * {@code --announce-interval}（秒）默认 1800，同时决定 Peer 过期阈值（×2）。
  * {@code --udp-port} 缺省与 HTTP 同端口（BEP 15 UDP announce），传 0 关闭。
  * {@code --whitelist} 逗号分隔的 40 位 hex info-hash，或 {@code @file}（文件内
@@ -23,6 +24,12 @@ import org.jspecify.annotations.Nullable;
  * 进程驻留直至 SIGINT/SIGTERM（shutdown hook 关停释放端口）。
  */
 public final class TrackerMain {
+
+    /** BitTorrent 客户端默认监听端口段起点。 */
+    private static final int DEFAULT_PORT = 6881;
+
+    /** BEP 3 常规 announce 间隔（30 分钟）。 */
+    private static final int DEFAULT_ANNOUNCE_INTERVAL_SECONDS = 1800;
 
     /** 解析结果：udpPort=null 表示与 HTTP 同端口、0 表示关闭；whitelist=null 表示关闭。 */
     record Options(int port, int announceIntervalSeconds,
@@ -44,7 +51,8 @@ public final class TrackerMain {
             System.exit(2);
             return;
         }
-        TrackerServer server = TrackerServer.start(options.port(), options.announceIntervalSeconds());
+        EmbeddedTracker server = EmbeddedTracker.start(
+                wildcardAddress(), options.port(), options.announceIntervalSeconds());
         Runtime.getRuntime().addShutdownHook(new Thread(server::close, "tracker-shutdown"));
         if (options.whitelist() != null) {
             server.enableWhitelist(options.whitelist());
@@ -68,8 +76,8 @@ public final class TrackerMain {
 
     /** 包可见：单测覆盖参数解析（含 --whitelist 文本值不得走数字校验）。 */
     static Options parse(String[] args) {
-        int port = TrackerServer.DEFAULT_PORT;
-        int interval = TrackerServer.DEFAULT_ANNOUNCE_INTERVAL_SECONDS;
+        int port = DEFAULT_PORT;
+        int interval = DEFAULT_ANNOUNCE_INTERVAL_SECONDS;
         Integer udpPort = null; // null = 与 HTTP 同端口；0 = 关闭
         List<byte[]> whitelist = null; // null = 关闭（全放行）
         for (int i = 0; i < args.length; i++) {
@@ -132,5 +140,13 @@ public final class TrackerMain {
             hashes.add(HexFormat.of().parseHex(token.toLowerCase()));
         }
         return hashes;
+    }
+
+    private static InetAddress wildcardAddress() {
+        try {
+            return InetAddress.getByAddress(new byte[]{0, 0, 0, 0});
+        } catch (IOException e) {
+            throw new AssertionError("unreachable: literal 0.0.0.0", e);
+        }
     }
 }

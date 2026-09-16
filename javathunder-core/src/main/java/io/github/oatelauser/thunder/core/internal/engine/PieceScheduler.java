@@ -1,20 +1,20 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
+import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalInt;
-import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Piece 调度（DESIGN §5.8）：首块随机 → 稀缺优先（rarest-first，并列随机）。
+ * Piece 调度（DESIGN §5.8）：远端位图单源、在途块表与生产选件策略（稀缺优先 +
+ * 组装器限流；先到先得的确定性遍历顺序，无随机相位）。
  *
  * <p>并发模型（C5-2）：peer 位图表 / 在途块表走并发容器（无锁读写）；
- * 调度类操作（pick / peer 连接生命周期）走 {@value #STRIPES} 路 striped lock，
+ * peer 连接生命周期（位图注册/替换/移除）走 {@value #STRIPES} 路 striped lock，
  * 消除 selector 线程上的单监视器串行——16 路并发下 peers 表的结构性变更
  * （连接/断开）仍互斥，但 hot path（availability / inFlight 查询）完全并行。
  */
@@ -26,17 +26,14 @@ public final class PieceScheduler {
     private final int pieceCount;
     private final long pieceLength;
     private final long totalLength;
-    private final Random random;
     private final Map<Object, Bitfield> peers = new ConcurrentHashMap<>();
     private final Set<BlockRequest> inFlight = ConcurrentHashMap.newKeySet();
     private final Object[] stripeLocks = new Object[STRIPES];
-    private volatile boolean firstPiecePicked = false;
 
-    public PieceScheduler(int pieceCount, long pieceLength, long totalLength, Random random) {
+    public PieceScheduler(int pieceCount, long pieceLength, long totalLength) {
         this.pieceCount = pieceCount;
         this.pieceLength = pieceLength;
         this.totalLength = totalLength;
-        this.random = random;
         for (int i = 0; i < STRIPES; i++) {
             stripeLocks[i] = new Object();
         }
@@ -70,59 +67,56 @@ public final class PieceScheduler {
         }
     }
 
-    /** 选下一个要下载的 Piece；无候选返回空。 */
-    public OptionalInt pick(Bitfield local) {
-        synchronized (stripe(local)) {
-            int best = -1;
-            int bestAvailability = Integer.MAX_VALUE;
-            int candidateCount = 0;
-            for (int i = 0; i < pieceCount; i++) {
-                if (local.has(i)) {
-                    continue;
-                }
-                int availability = availability(i);
-                if (availability == 0) {
-                    continue;
-                }
-                candidateCount++;
-                if (firstPiecePicked && availability < bestAvailability) {
-                    best = i;
-                    bestAvailability = availability;
-                }
-            }
-            if (candidateCount == 0) {
-                return OptionalInt.empty();
-            }
-            if (!firstPiecePicked) {
-                firstPiecePicked = true;
-                return OptionalInt.of(randomPiece(candidates(local)));
-            }
-            if (best >= 0 && bestAvailability < Integer.MAX_VALUE) {
-                final int min = bestAvailability;
-                List<Integer> tied = new ArrayList<>();
-                for (int i = 0; i < pieceCount; i++) {
-                    if (!local.has(i) && availability(i) == min) {
-                        tied.add(i);
-                    }
-                }
-                return OptionalInt.of(tied.get(random.nextInt(tied.size())));
-            }
-            return OptionalInt.empty();
-        }
+    /**
+     * 远端位图单源：peer 注册的位图（可能 null——调用方自行判空，或只在
+     * peerConnected 之后访问）。
+     */
+    public @Nullable Bitfield remoteOf(Object peerKey) {
+        return peers.get(peerKey);
     }
 
-    private List<Integer> candidates(Bitfield local) {
-        List<Integer> result = new ArrayList<>();
+    /** 全部已注册远端位图的弱一致视图（availability 等遍历场景）。 */
+    public Iterable<Bitfield> remotes() {
+        return peers.values();
+    }
+
+    /**
+     * 生产选件策略：逐件遍历，跳过本地已有 / 校验中 / 该对端没有 / 已无缺失块的件；
+     * 非组装中件在组装器满员（{@code assemblingCount >= maxActivePieces}）时跳过，
+     * 否则按 availability 严格小于更新 bestFree（先到先得——并列取先遍历到者，
+     * 保持确定性）；组装中件更新 bestBusy。返回 bestFree 优先，无候选返回 -1。
+     *
+     * <p>并发说明：{@code local} 为调用方传入的 live 位图，此处无锁逐位读——
+     * 与 {@link #availability(int)} 同一弱一致级别（并发容器遍历），瞬时陈旧只
+     * 影响选择质量，不影响正确性（重复请求由在途表与组装器去重兜底）。
+     */
+    public int pickFor(Object peerKey, Bitfield local, PieceConstraints constraints) {
+        Bitfield remote = peers.get(peerKey);
+        int bestFree = -1;
+        int bestFreeAvailability = Integer.MAX_VALUE;
+        int bestBusy = -1;
+        int bestBusyAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < pieceCount; i++) {
-            if (!local.has(i) && availability(i) > 0) {
-                result.add(i);
+            if (local.has(i) || constraints.verifyingPieces().contains(i)
+                    || remote == null || !remote.has(i)
+                    || !constraints.hasMissingBlock().test(i)) {
+                continue;
+            }
+            int availability = availability(i);
+            if (!constraints.activePieces().contains(i)) {
+                if (constraints.assemblingCount() >= constraints.maxActivePieces()) {
+                    continue; // 组装器满：不开新件（在途件仍可补块）
+                }
+                if (availability < bestFreeAvailability) {
+                    bestFree = i;
+                    bestFreeAvailability = availability;
+                }
+            } else if (availability < bestBusyAvailability) {
+                bestBusy = i;
+                bestBusyAvailability = availability;
             }
         }
-        return result;
-    }
-
-    private int randomPiece(List<Integer> candidates) {
-        return candidates.get(random.nextInt(candidates.size()));
+        return bestFree >= 0 ? bestFree : bestBusy;
     }
 
     /** 无锁热路径：并发容器的 values() 弱一致遍历对计数场景安全。 */
@@ -158,20 +152,5 @@ public final class PieceScheduler {
 
     public boolean isInFlight(BlockRequest request) {
         return inFlight.contains(request);
-    }
-
-    /** endgame：本地所有缺失 Block 均已有在途请求。 */
-    public boolean isEndgame(Bitfield local) {
-        for (int i = 0; i < pieceCount; i++) {
-            if (local.has(i)) {
-                continue;
-            }
-            for (BlockRequest block : blocksOf(i)) {
-                if (!inFlight.contains(block)) {
-                    return false;
-                }
-            }
-        }
-        return true;
     }
 }

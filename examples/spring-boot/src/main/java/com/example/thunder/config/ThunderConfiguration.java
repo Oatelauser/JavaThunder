@@ -1,7 +1,6 @@
 package com.example.thunder.config;
 
 import io.github.oatelauser.thunder.api.TorrentClient;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -46,7 +45,7 @@ public class ThunderConfiguration {
     @Bean(destroyMethod = "close")
     public TorrentClient torrentClient(ThunderProperties properties,
             @Qualifier("thunderListenerExecutor") ExecutorService listenerExecutor) throws IOException {
-        return DefaultTorrentClient.builder()
+        return TorrentClient.builder()
                 .listenPort(properties.listenPort())
                 .maxConcurrentTasks(properties.maxConcurrentTasks())
                 .listenerExecutor(listenerExecutor)

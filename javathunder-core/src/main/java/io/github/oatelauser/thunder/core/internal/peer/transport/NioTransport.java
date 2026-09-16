@@ -7,6 +7,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -16,10 +17,17 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -42,7 +50,7 @@ public final class NioTransport implements PeerTransport {
     private final Selector selector;
     private final Thread selectorThread;
     private final Queue<Runnable> selectorTasks = new ConcurrentLinkedQueue<>();
-    private final java.util.Set<NioChannel> channels = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private final Set<NioChannel> channels = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private volatile ServerSocketChannel serverChannel;
     private volatile int listeningPort = -1;
     private volatile boolean closed;
@@ -59,8 +67,7 @@ public final class NioTransport implements PeerTransport {
 
     @Override
     public int listen(int preferredPort, HandshakeRouter router) {
-        java.util.concurrent.atomic.AtomicReference<RuntimeException> failure =
-            new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
         submit(() -> {
             try {
                 ServerSocketChannel server = ServerSocketChannel.open();
@@ -255,7 +262,7 @@ public final class NioTransport implements PeerTransport {
         final ArrayDeque<ByteBuffer> writeQueue = new ArrayDeque<>();
         final ByteBuffer[] writeBatch = new ByteBuffer[WRITE_BATCH_MAX];
         private final AtomicBoolean flushScheduled = new AtomicBoolean(false);
-        private volatile Consumer<java.util.List<PeerWireMessage>> messageListener = m -> {
+        private volatile Consumer<List<PeerWireMessage>> messageListener = m -> {
         };
         private volatile Consumer<@Nullable Throwable> closeListener = t -> {
         };
@@ -302,7 +309,7 @@ public final class NioTransport implements PeerTransport {
                 boolean remoteExt = Handshake.supportsExtensions(wire);
                 if (pendingHandler != null) {
                     // 出站：校验 info-hash，通道就绪
-                    if (!java.util.Arrays.equals(handshake.infoHash(), pendingInfoHash)) {
+                    if (!Arrays.equals(handshake.infoHash(), pendingInfoHash)) {
                         closeWith(new IOException("peer answered with a different info-hash"));
                         return;
                     }
@@ -339,7 +346,7 @@ public final class NioTransport implements PeerTransport {
 
         /** 批量投递：一次读批的全部帧合成一个 List 一次回调（批内线序保持）。 */
         private void deliverFrames() {
-            java.util.List<PeerWireMessage> batch = new java.util.ArrayList<>();
+            List<PeerWireMessage> batch = new ArrayList<>();
             while (readBuffer.remaining() >= 4) {
                 int length = peekLength(readBuffer);
                 int frameSize = 4 + length;
@@ -376,12 +383,12 @@ public final class NioTransport implements PeerTransport {
         }
 
         @Override
-        public void write(java.util.List<PeerWireMessage> messages) {
+        public void write(List<PeerWireMessage> messages) {
             if (closed || messages.isEmpty()) {
                 return;
             }
             int capacity = messages.size() * 17; // request/keepalive 级小帧的保守上界
-            java.io.ByteArrayOutputStream encoded = new java.io.ByteArrayOutputStream(capacity);
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream(capacity);
             for (PeerWireMessage message : messages) {
                 encoded.writeBytes(PeerWireCodec.encode(message));
             }
@@ -493,7 +500,7 @@ public final class NioTransport implements PeerTransport {
         }
 
         @Override
-        public void setMessageListener(Consumer<java.util.List<PeerWireMessage>> listener) {
+        public void setMessageListener(Consumer<List<PeerWireMessage>> listener) {
             this.messageListener = listener;
         }
 

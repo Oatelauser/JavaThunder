@@ -4,7 +4,7 @@ import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.ProgressSnapshot;
 import io.github.oatelauser.thunder.api.TaskListener;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -37,7 +37,7 @@ class QuickStartTest {
         CountDownLatch fifthFrame = new CountDownLatch(1);
         long[] frames = {0};
 
-        try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+        try (TorrentClient client = TorrentClient.builder().build()) {
             DownloadTask task = client.download(torrent,
                 DownloadOptions.defaults().targetDir(Path.of("D:\\下载软件包\\ubuntu")));
 

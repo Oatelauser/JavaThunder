@@ -4,9 +4,12 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.zip.CRC32;
 
 /**
@@ -29,7 +32,7 @@ import java.util.zip.CRC32;
 public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
                           long uploaded, long downloaded, long lastActiveEpochMs) {
 
-    private static final byte[] MAGIC = "JTRESUME".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] MAGIC = "JTRESUME".getBytes(StandardCharsets.US_ASCII);
     private static final short VERSION = 1;
 
     public ResumeState {
@@ -48,7 +51,7 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
             StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
             channel.write(encode(state));
         }
-        Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
     }
 
     public static ResumeState load(Path file, byte[] expectedInfoHash, int expectedPieceCount) {
@@ -68,7 +71,7 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
         ByteBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         byte[] magic = new byte[MAGIC.length];
         buf.get(magic);
-        if (!java.util.Arrays.equals(magic, MAGIC)) {
+        if (!Arrays.equals(magic, MAGIC)) {
             throw new ResumeException("resume file magic mismatch");
         }
         if (buf.getShort() != VERSION) {
@@ -76,7 +79,7 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
         }
         byte[] infoHash = new byte[20];
         buf.get(infoHash);
-        if (!java.util.Arrays.equals(infoHash, expectedInfoHash)) {
+        if (!Arrays.equals(infoHash, expectedInfoHash)) {
             throw new ResumeException("resume file belongs to a different torrent");
         }
         int pieceCount = buf.getInt();

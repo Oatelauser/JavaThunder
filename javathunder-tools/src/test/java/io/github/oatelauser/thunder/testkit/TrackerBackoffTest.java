@@ -4,7 +4,7 @@ import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TaskListener;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -40,8 +40,8 @@ class TrackerBackoffTest {
         TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(
             dir, "backoff.bin", 256 * 1024, deadUrl, new Random(5));
 
-        try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                .transportFactory(Transports.fromSystemProperty())
+        try (TorrentClient client = TorrentClient.builder()
+                .transport(Transports.select())
                 .listenPort(17000 + new Random().nextInt(20000)).build()) {
             List<Long> failureNanos = Collections.synchronizedList(new ArrayList<>());
             DownloadTask task = client.download(generated.torrentFile(),

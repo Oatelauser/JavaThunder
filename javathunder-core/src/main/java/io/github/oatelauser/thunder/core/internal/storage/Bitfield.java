@@ -19,6 +19,18 @@ public final class Bitfield {
         this.bits = new byte[(pieceCount + 7) / 8];
     }
 
+    /** 全部位置 1 的位图（BEP 6 HaveAll 的等价表示）；尾部空闲位仍保持为零。 */
+    public static Bitfield allSet(int pieceCount) {
+        Bitfield bitfield = new Bitfield(pieceCount);
+        Arrays.fill(bitfield.bits, (byte) 0xFF);
+        int validBitsInLastByte = pieceCount - (bitfield.bits.length - 1) * 8;
+        if (validBitsInLastByte < 8) {
+            int paddingMask = (1 << (8 - validBitsInLastByte)) - 1;
+            bitfield.bits[bitfield.bits.length - 1] &= (byte) ~paddingMask;
+        }
+        return bitfield;
+    }
+
     /** 从线协议字节恢复；字节数必须恰为 ⌈N/8⌉ 且空闲位为零。 */
     public static Bitfield fromBytes(byte[] bytes, int pieceCount) {
         if (pieceCount <= 0) {

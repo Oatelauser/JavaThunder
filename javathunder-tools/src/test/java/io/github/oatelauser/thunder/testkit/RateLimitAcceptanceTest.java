@@ -5,7 +5,7 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
@@ -44,18 +44,18 @@ class RateLimitAcceptanceTest {
         assertRateLimited("task-limited.bin", "task",
             DownloadOptions.defaults().targetDir(dir.resolve("out"))
                 .rateLimits(LIMIT_BYTES_PER_SECOND, 0),
-            DefaultTorrentClient.builder());
+            TorrentClient.builder());
     }
 
     @Test
     void globalRateLimitThrottlesDownload() throws Exception {
         assertRateLimited("global-limited.bin", "global",
             DownloadOptions.defaults().targetDir(dir.resolve("out")),
-            DefaultTorrentClient.builder().downloadLimitBytesPerSecond(LIMIT_BYTES_PER_SECOND));
+            TorrentClient.builder().downloadLimitBytesPerSecond(LIMIT_BYTES_PER_SECOND));
     }
 
     private void assertRateLimited(String name, String label, DownloadOptions options,
-                                   DefaultTorrentClient.Builder builder) throws Exception {
+                                   TorrentClient.Builder builder) throws Exception {
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
             TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(
                 dir, name, SIZE_BYTES, tracker.announceUrl(), new Random(42));
@@ -64,8 +64,8 @@ class RateLimitAcceptanceTest {
 
             try (NioSeeder seeder = NioSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = builder
-                        .transportFactory(Transports.fromSystemProperty())
+                try (TorrentClient client = builder
+                        .transport(Transports.select())
                         .listenPort(17000 + random.nextInt(20000)).build()) {
 
                     long start = System.nanoTime();

@@ -1,7 +1,13 @@
 package io.github.oatelauser.thunder.core.internal.metainfo;
 
+import io.github.oatelauser.thunder.core.internal.bencode.BDict;
+import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
+import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import org.jspecify.annotations.Nullable;
 
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -36,21 +42,19 @@ public record TorrentMetadata(
      */
     public static TorrentMetadata fromInfoDict(byte[] infoBytes, List<String> trackers) {
         try {
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(infoBytes);
-            io.github.oatelauser.thunder.core.internal.bencode.BencodeValue value =
-                io.github.oatelauser.thunder.core.internal.bencode.Bencode.decodeValue(buf);
-            if (!(value instanceof io.github.oatelauser.thunder.core.internal.bencode.BDict info)) {
+            ByteBuffer buf = ByteBuffer.wrap(infoBytes);
+            BencodeValue value = Bencode.decodeValue(buf);
+            if (!(value instanceof BDict info)) {
                 throw new IllegalArgumentException("info dict must be a bencoded dict");
             }
             byte[] infoHash;
             try {
-                infoHash = java.security.MessageDigest.getInstance("SHA-1").digest(infoBytes);
-            } catch (java.security.NoSuchAlgorithmException e) {
+                infoHash = MessageDigest.getInstance("SHA-1").digest(infoBytes);
+            } catch (NoSuchAlgorithmException e) {
                 throw new IllegalStateException(e);
             }
             // 复用 TorrentParser 的字段校验：把它当 .torrent 的 info 段解析
-            return io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser
-                .buildFromInfoDict(info, infoHash, trackers);
+            return TorrentParser.buildFromInfoDict(info, infoHash, trackers);
         } catch (RuntimeException e) {
             throw new IllegalArgumentException("invalid info dict: " + e.getMessage(), e);
         }

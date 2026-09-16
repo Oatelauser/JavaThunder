@@ -2,6 +2,7 @@ package io.github.oatelauser.thunder.core.internal.peer.transport;
 
 import io.github.oatelauser.thunder.core.internal.wire.Handshake;
 import io.github.oatelauser.thunder.core.internal.wire.Interested;
+import io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec;
 import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
 import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Request;
@@ -16,10 +17,12 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -83,8 +86,8 @@ class NioTransportTest {
                     // 收 client 的 Interested 帧，回 Unchoke + Piece
                     byte[] frame = readFrame(in);
                     assertTrue(frame.length == 5 && (frame[4] & 0xFF) == 2, "expect interested");
-                    out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(Unchoke.INSTANCE));
-                    out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(
+                    out.write(PeerWireCodec.encode(Unchoke.INSTANCE));
+                    out.write(PeerWireCodec.encode(
                         new PieceMessage(3, 8192, new byte[]{7, 7, 7})));
                     out.flush();
                 } catch (IOException ignored) {
@@ -175,7 +178,7 @@ class NioTransportTest {
                 byte[] reply = new byte[68];
                 readFully(in, reply);
                 assertArrayEquals(OWN_PEER_ID, Handshake.decode(reply).peerId());
-                out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(
+                out.write(PeerWireCodec.encode(
                     new Request(1, 0, 16384)));
                 out.flush();
             }
@@ -192,7 +195,7 @@ class NioTransportTest {
              NioTransport transport = new NioTransport(OWN_PEER_ID)) {
             CompletableFuture<PeerChannel> connected = new CompletableFuture<>();
             CountDownLatch done = new CountDownLatch(1);
-            List<PeerWireMessage> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+            List<PeerWireMessage> seen = new CopyOnWriteArrayList<>();
 
             Thread.ofVirtual().start(() -> {
                 try (Socket socket = server.accept()) {
@@ -203,8 +206,8 @@ class NioTransportTest {
                     out.write(Handshake.encode(INFO_HASH, FAKE_PEER_ID));
                     out.flush();
                     for (int i = 0; i < 100; i++) {
-                        PeerWireMessage message = io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec
-                            .decodeFrame(java.nio.ByteBuffer.wrap(readFrame(in)));
+                        PeerWireMessage message = PeerWireCodec
+                            .decodeFrame(ByteBuffer.wrap(readFrame(in)));
                         seen.add(message);
                     }
                     done.countDown();

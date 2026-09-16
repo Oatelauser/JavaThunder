@@ -102,5 +102,28 @@
         </plugin>
       </plugins>
     </pluginManagement>
+    <!-- 代码规范门禁（checkstyle，verify 阶段执行，规则 config/checkstyle/checkstyle.xml）：
+         禁内联全路径类名 / 禁通配 import / 禁未用 import / 方法长度 ≤50 行 -->
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+        <version>3.6.0</version>
+        <configuration>
+          <configLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/checkstyle.xml</configLocation>
+          <suppressionsLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/suppressions.xml</suppressionsLocation>
+          <includeTestSourceDirectory>true</includeTestSourceDirectory>
+          <consoleOutput>true</consoleOutput>
+        </configuration>
+        <executions>
+          <execution>
+            <id>enforce-code-style</id>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
   </build>
 </project>

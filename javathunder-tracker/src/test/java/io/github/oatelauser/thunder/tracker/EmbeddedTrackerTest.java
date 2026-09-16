@@ -11,6 +11,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -196,7 +198,7 @@ class EmbeddedTrackerTest {
     }
 
     private static String hex(int seed) {
-        return java.util.HexFormat.of().formatHex(infoHash(seed));
+        return HexFormat.of().formatHex(infoHash(seed));
     }
 
     private static int parsePort(String announceUrl) {
@@ -209,7 +211,7 @@ class EmbeddedTrackerTest {
         StringBuilder url = new StringBuilder(tracker.announceUrl());
         url.append("?info_hash=").append(percentEncode(infoHash));
         url.append("&peer_id=").append(percentEncode(("-javathunder-test-" + port + "xxxx")
-                .getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+                .getBytes(StandardCharsets.US_ASCII)));
         url.append("&port=").append(port);
         url.append("&left=").append(left);
         url.append("&compact=1&no_peer_id=1&numwant=50");

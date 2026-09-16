@@ -1,16 +1,23 @@
 package io.github.oatelauser.thunder.core.internal.client;
 
-import io.github.oatelauser.thunder.api.*;
+import io.github.oatelauser.thunder.api.DownloadOptions;
+import io.github.oatelauser.thunder.api.DownloadTask;
+import io.github.oatelauser.thunder.api.MagnetUri;
+import io.github.oatelauser.thunder.api.PeerDiscoverySource;
+import io.github.oatelauser.thunder.api.RestartVerifyMode;
+import io.github.oatelauser.thunder.api.SeedOptions;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.engine.DownloadSession;
 import io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask;
 import io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.core.internal.peer.transport.BlockingTransport;
+import io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
 import io.github.oatelauser.thunder.core.internal.ratelimit.RateLimiter;
-import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
 import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import org.jspecify.annotations.Nullable;
@@ -21,7 +28,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
@@ -43,7 +54,7 @@ public final class DefaultTorrentClient implements TorrentClient {
         return builder().build();
     }
 
-    public static final class Builder {
+    public static final class Builder implements TorrentClient.Builder {
         private int listenPort = 6881;
         private int maxConcurrentTasks = 3;
         private int maxPeersPerTask = 50;
@@ -53,26 +64,31 @@ public final class DefaultTorrentClient implements TorrentClient {
         private Function<byte[], PeerTransport> transportFactory = BlockingTransport::new;
         private PeerDiscoverySource peerDiscovery;
 
+        @Override
         public Builder listenPort(int port) {
             this.listenPort = port;
             return this;
         }
 
+        @Override
         public Builder maxConcurrentTasks(int max) {
             this.maxConcurrentTasks = max;
             return this;
         }
 
+        @Override
         public Builder maxPeersPerTask(int max) {
             this.maxPeersPerTask = max;
             return this;
         }
 
+        @Override
         public Builder downloadLimitBytesPerSecond(long bytesPerSecond) {
             this.downloadLimitBytesPerSecond = bytesPerSecond;
             return this;
         }
 
+        @Override
         public Builder uploadLimitBytesPerSecond(long bytesPerSecond) {
             this.uploadLimitBytesPerSecond = bytesPerSecond;
             return this;
@@ -81,13 +97,26 @@ public final class DefaultTorrentClient implements TorrentClient {
         /**
          * 注入自定义监听器回调线程；缺省为库内单线程守护线程。
          */
+        @Override
         public Builder listenerExecutor(Executor executor) {
             this.listenerExecutor = executor;
             return this;
         }
 
         /**
-         * 注入传输实现（差分验收/调试用）；缺省为阻塞参照实现。
+         * 传输实现选择（api 级选项）；缺省 BLOCKING（历史默认，保持行为不变）。
+         */
+        @Override
+        public Builder transport(TorrentClient.Transport transport) {
+            this.transportFactory = transport == TorrentClient.Transport.NIO
+                    ? NioTransport::new
+                    : BlockingTransport::new;
+            return this;
+        }
+
+        /**
+         * 注入传输工厂（差分验收/调试用，绕过 api 级 {@link #transport} 枚举直接
+         * 指定实现）；缺省为阻塞参照实现。
          */
         public Builder transportFactory(Function<byte[], PeerTransport> factory) {
             this.transportFactory = factory;
@@ -98,11 +127,13 @@ public final class DefaultTorrentClient implements TorrentClient {
          * 注入去中心化 Peer 发现源（如 javathunder-dht 的 DhtPeerDiscovery）；
          * 生命周期归本 client：close 时一并关闭。未注入则仅 tracker 发现。
          */
+        @Override
         public Builder peerDiscovery(PeerDiscoverySource source) {
             this.peerDiscovery = source;
             return this;
         }
 
+        @Override
         public DefaultTorrentClient build() throws IOException {
             return new DefaultTorrentClient(this);
         }
@@ -177,7 +208,7 @@ public final class DefaultTorrentClient implements TorrentClient {
      * pause/announce 语义正确），DownloadSession.startSeedOnly() 做校验与落位。
      */
     @Override
-    public DownloadTask seed(Path torrentFile, io.github.oatelauser.thunder.api.SeedOptions seedOptions)
+    public DownloadTask seed(Path torrentFile, SeedOptions seedOptions)
             throws Exception {
         if (closed.get()) {
             throw new IllegalStateException("client is closed");

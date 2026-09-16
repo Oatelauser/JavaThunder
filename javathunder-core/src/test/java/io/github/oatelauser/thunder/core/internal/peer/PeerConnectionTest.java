@@ -3,14 +3,17 @@ package io.github.oatelauser.thunder.core.internal.peer;
 import io.github.oatelauser.thunder.core.internal.wire.BitfieldMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Handshake;
 import io.github.oatelauser.thunder.core.internal.wire.Interested;
+import io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec;
 import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Request;
+import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -49,7 +52,7 @@ class PeerConnectionTest {
 
     @Test
     void handshakeExchangeAndMessageRoundTrip() throws Exception {
-        try (ServerSocket server = new ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             peerThreads.submit(() -> {
                 try (Socket socket = server.accept()) {
                     InputStream in = new BufferedInputStream(socket.getInputStream());
@@ -64,15 +67,15 @@ class PeerConnectionTest {
                     out.write(Handshake.encode(INFO_HASH, SERVER_PEER_ID));
                     out.flush();
                     // 假对端：全量位图 + 立即 unchoke
-                    out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(
+                    out.write(PeerWireCodec.encode(
                         new BitfieldMessage(new byte[]{(byte) 0xC0})));
-                    out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(
-                        io.github.oatelauser.thunder.core.internal.wire.Unchoke.INSTANCE));
+                    out.write(PeerWireCodec.encode(
+                        Unchoke.INSTANCE));
                     out.flush();
                     // 读取 client 的 Interested，回一个 Piece
                     ByteBufferHelper.readFrame(in, 5); // interested 帧
                     ByteBufferHelper.readFrame(in, 17); // request 帧
-                    out.write(io.github.oatelauser.thunder.core.internal.wire.PeerWireCodec.encode(
+                    out.write(PeerWireCodec.encode(
                         new PieceMessage(1, 0, new byte[]{9, 9, 9, 9})));
                     out.flush();
                 }
@@ -85,7 +88,7 @@ class PeerConnectionTest {
 
                 assertArrayEquals(SERVER_PEER_ID, connection.remotePeerId());
                 assertEquals(new BitfieldMessage(new byte[]{(byte) 0xC0}), connection.read());
-                assertEquals(io.github.oatelauser.thunder.core.internal.wire.Unchoke.INSTANCE, connection.read());
+                assertEquals(Unchoke.INSTANCE, connection.read());
 
                 connection.write(Interested.INSTANCE);
                 connection.write(new Request(1, 0, 16384));
@@ -98,7 +101,7 @@ class PeerConnectionTest {
     void handshakeWithWrongInfoHashIsRejected() throws Exception {
         byte[] otherHash = new byte[20];
         Arrays.fill(otherHash, (byte) 7);
-        try (ServerSocket server = new ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             peerThreads.submit(() -> {
                 try (Socket socket = server.accept()) {
                     InputStream in = new BufferedInputStream(socket.getInputStream());

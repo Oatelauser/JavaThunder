@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiConsumer;
 
 /**
  * 接入姿势三：进度暴露模式（完整说明见 docs/MANUAL.md §6.6）。
@@ -101,16 +100,55 @@ public class DownloadController {
     public SseEmitter events(@PathVariable UUID id) {
         DownloadTask task = downloads.require(id);
         SseEmitter emitter = new SseEmitter(10 * 60 * 1000L); // 超时兜底；正常路径由终态帧结束
+        SseSession session = new SseSession(emitter);
 
-        AtomicBoolean open = new AtomicBoolean(true);
-        /** API 没有 removeListener：关闭后（终态/超时/客户端断开）回调成空操作即可（任务生命周期有限）。 */
-        Runnable closeOnce = () -> {
-            if (open.compareAndSet(true, false)) {
-                emitter.complete();
+        // API 没有 removeListener：挂上后随会话关闭退化为空操作即可（任务生命周期有限）
+        task.addListener(new TaskListener() {
+            @Override
+            public void onProgress(ProgressSnapshot snapshot) {
+                session.send("progress", DownloadProgressView.of(id, task.state(), snapshot));
             }
-        };
-        Object sendLock = new Object(); // 回调可能来自事件池的多个线程，串行化发送保证帧有序
-        BiConsumer<String, Object> send = (event, data) -> {
+
+            @Override
+            public void onStateChanged(TaskState from, TaskState to) {
+                session.send("state", new StateChangeView(from.name(), to.name()));
+                if (to == TaskState.COMPLETED || to == TaskState.CANCELLED || to == TaskState.FAILED) {
+                    session.closeOnce();
+                }
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                session.send("error", Map.of("message", String.valueOf(error)));
+            }
+        });
+
+        // 初始帧：连接即返回当前快照，前端不用等第一个事件拍
+        session.send("snapshot", DownloadProgressView.of(id, task.state(), task.snapshot()));
+        emitter.onCompletion(session::markClosed);
+        emitter.onTimeout(session::timeout);
+        return emitter;
+    }
+
+    /**
+     * 单条 SSE 连接的发送会话。
+     *
+     * <p>库回调发生在其事件线程池上（多线程），sendLock 串行化发送以保证帧有序；
+     * open 标志让终态帧 / 超时 / 客户端断开三条关闭路径都幂等——关闭后发送退化为
+     * 空操作，complete 至多执行一次。客户端断开由发送时序感知
+     * （IOException / IllegalStateException）。
+     */
+    private static final class SseSession {
+        private final SseEmitter emitter;
+        private final AtomicBoolean open = new AtomicBoolean(true);
+        private final Object sendLock = new Object();
+
+        SseSession(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+
+        /** 发送一帧（事件名 + JSON 负载）；会话已关闭则空操作，发送失败则关闭会话。 */
+        void send(String event, Object data) {
             if (!open.get()) {
                 return;
             }
@@ -121,39 +159,28 @@ public class DownloadController {
                 try {
                     emitter.send(SseEmitter.event().name(event).data(data, MediaType.APPLICATION_JSON));
                 } catch (IOException | IllegalStateException clientGone) {
-                    closeOnce.run();
+                    closeOnce();
                 }
             }
-        };
+        }
 
-        task.addListener(new TaskListener() {
-            @Override
-            public void onProgress(ProgressSnapshot snapshot) {
-                send.accept("progress", DownloadProgressView.of(id, task.state(), snapshot));
+        /** 幂等关闭：标记关闭并结束 emitter（终态帧与发送失败共用）。 */
+        void closeOnce() {
+            if (open.compareAndSet(true, false)) {
+                emitter.complete();
             }
+        }
 
-            @Override
-            public void onStateChanged(TaskState from, TaskState to) {
-                send.accept("state", new StateChangeView(from.name(), to.name()));
-                if (to == TaskState.COMPLETED || to == TaskState.CANCELLED || to == TaskState.FAILED) {
-                    closeOnce.run();
-                }
-            }
+        /** 仅标记关闭、不主动 complete：emitter 已自行结束的回调路径（onCompletion）用。 */
+        void markClosed() {
+            open.set(false);
+        }
 
-            @Override
-            public void onError(Throwable error) {
-                send.accept("error", Map.of("message", String.valueOf(error)));
-            }
-        });
-
-        // 初始帧：连接即返回当前快照，前端不用等第一个事件拍
-        send.accept("snapshot", DownloadProgressView.of(id, task.state(), task.snapshot()));
-        emitter.onCompletion(() -> open.set(false));
-        emitter.onTimeout(() -> {
+        /** 超时路径：标记关闭并结束 emitter。 */
+        void timeout() {
             open.set(false);
             emitter.complete();
-        });
-        return emitter;
+        }
     }
 
     /** 取消下载。deleteData=true 连同本地数据与断点一并删除；已完成的任务是空操作。 */

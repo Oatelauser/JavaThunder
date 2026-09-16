@@ -6,12 +6,14 @@ import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.MagnetUri;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
@@ -38,13 +40,13 @@ class MagnetAcceptanceTest {
             try (MetadataSeeder seeder = MetadataSeeder.start(
                 generated.contentFile(), meta, torrentBytes)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select()).build()) {
 
                     String magnetUri = "magnet:?xt=urn:btih:"
                         + HexFormat.of().formatHex(meta.infoHash())
-                        + "&dn=magnet.bin&tr=" + java.net.URLEncoder.encode(
-                            tracker.announceUrl(), java.nio.charset.StandardCharsets.UTF_8);
+                        + "&dn=magnet.bin&tr=" + URLEncoder.encode(
+                            tracker.announceUrl(), StandardCharsets.UTF_8);
                     DownloadTask task = client.download(MagnetUri.parse(magnetUri),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
                     DownloadResult result = task.future().get(90, TimeUnit.SECONDS);

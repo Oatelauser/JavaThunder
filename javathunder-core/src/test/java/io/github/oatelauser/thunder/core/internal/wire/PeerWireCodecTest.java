@@ -4,10 +4,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,14 +33,14 @@ class PeerWireCodecTest {
         void encodesExactWireLayout() {
             byte[] infoHash = new byte[20];
             infoHash[0] = 1;
-            byte[] peerId = "-JT0001-handshake001".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] peerId = "-JT0001-handshake001".getBytes(StandardCharsets.US_ASCII);
 
             byte[] wire = Handshake.encode(infoHash, peerId);
 
             assertEquals(68, wire.length);
             assertEquals(19, wire[0]);
             assertEquals("BitTorrent protocol",
-                new String(wire, 1, 19, java.nio.charset.StandardCharsets.US_ASCII));
+                new String(wire, 1, 19, StandardCharsets.US_ASCII));
             for (int i = 20; i < 28; i++) {
                 if (i != Handshake.EXTENSION_BIT_OFFSET) {
                     assertEquals(0, wire[i], "reserved bytes other than the BEP 10 byte must stay zero");
@@ -59,7 +60,7 @@ class PeerWireCodecTest {
             for (int i = 0; i < 20; i++) {
                 infoHash[i] = (byte) (0xA0 + i);
             }
-            byte[] peerId = "-JT0001-handshake002".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] peerId = "-JT0001-handshake002".getBytes(StandardCharsets.US_ASCII);
 
             Handshake handshake = Handshake.decode(Handshake.encode(infoHash, peerId));
 
@@ -158,7 +159,7 @@ class PeerWireCodecTest {
         @Test
         void rejectsUnknownMessageId() {
             // 语义已变更：未知 ID 不再断连（互操作容忍），见 unknownIdsAreToleratedNotFatal
-            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+            assertDoesNotThrow(
                 () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 9)));
         }
 
@@ -228,7 +229,7 @@ class PeerWireCodecTest {
         @Test
         void bep10ExtendedMessageRequiresSubId() {
             // 只有 id 无 sub-id 的 id-20 帧是协议违规，解码必须报错而非产脏值
-            assertThrows(io.github.oatelauser.thunder.core.internal.wire.PeerWireException.class,
+            assertThrows(PeerWireException.class,
                 () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 20)));
         }
 

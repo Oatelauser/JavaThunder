@@ -1,11 +1,22 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
-import io.github.oatelauser.thunder.core.internal.bencode.*;
+import io.github.oatelauser.thunder.core.internal.bencode.BDict;
+import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
+import io.github.oatelauser.thunder.core.internal.bencode.BString;
+import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
+import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
-import io.github.oatelauser.thunder.core.internal.tracker.*;
+import io.github.oatelauser.thunder.core.internal.tracker.AnnounceRequest;
+import io.github.oatelauser.thunder.core.internal.tracker.AnnounceResponse;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerException;
+import io.github.oatelauser.thunder.core.internal.tracker.TrackerGateway;
+import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Interested;
 import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
@@ -14,10 +25,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -42,27 +56,12 @@ public final class MetadataFetcher {
     private final byte[] peerId;
     private final List<String> trackers;
     private final PeerTransport transport;
-    private final TrackerClient trackerClient;
+    private final TrackerGateway trackerGateway;
     private final int listenPort;
     private final CompletableFuture<byte[]> result = new CompletableFuture<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, MetadataSession> sessions = new ConcurrentHashMap<>();
     private final CountDownLatch finished = new CountDownLatch(1);
-
-    public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
-            TrackerClient trackerClient, int listenPort) {
-        this(infoHash, trackers, transport, trackerClient, listenPort, null);
-    }
-
-    @Nullable
-    private final UdpTrackerClient udpTracker;
-
-    public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
-            TrackerClient trackerClient, int listenPort,
-            @Nullable
-            PeerDiscoverySource discovery) {
-        this(infoHash, trackers, transport, trackerClient, listenPort, discovery, null);
-    }
 
     public MetadataFetcher(byte[] infoHash, List<String> trackers, PeerTransport transport,
             TrackerClient trackerClient, int listenPort,
@@ -71,10 +70,9 @@ public final class MetadataFetcher {
         this.infoHash = infoHash.clone();
         this.trackers = List.copyOf(trackers);
         this.transport = transport;
-        this.trackerClient = trackerClient;
+        this.trackerGateway = new TrackerGateway(trackerClient, udpTracker);
         this.listenPort = listenPort;
         this.discovery = discovery;
-        this.udpTracker = udpTracker;
         this.peerId = PeerIds.generate();
     }
 
@@ -117,10 +115,7 @@ public final class MetadataFetcher {
                 0, 0, 0, TrackerEvent.STARTED, 50);
         for (String url : trackers) {
             try {
-                var response = UdpTrackerClient
-                        .supports(url) && udpTracker != null
-                        ? udpTracker.announce(url, request)
-                        : trackerClient.announce(url, request);
+                AnnounceResponse response = trackerGateway.announce(url, request);
                 if (response.failureReason() == null) {
                     response.peers().forEach(candidates::offer);
                 }
@@ -171,7 +166,7 @@ public final class MetadataFetcher {
         }
         MetadataSession session = new MetadataSession(key, channel);
         sessions.put(key, session);
-        channel.setMessageListener((java.util.List<PeerWireMessage> messages) -> {
+        channel.setMessageListener((List<PeerWireMessage> messages) -> {
             for (PeerWireMessage message : messages) {
                 handle(session, message);
             }
@@ -182,70 +177,87 @@ public final class MetadataFetcher {
             return; // 对端握手未声明 BEP 10：ut_metadata 无从协商，等下一个 Peer
         }
         // BEP 10 扩展握手：声明我们支持 ut_metadata（子 ID 1）
-        BDict m = new BDict(java.util.Map.of(
+        BDict m = new BDict(Map.of(
                 BString.of("ut_metadata"), new BInteger(OUR_UT_METADATA_ID)));
-        java.util.Map<BString, BencodeValue> handshake = new java.util.TreeMap<>(BString.UNSIGNED_ORDER);
+        Map<BString, BencodeValue> handshake = new TreeMap<>(BString.UNSIGNED_ORDER);
         handshake.put(BString.of("m"), m);
         handshake.put(BString.of("p"), new BInteger(listenPort));
         channel.write(new ExtendedMessage(0, Bencode.encode(new BDict(handshake))));
     }
 
+    /** 消息分发：只处理 BEP 10 扩展消息（握手与 ut_metadata data），其余不影响元数据交换。 */
     private boolean handle(MetadataSession session, PeerWireMessage message) {
         if (!(message instanceof ExtendedMessage extended)) {
-            return true; // 非/扩展消息不影响元数据交换
+            return true; // 非扩展消息不影响元数据交换
         }
         if (extended.extendedId() == 0) {
-            BDict handshake = decode(extended.payload());
-            if (handshake == null) {
-                return true;
-            }
-            BencodeValue utMetadata = handshake.get("m") instanceof BDict m
-                    ? m.get("ut_metadata") : null;
-            if (utMetadata instanceof BInteger id && id.value() > 0) {
-                session.remoteUtMetadataId = (int) id.value();
-                BencodeValue size = handshake.get("metadata_size");
-                if (size instanceof BInteger metadataSize
-                        && metadataSize.value() > 0 && metadataSize.value() <= 8 * 1024 * 1024) {
-                    session.metadataSize = (int) metadataSize.value();
-                    requestBlocks(session);
-                }
-            }
-            return true;
+            return handleHandshake(session, extended.payload());
         }
         if (extended.extendedId() == OUR_UT_METADATA_ID && session.remoteUtMetadataId > 0) {
-            // BEP 9 data 消息 = bencoded 头 + 原始 info 字节：必须用 decodeValue（容忍
-            // 尾部数据）解析头——严格版 decode 会因 trailing data 抛错而丢弃所有分块。
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(extended.payload());
-            BencodeValue headerValue;
-            try {
-                headerValue = Bencode.decodeValue(buf);
-            } catch (RuntimeException e) {
-                return true;
-            }
-            if (!(headerValue instanceof BDict response)) {
-                return true;
-            }
-            int msgType = response.get("msg_type") instanceof BInteger t ? (int) t.value() : -1;
-            int piece = response.get("piece") instanceof BInteger p ? (int) p.value() : -1;
-            int totalPieces = (session.metadataSize + METADATA_BLOCK - 1) / METADATA_BLOCK;
-            if (msgType != 1 || piece < 0 || piece >= totalPieces || session.metadataSize <= 0) {
-                return true; // data 之外的响应（reject 等）忽略
-            }
-            // 头/data 分界 = 解码后的缓冲 position（decodeValue 停在值后，与 TorrentParser 同语义）
-            int headerEnd = buf.position();
-            int from = piece * METADATA_BLOCK;
-            int to = (int) Math.min((long) from + METADATA_BLOCK, session.metadataSize);
-            int dataLength = to - from;
-            if (extended.payload().length - headerEnd < dataLength) {
-                return true; // 截断
-            }
-            System.arraycopy(extended.payload(), headerEnd, session.metadata, from, dataLength);
-            session.receivedPieces++;
-            if (session.receivedPieces == totalPieces) {
-                completeWith(session.metadata, session.metadataSize);
+            handleData(session, extended.payload());
+        }
+        return true;
+    }
+
+    /** BEP 10 扩展握手：协商对端的 ut_metadata 子 ID 与 metadata_size，两者齐备即开始请求分块。 */
+    private boolean handleHandshake(MetadataSession session, byte[] payload) {
+        BDict handshake = decode(payload);
+        if (handshake == null) {
+            return true;
+        }
+        BencodeValue utMetadata = handshake.get("m") instanceof BDict m
+                ? m.get("ut_metadata") : null;
+        if (utMetadata instanceof BInteger id && id.value() > 0) {
+            session.remoteUtMetadataId = (int) id.value();
+            BencodeValue size = handshake.get("metadata_size");
+            if (size instanceof BInteger metadataSize
+                    && metadataSize.value() > 0 && metadataSize.value() <= 8 * 1024 * 1024) {
+                session.metadataSize = (int) metadataSize.value();
+                requestBlocks(session);
             }
         }
         return true;
+    }
+
+    /**
+     * BEP 9 data 分块：载荷 = bencoded 头 + 原始 info 字节。头必须用 decodeValue
+     * （容忍尾部数据）解析——严格版 decode 会因 trailing data 抛错而丢弃所有分块；
+     * 头/数据分界取解码后的缓冲 position（与 TorrentParser 同语义）。
+     */
+    private void handleData(MetadataSession session, byte[] payload) {
+        ByteBuffer buf = ByteBuffer.wrap(payload);
+        BencodeValue headerValue;
+        try {
+            headerValue = Bencode.decodeValue(buf);
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (!(headerValue instanceof BDict response)) {
+            return;
+        }
+        int msgType = response.get("msg_type") instanceof BInteger t ? (int) t.value() : -1;
+        int piece = response.get("piece") instanceof BInteger p ? (int) p.value() : -1;
+        int totalPieces = (session.metadataSize + METADATA_BLOCK - 1) / METADATA_BLOCK;
+        if (msgType != 1 || piece < 0 || piece >= totalPieces || session.metadataSize <= 0) {
+            return; // data 之外的响应（reject 等）忽略
+        }
+        copyBlock(session, payload, buf.position(), piece, totalPieces);
+    }
+
+    /** 把 data 分块的原始字节拷入重组缓冲对应区间；收齐全部分块即整体交付 SHA-1 校验。 */
+    private void copyBlock(MetadataSession session, byte[] payload, int headerEnd,
+            int piece, int totalPieces) {
+        int from = piece * METADATA_BLOCK;
+        int to = (int) Math.min((long) from + METADATA_BLOCK, session.metadataSize);
+        int dataLength = to - from;
+        if (payload.length - headerEnd < dataLength) {
+            return; // 截断
+        }
+        System.arraycopy(payload, headerEnd, session.metadata, from, dataLength);
+        session.receivedPieces++;
+        if (session.receivedPieces == totalPieces) {
+            completeWith(session.metadata, session.metadataSize);
+        }
     }
 
     private void requestBlocks(MetadataSession session) {
@@ -253,7 +265,7 @@ public final class MetadataFetcher {
         session.receivedPieces = 0;
         int totalPieces = (session.metadataSize + METADATA_BLOCK - 1) / METADATA_BLOCK;
         for (int piece = 0; piece < totalPieces; piece++) {
-            java.util.Map<BString, BencodeValue> request = new java.util.TreeMap<>(BString.UNSIGNED_ORDER);
+            Map<BString, BencodeValue> request = new TreeMap<>(BString.UNSIGNED_ORDER);
             request.put(BString.of("msg_type"), new BInteger(0));
             request.put(BString.of("piece"), new BInteger(piece));
             session.channel.write(new ExtendedMessage(session.remoteUtMetadataId,

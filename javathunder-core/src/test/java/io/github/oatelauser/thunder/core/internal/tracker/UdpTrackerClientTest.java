@@ -6,8 +6,10 @@ import org.junit.jupiter.api.Test;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -33,7 +35,7 @@ class UdpTrackerClientTest {
             Thread.ofVirtual().start(() -> serve(server));
 
             byte[] infoHash = new byte[20];
-            byte[] peerId = "-JT0001-udptest00001".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            byte[] peerId = "-JT0001-udptest00001".getBytes(StandardCharsets.US_ASCII);
             AnnounceRequest request = new AnnounceRequest(infoHash, peerId, 6881,
                 100, 200, 300, TrackerEvent.STARTED, 10);
             AnnounceResponse response = client.announce(
@@ -85,7 +87,7 @@ class UdpTrackerClientTest {
                 byte[] wire = out.array();
                 server.send(new DatagramPacket(wire, wire.length,
                     packet.getAddress(), packet.getPort()));
-            } catch (java.net.SocketTimeoutException ignored) {
+            } catch (SocketTimeoutException ignored) {
                 // 检查 running
             } catch (Exception ignored) {
                 return;

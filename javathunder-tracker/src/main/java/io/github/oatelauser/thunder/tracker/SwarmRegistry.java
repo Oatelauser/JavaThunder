@@ -1,11 +1,13 @@
 package io.github.oatelauser.thunder.tracker;
 
+import java.io.ByteArrayOutputStream;
 import java.net.InetSocketAddress;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -173,7 +175,7 @@ final class SwarmRegistry {
     }
 
     /** 单 swarm 的 scrape 计数：complete/downloaded/incomplete；未知 hash 全零。 */
-    java.util.Map<String, Long> scrapeEntry(String hex) {
+    Map<String, Long> scrapeEntry(String hex) {
         ConcurrentMap<InetSocketAddress, Peer> swarm = swarms.get(hex);
         SwarmView counted = swarm == null ? new SwarmView(0, 0, new byte[0]) : view(swarm, null, -1);
         AtomicLong downloaded = downloads.get(hex);
@@ -185,8 +187,8 @@ final class SwarmRegistry {
     }
 
     /** 全部已知 info-hash（活动 swarm ∪ 有 completed 计数者）。 */
-    java.util.Set<String> knownHashes() {
-        Set<String> hexes = new java.util.LinkedHashSet<>(swarms.keySet());
+    Set<String> knownHashes() {
+        Set<String> hexes = new LinkedHashSet<>(swarms.keySet());
         hexes.addAll(downloads.keySet());
         return hexes;
     }
@@ -213,7 +215,7 @@ final class SwarmRegistry {
                            @Nullable InetSocketAddress self, int maxPeers) {
         int seeders = 0;
         int leechers = 0;
-        java.io.ByteArrayOutputStream peers = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream peers = new ByteArrayOutputStream();
         for (Map.Entry<InetSocketAddress, Peer> entry : swarm.entrySet()) {
             if (entry.getValue().seeder) {
                 seeders++;

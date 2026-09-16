@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -86,7 +87,7 @@ class WhitelistTest {
     }
 
     private static String hex(int seed) {
-        return java.util.HexFormat.of().formatHex(infoHash(seed));
+        return HexFormat.of().formatHex(infoHash(seed));
     }
 
     private static String percentEncode(byte[] raw) {

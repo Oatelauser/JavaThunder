@@ -5,7 +5,7 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
@@ -43,8 +43,8 @@ class LoopbackAcceptanceTest {
 
             try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty())
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select())
                         .listenPort(17000 + random.nextInt(20000)).build()) {
 
                     DownloadTask task = client.download(generated.torrentFile(),
@@ -89,8 +89,8 @@ class LoopbackAcceptanceTest {
 
             try (FakeSeeder seeder = FakeSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty())
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select())
                         .listenPort(17000 + random.nextInt(20000)).build()) {
 
                     DownloadTask task = client.download(generated.torrentFile(),

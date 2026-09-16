@@ -1,5 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.tracker;
 
+import io.github.oatelauser.thunder.core.internal.wire.CompactPeer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -10,10 +11,13 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -106,11 +110,7 @@ public final class UdpTrackerClient implements AutoCloseable {
         int seeders = response.getInt(16);
         List<InetSocketAddress> peers = new ArrayList<>();
         for (int offset = 20; offset + 6 <= response.limit(); offset += 6) {
-            int base = offset;
-            String ip = (response.get(base) & 0xFF) + "." + (response.get(base + 1) & 0xFF) + "."
-                + (response.get(base + 2) & 0xFF) + "." + (response.get(base + 3) & 0xFF);
-            int port = ((response.get(base + 4) & 0xFF) << 8) | (response.get(base + 5) & 0xFF);
-            peers.add(new InetSocketAddress(ip, port));
+            peers.add(CompactPeer.decode6(response, offset));
         }
         return new AnnounceResponse(interval, seeders, leechers, peers, null);
     }
@@ -131,7 +131,7 @@ public final class UdpTrackerClient implements AutoCloseable {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 socket.receive(packet);
                 ByteBuffer response = ByteBuffer.wrap(
-                    java.util.Arrays.copyOf(packet.getData(), packet.getLength()))
+                    Arrays.copyOf(packet.getData(), packet.getLength()))
                     .order(ByteOrder.BIG_ENDIAN);
                 if (response.remaining() < 8 || response.getInt(4) != transactionId) {
                     continue; // 杂音/迟到旧事务：静默重试
@@ -143,7 +143,7 @@ public final class UdpTrackerClient implements AutoCloseable {
                     response.position(8);
                     response.get(message);
                     throw new TrackerException("udp tracker error: "
-                        + new String(message, java.nio.charset.StandardCharsets.UTF_8));
+                        + new String(message, StandardCharsets.UTF_8));
                 }
                 if (action != expectedAction) {
                     continue;
@@ -181,7 +181,7 @@ public final class UdpTrackerClient implements AutoCloseable {
             }
             InetAddress resolved = InetAddress.getByName(host); // 阻塞 DNS；调用方在虚拟线程上
             return new InetSocketAddress(resolved, port);
-        } catch (RuntimeException | java.net.UnknownHostException e) {
+        } catch (RuntimeException | UnknownHostException e) {
             return null;
         }
     }

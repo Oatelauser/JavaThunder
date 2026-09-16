@@ -1,5 +1,7 @@
 package io.github.oatelauser.thunder.dht.internal;
 
+import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
+import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.Builder;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.NodeId;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.Parsed;
@@ -8,54 +10,47 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.SocketTimeoutException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * DHT 客户端（BEP 5）：单 UDP socket + 接收线程 + 事务表。
+ * DHT 客户端（BEP 5）：迭代查找策略与自举编排。
  *
  * <p>核心能力：迭代式 find_node（自举与路由表填充）与 get_peers/announce_peer
- * （按 info-hash 找下载对端并宣告自己）。Kademlia alpha=3 并发度，K=8 桶宽。
- * bootstrap 节点可配置（公网默认 router.bittorrent.com 等；内网可自建并显式注入）。
+ * （按 info-hash 找下载对端并宣告自己）。Kademlia alpha=3 并发度（{@link Frontier}），
+ * K=8 桶宽。UDP 收发与事务配对在 {@link KrpcRpc}（构造时注入响应者观察回调把
+ * 响应者写进路由表）。bootstrap 节点可配置（公网默认 router.bittorrent.com 等；
+ * 内网可自建并显式注入）。
  */
 public final class DhtClient implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(DhtClient.class);
 
-    private static final int ALPHA = 3;
-    private static final int QUERY_TIMEOUT_MILLIS = 2000;
     public static final List<String> DEFAULT_BOOTSTRAP = List.of("router.bittorrent.com:6881",
             "dht.transmissionbt.com:6881", "router.utorrent.com:6881");
 
     private final NodeId selfId;
     private final RoutingTable table;
-    private final DatagramSocket socket;
-    private final SecureRandom random = new SecureRandom();
-    private final AtomicBoolean closed = new AtomicBoolean(false);
-    /**
-     * 待处理事务：事务ID → future。
-     */
-    private final ConcurrentHashMap<String, CompletableFuture<Parsed>> transactions = new ConcurrentHashMap<>();
+    private final KrpcRpc rpc;
 
     public DhtClient(int port) throws IOException {
         this.selfId = randomId();
         this.table = new RoutingTable(selfId);
-        this.socket = new DatagramSocket(port);
-        this.socket.setSoTimeout(250);
-        Thread.ofVirtual().name("THUNDER-DHT").start(this::receiveLoop);
+        this.rpc = new KrpcRpc(port, this::recordResponder);
+    }
+
+    /** 响应者观察：写进路由表；无 id 的响应跳过（仍会被 KrpcRpc 做事务配对）。 */
+    private void recordResponder(InetSocketAddress source, Parsed message) {
+        try {
+            table.offer(message.nodeId(), source.getAddress().getHostAddress(), source.getPort());
+        } catch (IllegalArgumentException ignored) {
+            // 无 id 的响应：仍可能携带数据，事务配对后照常完成
+        }
     }
 
     public static NodeId randomId() {
@@ -65,7 +60,7 @@ public final class DhtClient implements AutoCloseable {
     }
 
     public int port() {
-        return socket.getLocalPort();
+        return rpc.port();
     }
 
     public int knownNodes() {
@@ -81,8 +76,8 @@ public final class DhtClient implements AutoCloseable {
             if (address == null) {
                 continue;
             }
-            sendQuery(address, Builder.query(newTransactionId(), "find_node")
-                    .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(selfId.bytes()))
+            rpc.sendQuery(address, Builder.query(rpc.newTransactionId(), "find_node")
+                    .arg("target", new BString(selfId.bytes()))
                     .id(selfId));
         }
         // 迭代收敛：几轮 nearest 查询填充
@@ -98,188 +93,102 @@ public final class DhtClient implements AutoCloseable {
      */
     public CompletableFuture<List<InetSocketAddress>> getPeers(byte[] infoHash) {
         NodeId target = new NodeId(infoHash);
-        return CompletableFuture.supplyAsync(() -> {
-            List<InetSocketAddress> peers = new ArrayList<>();
-            Set<String> queried = new HashSet<>();
-            Set<String> announced = new HashSet<>();
-            List<RoutingTable.Entry> frontier = table.nearest(target, ALPHA * 2);
-            int rounds = 0;
-            while (!frontier.isEmpty() && rounds < 16) {
-                rounds++;
-                List<RoutingTable.Entry> batch = frontier.subList(0, Math.min(ALPHA, frontier.size()));
-                frontier = new ArrayList<>(frontier.subList(Math.min(ALPHA, frontier.size()), frontier.size()));
-                for (RoutingTable.Entry entry : batch) {
-                    if (!queried.add(entry.id().hex())) {
-                        continue;
-                    }
-                    InetSocketAddress address = new InetSocketAddress(entry.host(), entry.port());
-                    Parsed response = roundTrip(address, Builder.query(newTransactionId(), "get_peers")
-                            .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
-                            .id(selfId));
-                    if (response == null) {
-                        continue;
-                    }
-                    for (PeerAddr peer : response.values()) {
-                        peers.add(new InetSocketAddress(peer.host(), peer.port()));
-                    }
-                    byte[] token = response.token();
-                    if (token != null && announced.add(entry.id().hex())) {
-                        // announce_peer：向给出 token 的节点宣告我们持有该 info-hash
-                        roundTrip(address, Builder.query(newTransactionId(), "announce_peer")
-                                .arg("info_hash", new io.github.oatelauser.thunder.core.internal.bencode.BString(infoHash))
-                                .arg("port", new io.github.oatelauser.thunder.core.internal.bencode.BInteger(port()))
-                                .arg("token", new io.github.oatelauser.thunder.core.internal.bencode.BString(token))
-                                .id(selfId));
-                    }
-                    for (PeerAddr closer : response.nodes()) {
-                        if (closer.nodeId() == null) {
-                            continue;
-                        }
-                        NodeId closerId = new NodeId(closer.nodeId());
-                        table.offer(closerId, closer.host(), closer.port());
-                        frontier.add(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
-                    }
-                }
-                frontier.sort((a, b) -> RoutingTable.compareBytes(
-                        a.id().distanceTo(target), b.id().distanceTo(target)));
-                if (frontier.size() > 32) {
-                    frontier = new ArrayList<>(frontier.subList(0, 32));
-                }
-                if (peers.size() >= 50) {
-                    break;
-                }
+        CompletableFuture<List<InetSocketAddress>> result = new CompletableFuture<>();
+        Thread.ofVirtual().name("javathunder-dht-lookup").start(() -> {
+            try {
+                result.complete(lookupPeers(target));
+            } catch (Throwable t) {
+                result.completeExceptionally(t);
             }
-            return peers;
-        }, java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+        });
+        return result;
+    }
+
+    /** 迭代 get_peers 主体：每轮向 alpha 个最近节点查询，聚合 values 中的 peer 地址；拿到 token 的节点随即 announce_peer。 */
+    private List<InetSocketAddress> lookupPeers(NodeId target) {
+        List<InetSocketAddress> peers = new ArrayList<>();
+        Set<String> announced = new HashSet<>();
+        Frontier frontier = new Frontier(target, table.nearest(target, Frontier.ALPHA * 2));
+        for (int round = 0; round < 16 && !frontier.isEmpty() && peers.size() < 50; round++) {
+            for (RoutingTable.Entry entry : frontier.takeBatch()) {
+                queryGetPeers(entry, target, peers, announced, frontier);
+            }
+            frontier.tighten();
+        }
+        return peers;
+    }
+
+    /** 向单节点发 get_peers：收集 values、向 token 持有者 announce_peer、并入更近节点。 */
+    private void queryGetPeers(RoutingTable.Entry entry, NodeId target,
+            List<InetSocketAddress> peers, Set<String> announced, Frontier frontier) {
+        InetSocketAddress address = new InetSocketAddress(entry.host(), entry.port());
+        Parsed response = rpc.roundTrip(address, Builder.query(rpc.newTransactionId(), "get_peers")
+                .arg("info_hash", new BString(target.bytes()))
+                .id(selfId));
+        if (response == null) {
+            return;
+        }
+        for (PeerAddr peer : response.values()) {
+            peers.add(new InetSocketAddress(peer.host(), peer.port()));
+        }
+        byte[] token = response.token();
+        if (token != null && announced.add(entry.id().hex())) {
+            // announce_peer：向给出 token 的节点宣告我们持有该 info-hash
+            rpc.roundTrip(address, Builder.query(rpc.newTransactionId(), "announce_peer")
+                    .arg("info_hash", new BString(target.bytes()))
+                    .arg("port", new BInteger(port()))
+                    .arg("token", new BString(token))
+                    .id(selfId));
+        }
+        addCloserNodes(response, frontier);
+    }
+
+    /** 把响应 nodes 里的更近节点写进路由表并入 frontier（get_peers 路径）。 */
+    private void addCloserNodes(Parsed response, Frontier frontier) {
+        for (PeerAddr closer : response.nodes()) {
+            if (closer.nodeId() == null) {
+                continue;
+            }
+            NodeId closerId = new NodeId(closer.nodeId());
+            table.offer(closerId, closer.host(), closer.port());
+            frontier.offer(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
+        }
     }
 
     /**
      * 通用迭代 find_node：返回过程中发现的全部节点（也用于路由表保养）。
      */
     List<RoutingTable.Entry> iterativeFindNode(NodeId target) {
-        Set<String> queried = new HashSet<>();
         List<RoutingTable.Entry> found = new ArrayList<>();
-        List<RoutingTable.Entry> frontier = table.nearest(target, ALPHA * 2);
-        int rounds = 0;
-        while (!frontier.isEmpty() && rounds < 8) {
-            rounds++;
-            List<RoutingTable.Entry> batch = new ArrayList<>(
-                    frontier.subList(0, Math.min(ALPHA, frontier.size())));
-            frontier = new ArrayList<>(frontier.subList(Math.min(ALPHA, frontier.size()), frontier.size()));
-            for (RoutingTable.Entry entry : batch) {
-                if (!queried.add(entry.id().hex())) {
-                    continue;
-                }
-                Parsed response = roundTrip(new InetSocketAddress(entry.host(), entry.port()),
-                        Builder.query(newTransactionId(), "find_node")
-                                .arg("target", new io.github.oatelauser.thunder.core.internal.bencode.BString(target.bytes()))
-                                .id(selfId));
-                if (response == null) {
-                    continue;
-                }
-                for (PeerAddr closer : response.nodes()) {
-                    if (closer.nodeId() == null) {
-                        continue;
-                    }
-                    NodeId closerId = new NodeId(closer.nodeId());
-                    table.offer(closerId, closer.host(), closer.port());
-                    found.add(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
-                    frontier.add(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
-                }
+        Frontier frontier = new Frontier(target, table.nearest(target, Frontier.ALPHA * 2));
+        for (int round = 0; round < 8 && !frontier.isEmpty(); round++) {
+            for (RoutingTable.Entry entry : frontier.takeBatch()) {
+                queryFindNode(entry, target, found, frontier);
             }
-            frontier.sort((a, b) -> RoutingTable.compareBytes(
-                    a.id().distanceTo(target), b.id().distanceTo(target)));
-            if (frontier.size() > 32) {
-                frontier = new ArrayList<>(frontier.subList(0, 32));
-            }
+            frontier.tighten();
         }
         return found;
     }
 
-    // ---------------------------------------------------------------- transport
-
-    private Parsed roundTrip(InetSocketAddress address, Builder query) {
-        byte[] transactionId = null;
-        // Builder 已内嵌事务 ID；为超时配对重新提取——简化：发送后等待（阻塞版查询）
-        CompletableFuture<Parsed> future = new CompletableFuture<>();
-        try {
-            byte[] wire = query.encode();
-            Parsed preview = KrpcMessage.parse(wire);
-            transactionId = preview.transactionId();
-            transactions.put(key(transactionId), future);
-            socket.send(new DatagramPacket(wire, wire.length, address.getAddress(), address.getPort()));
-            return future.get(QUERY_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
-        } catch (InterruptedException | TimeoutException | IOException | ExecutionException e) {
-            return null;
-        } finally {
-            if (transactionId != null) {
-                transactions.remove(key(transactionId));
+    /** 向单节点发 find_node：更近节点写进路由表、结果集与 frontier。 */
+    private void queryFindNode(RoutingTable.Entry entry, NodeId target,
+            List<RoutingTable.Entry> found, Frontier frontier) {
+        Parsed response = rpc.roundTrip(new InetSocketAddress(entry.host(), entry.port()),
+                Builder.query(rpc.newTransactionId(), "find_node")
+                        .arg("target", new BString(target.bytes()))
+                        .id(selfId));
+        if (response == null) {
+            return;
+        }
+        for (PeerAddr closer : response.nodes()) {
+            if (closer.nodeId() == null) {
+                continue;
             }
+            NodeId closerId = new NodeId(closer.nodeId());
+            table.offer(closerId, closer.host(), closer.port());
+            found.add(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
+            frontier.offer(new RoutingTable.Entry(closerId, closer.host(), closer.port()));
         }
-    }
-
-    private void sendQuery(InetSocketAddress address, Builder query) {
-        try {
-            byte[] wire = query.encode();
-            // 发后不管（bootstrap 探测）：响应由接收线程进路由表
-            socket.send(new DatagramPacket(wire, wire.length, address.getAddress(), address.getPort()));
-        } catch (IOException e) {
-            log.debug("dht send to {} failed: {}", address, e.toString());
-        }
-    }
-
-    private void receiveLoop() {
-        byte[] buffer = new byte[4096];
-        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-        while (!closed.get()) {
-            try {
-                socket.receive(packet);
-                handlePacket(packet);
-            } catch (SocketTimeoutException ignored) {
-                // 周期唤醒检查 closed
-            } catch (IOException e) {
-                if (closed.get()) {
-                    return;
-                }
-                // Windows 上向死端口发送后的 ICMP 不可达会让下一次 receive 抛
-                // SocketException(Connection reset)；杂音/瞬时错误不应终止接收线程
-                log.debug("dht receive failed (continuing): {}", e.toString());
-            }
-        }
-    }
-
-    private void handlePacket(DatagramPacket packet) {
-        byte[] data = java.util.Arrays.copyOf(packet.getData(), packet.getLength());
-        Parsed message;
-        try {
-            message = KrpcMessage.parse(data);
-        } catch (IllegalArgumentException e) {
-            return; // 非 KRPC 流量（同端口杂音），忽略
-        }
-        if (!"r".equals(message.type()) && !"e".equals(message.type())) {
-            return; // 我们不响应他人查询（纯客户端模式；阶段后续可加服务侧）
-        }
-        // 记录响应者
-        try {
-            KrpcMessage.NodeId responder = message.nodeId();
-            table.offer(responder, packet.getAddress().getHostAddress(), packet.getPort());
-        } catch (IllegalArgumentException ignored) {
-            // 无 id 的响应：仍可能携带数据，事务配对后照常完成
-        }
-        CompletableFuture<Parsed> future = transactions.remove(key(message.transactionId()));
-        if (future != null) {
-            future.complete(message);
-        }
-    }
-
-    private byte[] newTransactionId() {
-        byte[] id = new byte[2];
-        random.nextBytes(id);
-        return id;
-    }
-
-    private static String key(byte[] transactionId) {
-        return java.util.HexFormat.of().formatHex(transactionId);
     }
 
     private static InetSocketAddress parse(String spec) {
@@ -305,8 +214,6 @@ public final class DhtClient implements AutoCloseable {
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true)) {
-            socket.close();
-        }
+        rpc.close();
     }
 }

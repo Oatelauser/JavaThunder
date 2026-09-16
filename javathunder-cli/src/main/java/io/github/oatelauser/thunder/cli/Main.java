@@ -6,7 +6,7 @@ import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.ProgressSnapshot;
 import io.github.oatelauser.thunder.api.TaskListener;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -29,7 +29,7 @@ public final class Main {
             }
         }
 
-        try (DefaultTorrentClient client = DefaultTorrentClient.create()) {
+        try (TorrentClient client = TorrentClient.create()) {
             DownloadTask task = client.download(torrent, DownloadOptions.defaults().targetDir(dir));
             task.addListener(new TaskListener() {
                 @Override

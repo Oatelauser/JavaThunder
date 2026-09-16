@@ -13,7 +13,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -134,7 +136,7 @@ class UdpTrackerProtocolTest {
                 assertEquals(TID, denied.getInt(4));
                 byte[] message = new byte[denied.remaining() - 8];
                 denied.position(8).get(message);
-                assertEquals("torrent not registered", new String(message, java.nio.charset.StandardCharsets.UTF_8));
+                assertEquals("torrent not registered", new String(message, StandardCharsets.UTF_8));
                 assertNull(tracker.stats().get(hex(4)), "被拒 swarm 不得残留");
 
                 announce(socket, target, connectionId, infoHash(3), 15801, 0, 2, 10);
@@ -216,7 +218,7 @@ class UdpTrackerProtocolTest {
     }
 
     private static String hex(int seed) {
-        return java.util.HexFormat.of().formatHex(infoHash(seed));
+        return HexFormat.of().formatHex(infoHash(seed));
     }
 
     private static String percentEncode(byte[] raw) {

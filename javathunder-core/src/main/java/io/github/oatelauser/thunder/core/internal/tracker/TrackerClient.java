@@ -6,6 +6,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.wire.CompactPeer;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -130,10 +131,7 @@ public final class TrackerClient {
             }
             List<InetSocketAddress> result = new ArrayList<>(data.length / 6);
             for (int i = 0; i < data.length; i += 6) {
-                String ip = (data[i] & 0xFF) + "." + (data[i + 1] & 0xFF) + "."
-                    + (data[i + 2] & 0xFF) + "." + (data[i + 3] & 0xFF);
-                int port = ((data[i + 4] & 0xFF) << 8) | (data[i + 5] & 0xFF);
-                result.add(new InetSocketAddress(ip, port));
+                result.add(CompactPeer.decode6(data, i));
             }
             return result;
         }

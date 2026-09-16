@@ -6,7 +6,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.HexFormat;
 import java.util.Random;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -118,7 +120,7 @@ class StatsMetricsEndpointTest {
 
     private static String sampleValue(String body, Pattern linePattern) {
         for (String line : body.split("\n")) {
-            java.util.regex.Matcher matcher = linePattern.matcher(line);
+            Matcher matcher = linePattern.matcher(line);
             if (matcher.matches()) {
                 return matcher.group(1);
             }
@@ -145,7 +147,7 @@ class StatsMetricsEndpointTest {
     }
 
     private static String hex(int seed) {
-        return java.util.HexFormat.of().formatHex(infoHash(seed));
+        return HexFormat.of().formatHex(infoHash(seed));
     }
 
     private static String percentEncode(byte[] raw) {

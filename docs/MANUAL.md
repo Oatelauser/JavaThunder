@@ -140,7 +140,6 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 
 ```java
 import io.github.oatelauser.thunder.api.*;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.testkit.*;
@@ -161,7 +160,7 @@ public class OfflineQuickStart {
 
             try (FakeSeeder seeder = FakeSeeder.start(gen.contentFile(), meta)) { // ③ 种子源（真实线协议 TCP 服务，回环）
                 seeder.announceTo(tracker);
-                try (TorrentClient client = DefaultTorrentClient.builder().build()) {  // ④ 下载方（你的业务代码）
+                try (TorrentClient client = TorrentClient.create()) {  // ④ 下载方（你的业务代码）
                     DownloadTask task = client.download(gen.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
                     task.addListener(new TaskListener() {
@@ -194,12 +193,11 @@ curl -fSL -o ubuntu.torrent https://releases.ubuntu.com/24.04/ubuntu-24.04.4-des
 ```java
 // QuickStart.java —— 注意：Ubuntu ISO 约 6GB，本例目标是"90 秒验证集成"，不是下完整
 import io.github.oatelauser.thunder.api.*;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
 import java.nio.file.Path;
 
 public class QuickStart {
     public static void main(String[] args) throws Exception {
-        try (TorrentClient client = DefaultTorrentClient.builder().build()) {
+        try (TorrentClient client = TorrentClient.create()) {
             DownloadTask task = client.download(
                 Path.of("ubuntu.torrent"),
                 DownloadOptions.defaults().targetDir(Path.of("downloads")));
@@ -334,7 +332,7 @@ public class Magnet {
 ```java
 import io.github.oatelauser.thunder.dht.DhtPeerDiscovery;
 
-try (TorrentClient client = DefaultTorrentClient.builder()
+try (TorrentClient client = TorrentClient.builder()
         .peerDiscovery(DhtPeerDiscovery.create())       // 公网自举节点
         .build()) {
     // 此时磁力里可以没有 &tr= ——Peer 发现走 DHT
@@ -372,7 +370,7 @@ options.restartVerify(RestartVerifyMode.NONE)     // 全信任位图（最快；
 
 ```java
 // 全局（client 级、跨任务）：
-DefaultTorrentClient.builder()
+TorrentClient.builder()
     .downloadLimitBytesPerSecond(10 * 1024 * 1024)   // 10MB/s；0=不限（默认）
     .uploadLimitBytesPerSecond(2 * 1024 * 1024);
 
@@ -523,9 +521,9 @@ client.close();            // 停一切（AutoCloseable，幂等）
 ```java
 // 方式一：系统属性（不改代码）
 //   java -Djavathunder.transport=nio YourApp
-// 方式二：显式（差分/调试）
-DefaultTorrentClient.builder()
-    .transportFactory(NioTransport::new)
+// 方式二：显式（api Builder）
+TorrentClient.builder()
+    .transport(TorrentClient.Transport.NIO)
     .build();
 ```
 
@@ -536,7 +534,7 @@ DefaultTorrentClient.builder()
 **依赖**：仅 core。
 
 ```java
-DefaultTorrentClient.builder()
+TorrentClient.builder()
     .listenerExecutor(java.awt.EventQueue::invokeLater)   // Swing 示例；也可换队列/exec
     .build();
 ```
@@ -562,7 +560,7 @@ demo profile 回环冒烟（`curl` 四步：POST → GET → SSE → DELETE）�
 class ThunderConfiguration {
     @Bean(destroyMethod = "close")            // 应用关闭时调 client.close()（姿势④）
     TorrentClient torrentClient() throws IOException {
-        return DefaultTorrentClient.builder().build();
+        return TorrentClient.create();
     }
 }
 ```
@@ -585,7 +583,7 @@ ExecutorService thunderListenerExecutor() {   // 专用池，随应用关闭
 @Bean(destroyMethod = "close")
 TorrentClient torrentClient(
         @Qualifier("thunderListenerExecutor") ExecutorService listenerPool) throws IOException {
-    return DefaultTorrentClient.builder().listenerExecutor(listenerPool).build();
+    return TorrentClient.builder().listenerExecutor(listenerPool).build();
 }
 ```
 
@@ -627,7 +625,7 @@ snapshot 轮询 + 事件推送、关闭时收尾这四件事完全相同（SSE �
 | `RestartVerifyMode` | FULL/SAMPLED/NONE | 重启校验档 |
 | `PeerDiscoverySource` | `getPeers(infoHash)` | 去 tracker 发现 SPI |
 
-**Builder（DefaultTorrentClient.builder()）**：`listenPort(6881)` `maxConcurrentTasks(3)` `maxPeersPerTask(50)` `download/uploadLimitBytesPerSecond(0)` `listenerExecutor(...)` `peerDiscovery(...)` `transportFactory(...)`
+**Builder（TorrentClient.builder()）**：`listenPort(6881)` `maxConcurrentTasks(3)` `maxPeersPerTask(50)` `download/uploadLimitBytesPerSecond(0)` `listenerExecutor(...)` `peerDiscovery(...)` `transport(Transport)`——NIO=事件循环生产路径，BLOCKING=阻塞参照实现（差分/调试），缺省 BLOCKING
 
 **dht 模块**：`DhtPeerDiscovery.create()` / `create(List<String> 内网自举)`
 

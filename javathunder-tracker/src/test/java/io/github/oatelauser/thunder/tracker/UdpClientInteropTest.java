@@ -7,6 +7,7 @@ import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,7 +33,7 @@ class UdpClientInteropTest {
             try (UdpTrackerClient client = new UdpTrackerClient()) {
                 AnnounceRequest request = new AnnounceRequest(
                         infoHash,
-                        "-JT0001-interop00001".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                        "-JT0001-interop00001".getBytes(StandardCharsets.US_ASCII),
                         6881, 0, 0, 999_999, TrackerEvent.STARTED, 10);
                 AnnounceResponse response = client.announce(
                         "udp://127.0.0.1:" + udpPort + "/announce", request);

@@ -5,14 +5,14 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
-import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
-import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
-import io.github.oatelauser.thunder.core.internal.wire.*;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
+import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
+import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
+import io.github.oatelauser.thunder.core.internal.wire.Request;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -62,7 +62,8 @@ public final class NioSeeder implements AutoCloseable {
                     for (PeerWireMessage message : messages) {
                         if (message instanceof Request request) {
                             try {
-                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(), readBlock(request)));
+                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
+                                        SeederCore.readBlock(content, meta, request)));
                             } catch (IOException e) {
                                 return; // 源文件不可读：直接放弃本批
                             }
@@ -70,32 +71,15 @@ public final class NioSeeder implements AutoCloseable {
                     }
                     channel.write(responses);
                 });
-                Bitfield all = new Bitfield(meta.pieceCount());
-                for (int i = 0; i < meta.pieceCount(); i++) {
-                    all.set(i);
+                for (PeerWireMessage hello : SeederCore.seederHello(meta)) {
+                    channel.write(hello);
                 }
-                channel.write(new BitfieldMessage(all.toBytes()));
-                channel.write(Unchoke.INSTANCE);
             }
 
             @Override
             public void onConnectFailed(InetSocketAddress address, @Nullable Throwable cause) {
             }
         };
-    }
-
-    /**
-     * 分块读：位置式 channel 读，16KiB 粒度。
-     */
-    private byte[] readBlock(Request request) throws IOException {
-        long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
-        ByteBuffer buffer = ByteBuffer.allocate(request.length());
-        while (buffer.hasRemaining()) {
-            if (content.read(buffer, offset + buffer.position()) < 0) {
-                throw new IOException("unexpected eof at " + (offset + buffer.position()));
-            }
-        }
-        return buffer.array();
     }
 
     @Override

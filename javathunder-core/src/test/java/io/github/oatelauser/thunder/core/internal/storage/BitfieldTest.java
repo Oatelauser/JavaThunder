@@ -60,6 +60,19 @@ class BitfieldTest {
     }
 
     @Test
+    void allSetMarksEveryPieceAndKeepsPaddingZero() {
+        // 10 个 piece：第二字节仅高 2 位有效，低 6 位空闲位必须为零
+        Bitfield bitfield = Bitfield.allSet(10);
+        assertArrayEquals(new byte[]{(byte) 0xFF, (byte) 0xC0}, bitfield.toBytes());
+        assertTrue(bitfield.allSet());
+        assertEquals(10, bitfield.cardinality());
+
+        // 8 的整数倍：无空闲位，全部字节 0xFF
+        assertArrayEquals(new byte[]{(byte) 0xFF}, Bitfield.allSet(8).toBytes());
+        assertArrayEquals(new byte[]{(byte) 0x80}, Bitfield.allSet(1).toBytes());
+    }
+
+    @Test
     void countsAndCompletion() {
         Bitfield bitfield = new Bitfield(3);
         assertEquals(0, bitfield.cardinality());

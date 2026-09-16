@@ -5,7 +5,7 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.RestartVerifyMode;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
@@ -51,7 +51,7 @@ class RestartVerifyModeTest {
 
                 // 第一次：完整下载（用于拿到干净进度态）
                 long fullElapsed;
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out));
                     task.future().get(60, TimeUnit.SECONDS);
@@ -74,7 +74,7 @@ class RestartVerifyModeTest {
                 Files.deleteIfExists(out.resolve("sampled.bin"));
 
                 long t0 = System.nanoTime();
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out)
                             .restartVerify(RestartVerifyMode.FULL));
@@ -100,7 +100,7 @@ class RestartVerifyModeTest {
                 }
                 Files.deleteIfExists(out.resolve("sampled.bin"));
                 long t1 = System.nanoTime();
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out)
                             .restartVerify(RestartVerifyMode.SAMPLED));
@@ -143,7 +143,7 @@ class RestartVerifyModeTest {
                         new ResumeState(meta.infoHash(), pieces, completed, 0, 0,
                             System.currentTimeMillis()));
                 }
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out)
                             .restartVerify(RestartVerifyMode.SAMPLED));
@@ -167,7 +167,7 @@ class RestartVerifyModeTest {
 
             try (NioSeeder seeder = NioSeeder.start(generated.contentFile(), meta)) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out));
                     task.future().get(60, TimeUnit.SECONDS);
@@ -187,7 +187,7 @@ class RestartVerifyModeTest {
                 }
                 Files.deleteIfExists(out.resolve("none.bin"));
 
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(out)
                             .restartVerify(RestartVerifyMode.NONE));

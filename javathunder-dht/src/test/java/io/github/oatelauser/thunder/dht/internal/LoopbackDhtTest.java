@@ -1,17 +1,15 @@
 package io.github.oatelauser.thunder.dht.internal;
 
-import io.github.oatelauser.thunder.core.internal.bencode.BDict;
-import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.Builder;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.NodeId;
-import io.github.oatelauser.thunder.dht.internal.KrpcMessage.PeerAddr;
 import org.junit.jupiter.api.Test;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -96,7 +94,7 @@ class LoopbackDhtTest {
                         response.result("nodes", new BString(compact));
                         if ("get_peers".equals(query.method())) {
                             response.result("token", new BString(new byte[]{1, 2, 3}));
-                            response.result("values", new BList(java.util.List.of(
+                            response.result("values", new BList(List.of(
                                 new BString(new byte[]{127, 0, 0, 1, (byte) 0xC9, 0x35}))));
                         }
                     }
@@ -110,7 +108,7 @@ class LoopbackDhtTest {
                 byte[] wire = response.encode();
                 server.send(new DatagramPacket(wire, wire.length,
                     packet.getAddress(), packet.getPort()));
-            } catch (java.net.SocketTimeoutException ignored) {
+            } catch (SocketTimeoutException ignored) {
                 // 循环检查 closed
             } catch (Exception e) {
                 return;

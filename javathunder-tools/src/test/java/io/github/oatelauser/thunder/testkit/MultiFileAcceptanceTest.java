@@ -5,7 +5,7 @@ import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.TaskState;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
@@ -46,8 +46,8 @@ class MultiFileAcceptanceTest {
 
             try (FakeSeeder seeder = FakeSeeder.startMultiFile(meta, generated.rootDir())) {
                 seeder.announceTo(tracker);
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder()
-                        .transportFactory(Transports.fromSystemProperty()).build()) {
+                try (TorrentClient client = TorrentClient.builder()
+                        .transport(Transports.select()).build()) {
 
                     DownloadTask task = client.download(generated.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));

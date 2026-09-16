@@ -2,6 +2,7 @@ package io.github.oatelauser.thunder.dht.internal;
 
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
+import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.Builder;
 import io.github.oatelauser.thunder.dht.internal.KrpcMessage.NodeId;
@@ -55,7 +56,7 @@ class KrpcMessageTest {
             .id(id)
             .result("token", new BString(token))
             .result("nodes", new BString(concat(node1, node2)))
-            .result("values", new io.github.oatelauser.thunder.core.internal.bencode.BList(
+            .result("values", new BList(
                 List.of(new BString(peer))))
             .encode();
 
@@ -90,7 +91,7 @@ class KrpcMessageTest {
     @Test
     void malformedRejections() {
         assertThrows(IllegalArgumentException.class, () -> KrpcMessage.parse(Bencode.encode(
-            new io.github.oatelauser.thunder.core.internal.bencode.BInteger(5))));
+            new BInteger(5))));
         assertThrows(IllegalArgumentException.class,
             () -> KrpcMessage.parse("d1:ad2:id20:aaaaaaaaaaaaaaaaaaaae1:t2:aae".getBytes()));
         // 缺 y

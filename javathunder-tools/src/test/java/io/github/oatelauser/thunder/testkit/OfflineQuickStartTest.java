@@ -4,8 +4,9 @@ import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
+import io.github.oatelauser.thunder.api.ProgressSnapshot;
 import io.github.oatelauser.thunder.api.TaskListener;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
@@ -42,12 +43,12 @@ class OfflineQuickStartTest {
                 seeder.announceTo(tracker);
 
                 // ④ 下载方：就是你要写的业务代码
-                try (DefaultTorrentClient client = DefaultTorrentClient.builder().build()) {
+                try (TorrentClient client = TorrentClient.builder().build()) {
                     DownloadTask task = client.download(gen.torrentFile(),
                         DownloadOptions.defaults().targetDir(dir.resolve("out")));
 
                     task.addListener(new TaskListener() {
-                        @Override public void onProgress(io.github.oatelauser.thunder.api.ProgressSnapshot p) {
+                        @Override public void onProgress(ProgressSnapshot p) {
                             System.out.printf("progress %.1f%%  ↓%dKB/s  peers=%d%n",
                                 p.fraction() * 100, p.downloadRateBps() / 1024, p.connectedPeers());
                         }

@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -137,7 +138,7 @@ public final class BlockingTransport implements PeerTransport {
     static final class BlockingChannel implements PeerChannel {
 
         private final PeerConnection connection;
-        private volatile Consumer<java.util.List<PeerWireMessage>> messageListener = m -> {
+        private volatile Consumer<List<PeerWireMessage>> messageListener = m -> {
         };
         private volatile Consumer<@Nullable Throwable> closeListener = t -> {
         };
@@ -155,7 +156,7 @@ public final class BlockingTransport implements PeerTransport {
             try {
                 while (!closed) {
                     PeerWireMessage message = connection.read();
-                    messageListener.accept(java.util.List.of(message));
+                    messageListener.accept(List.of(message));
                 }
             } catch (IOException | RuntimeException e) {
                 closeWith(e);
@@ -192,7 +193,7 @@ public final class BlockingTransport implements PeerTransport {
         }
 
         @Override
-        public void setMessageListener(Consumer<java.util.List<PeerWireMessage>> listener) {
+        public void setMessageListener(Consumer<List<PeerWireMessage>> listener) {
             this.messageListener = listener;
         }
 

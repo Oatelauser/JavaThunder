@@ -6,10 +6,12 @@ import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import org.jspecify.annotations.Nullable;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -39,7 +41,7 @@ public final class KrpcMessage {
         }
 
         public String hex() {
-            return java.util.HexFormat.of().formatHex(bytes);
+            return HexFormat.of().formatHex(bytes);
         }
 
         @Override
@@ -54,7 +56,7 @@ public final class KrpcMessage {
     }
 
     /** 紧凑节点/对端地址（26 字节 = id+ip+port / 6 字节 = ip+port）。 */
-    public record PeerAddr(byte @org.jspecify.annotations.Nullable [] nodeId, String host, int port) {
+    public record PeerAddr(byte @Nullable [] nodeId, String host, int port) {
 
         public static PeerAddr compact6(byte[] six) {
             if (six.length != 6) {
@@ -138,13 +140,18 @@ public final class KrpcMessage {
         public byte[] encode() {
             return Bencode.encode(new BDict(dict));
         }
+
+        /** 本构建器将写入线格式的事务 ID（发送方据此登记/撤销事务配对，免二次解析报文）。 */
+        public byte[] transactionId() {
+            return transactionId.clone();
+        }
     }
 
     /** 解析后的 KRPC 报文。 */
     public record Parsed(byte[] transactionId, String type,
-                         String method, @org.jspecify.annotations.Nullable BDict args,
-                         @org.jspecify.annotations.Nullable BDict response,
-                         @org.jspecify.annotations.Nullable List<Object> error) {
+                         String method, @Nullable BDict args,
+                         @Nullable BDict response,
+                         @Nullable List<Object> error) {
 
         public NodeId nodeId() {
             BDict source = args != null ? args : response;

@@ -58,34 +58,23 @@ public final class PeerWireCodec {
             throw new PeerWireException("frame payload truncated: declared " + length
                 + ", available " + buf.remaining());
         }
-        int id = buf.get() & 0xFF;
-        int payloadLength = (int) length - 1;
+        return decodeMessage(buf.get() & 0xFF, (int) length - 1, buf);
+    }
+
+    /** 按消息 ID（BEP 3）解码载荷；长度前缀与整帧完整性已由 {@link #decodeFrame} 校验。 */
+    private static PeerWireMessage decodeMessage(int id, int payloadLength, ByteBuffer buf) {
         return switch (id) {
             case 0 -> requireLength(payloadLength, 0, Choke.INSTANCE);
             case 1 -> requireLength(payloadLength, 0, Unchoke.INSTANCE);
             case 2 -> requireLength(payloadLength, 0, Interested.INSTANCE);
             case 3 -> requireLength(payloadLength, 0, NotInterested.INSTANCE);
-            case 4 -> {
-                requireExact(payloadLength, 4, "have");
-                yield new Have(buf.getInt());
-            }
-            case 5 -> {
-                byte[] bits = new byte[payloadLength];
-                buf.get(bits);
-                yield new BitfieldMessage(bits);
-            }
+            case 4 -> decodeHave(payloadLength, buf);
+            case 5 -> decodeBitfield(payloadLength, buf);
             case 6 -> {
                 requireExact(payloadLength, 12, "request");
                 yield new Request(buf.getInt(), buf.getInt(), buf.getInt());
             }
-            case 7 -> {
-                requireAtLeast(payloadLength, 8, "piece");
-                int pieceIndex = buf.getInt();
-                int begin = buf.getInt();
-                byte[] block = new byte[payloadLength - 8];
-                buf.get(block);
-                yield new PieceMessage(pieceIndex, begin, block);
-            }
+            case 7 -> decodePiece(payloadLength, buf);
             case 8 -> {
                 requireExact(payloadLength, 12, "cancel");
                 yield new Cancel(buf.getInt(), buf.getInt(), buf.getInt());
@@ -96,21 +85,47 @@ public final class PeerWireCodec {
                 requireExact(payloadLength, 12, "reject");
                 yield new RejectRequest(buf.getInt(), buf.getInt(), buf.getInt());
             }
-            case 20 -> {
-                if (payloadLength < 1) {
-                    throw new PeerWireException("extended message requires a sub-id byte");
-                }
-                int extendedId = buf.get() & 0xFF; // 子 ID 紧跟消息 ID
-                byte[] payload = new byte[payloadLength - 1]; // 其后是 bencoded 字典
-                buf.get(payload);
-                yield new ExtendedMessage(extendedId, payload);
-            }
+            case 20 -> decodeExtended(payloadLength, buf);
             default -> {
                 byte[] payload = new byte[payloadLength];
                 buf.get(payload); // 未实现的 ID：吞掉载荷，容忍解码
                 yield new UnsupportedMessage(id);
             }
         };
+    }
+
+    /** have：4 字节 piece 序号。 */
+    private static PeerWireMessage decodeHave(int payloadLength, ByteBuffer buf) {
+        requireExact(payloadLength, 4, "have");
+        return new Have(buf.getInt());
+    }
+
+    /** bitfield：载荷即原始位图字节，位数与 piece 数的对齐由上层校验。 */
+    private static PeerWireMessage decodeBitfield(int payloadLength, ByteBuffer buf) {
+        byte[] bits = new byte[payloadLength];
+        buf.get(bits);
+        return new BitfieldMessage(bits);
+    }
+
+    /** piece：8 字节头（piece 序号 + 块内偏移）之后是整个 Block 数据。 */
+    private static PeerWireMessage decodePiece(int payloadLength, ByteBuffer buf) {
+        requireAtLeast(payloadLength, 8, "piece");
+        int pieceIndex = buf.getInt();
+        int begin = buf.getInt();
+        byte[] block = new byte[payloadLength - 8];
+        buf.get(block);
+        return new PieceMessage(pieceIndex, begin, block);
+    }
+
+    /** 扩展消息（BEP 10）：首字节为握手协商出的子 ID，其后是 bencoded 载荷。 */
+    private static PeerWireMessage decodeExtended(int payloadLength, ByteBuffer buf) {
+        if (payloadLength < 1) {
+            throw new PeerWireException("extended message requires a sub-id byte");
+        }
+        int extendedId = buf.get() & 0xFF; // 子 ID 紧跟消息 ID
+        byte[] payload = new byte[payloadLength - 1]; // 其后是 bencoded 字典
+        buf.get(payload);
+        return new ExtendedMessage(extendedId, payload);
     }
 
     private static byte[] single(int id) {

@@ -18,7 +18,11 @@ import org.jspecify.annotations.Nullable;
  * {@link #stats()} 可观测统计。UDP 与白名单默认关闭（库用户零迁移），
  * 分别经 {@link #enableUdp(int)} / {@link #enableWhitelist(Collection)} 开启。
  * 可执行 jar 入口见 {@link TrackerMain}（CLI 默认开启 UDP，与 HTTP 同端口）。
+ *
+ * @deprecated EmbeddedTracker 的 1:1 纯转发壳，按删除测试应直接使用
+ *     {@link EmbeddedTracker}；保留是为 0.3.0 二进制兼容，计划随下个 minor 收编。
  */
+@Deprecated
 public final class TrackerServer implements AutoCloseable {
 
     /** BitTorrent 客户端默认监听端口段起点。 */

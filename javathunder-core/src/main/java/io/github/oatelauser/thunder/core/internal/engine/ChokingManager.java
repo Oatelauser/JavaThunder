@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 标准 tit-for-tat choking（DESIGN §5.9）：每轮 unchoke 对我上传最多的 4 个 Peer
@@ -20,10 +22,10 @@ public final class ChokingManager {
 
     private final Random random;
     /** 速率记账走并发容器（C5-2）：每块一次的 record* 不再进监视器。 */
-    private final java.util.concurrent.ConcurrentMap<Object, Long> receivedFromPeer =
-        new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentMap<Object, Long> sentToPeer =
-        new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentMap<Object, Long> receivedFromPeer =
+        new ConcurrentHashMap<>();
+    private final ConcurrentMap<Object, Long> sentToPeer =
+        new ConcurrentHashMap<>();
     private Object optimisticPeer;
 
     public ChokingManager(Random random) {

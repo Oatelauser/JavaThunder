@@ -1,22 +1,33 @@
 package io.github.oatelauser.thunder.testkit;
 
-import io.github.oatelauser.thunder.core.internal.bencode.*;
-import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
+import io.github.oatelauser.thunder.core.internal.bencode.BDict;
+import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
+import io.github.oatelauser.thunder.core.internal.bencode.BString;
+import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
+import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
+import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerChannel;
 import io.github.oatelauser.thunder.core.internal.peer.transport.TransportHandler;
-import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
-import io.github.oatelauser.thunder.core.internal.tracker.PeerIds;
-import io.github.oatelauser.thunder.core.internal.wire.*;
+import io.github.oatelauser.thunder.core.internal.peer.PeerIds;
+import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
+import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
+import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
+import io.github.oatelauser.thunder.core.internal.wire.Request;
+import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import org.jspecify.annotations.Nullable;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static java.nio.file.StandardOpenOption.READ;
 
@@ -33,7 +44,7 @@ public final class MetadataSeeder implements AutoCloseable {
     private final NioTransport transport;
     private final TorrentMetadata meta;
     private final byte[] infoDict;
-    private final java.nio.channels.FileChannel content;
+    private final FileChannel content;
 
     private MetadataSeeder(NioTransport transport, TorrentMetadata meta, byte[] infoDict, FileChannel content) {
         this.transport = transport;
@@ -46,31 +57,11 @@ public final class MetadataSeeder implements AutoCloseable {
      * torrentBytes 为 .torrent 原始文件（info 区间按 Bencode 位置切出）；contentFile 为完整数据。
      */
     public static MetadataSeeder start(Path contentFile, TorrentMetadata meta, byte[] torrentBytes) throws IOException {
-        byte[] info = extractInfoDict(torrentBytes);
+        byte[] info = TorrentParser.extractInfoDict(torrentBytes);
         NioTransport transport = new NioTransport(PeerIds.generate());
         MetadataSeeder seeder = new MetadataSeeder(transport, meta, info, FileChannel.open(contentFile, READ));
         transport.listen(0, infoHash -> Arrays.equals(infoHash, meta.infoHash()) ? seeder.handler() : null);
         return seeder;
-    }
-
-    private static byte[] extractInfoDict(byte[] torrentBytes) {
-        String marker = "4:infod";
-        outer:
-        for (int i = 0; i < torrentBytes.length - marker.length(); i++) {
-            for (int j = 0; j < marker.length(); j++) {
-                if (torrentBytes[i + j] != marker.getBytes()[j]) {
-                    continue outer;
-                }
-            }
-            int start = i + 6; // "4:info" 之后，指向 'd'
-            // 用解码器消费整个 info 值：结束 position 即字典字节边界。
-            // 手写配对扫描不可靠——键内容里的 'e'/'d'/'l'（如 "name"）会被误认作结构字符。
-            // 注意 wrap(array, start, …) 的 position 是数组绝对偏移，结束点就是 position 本身。
-            ByteBuffer buf = ByteBuffer.wrap(torrentBytes, start, torrentBytes.length - start);
-            Bencode.decodeValue(buf);
-            return Arrays.copyOfRange(torrentBytes, start, buf.position());
-        }
-        throw new IllegalArgumentException("cannot locate info dict in torrent bytes");
     }
 
     public int port() {
@@ -92,7 +83,8 @@ public final class MetadataSeeder implements AutoCloseable {
                             responses.addAll(handleExtended(ext));
                         } else if (message instanceof Request request) {
                             try {
-                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(), readBlock(request)));
+                                responses.add(new PieceMessage(request.pieceIndex(), request.begin(),
+                                        SeederCore.readBlock(content, meta, request)));
                             } catch (IOException e) {
                                 return;
                             }
@@ -100,12 +92,9 @@ public final class MetadataSeeder implements AutoCloseable {
                     }
                     channel.write(responses);
                 });
-                Bitfield all = new Bitfield(meta.pieceCount());
-                for (int i = 0; i < meta.pieceCount(); i++) {
-                    all.set(i);
+                for (PeerWireMessage hello : SeederCore.seederHello(meta)) {
+                    channel.write(hello);
                 }
-                channel.write(new BitfieldMessage(all.toBytes()));
-                channel.write(Unchoke.INSTANCE);
             }
 
             @Override
@@ -114,8 +103,8 @@ public final class MetadataSeeder implements AutoCloseable {
         };
     }
 
-    private java.util.List<PeerWireMessage> handleExtended(ExtendedMessage ext) {
-        java.util.List<PeerWireMessage> out = new java.util.ArrayList<>();
+    private List<PeerWireMessage> handleExtended(ExtendedMessage ext) {
+        List<PeerWireMessage> out = new ArrayList<>();
         if (ext.extendedId() == 0) {
             // 扩展握手：m{ut_metadata:1} + metadata_size
             Map<BString, BencodeValue> handshake = new TreeMap<>(BString.UNSIGNED_ORDER);
@@ -137,7 +126,7 @@ public final class MetadataSeeder implements AutoCloseable {
             int from = piece * METADATA_BLOCK;
             int to = (int) Math.min((long) from + METADATA_BLOCK, infoDict.length);
             byte[] data = Arrays.copyOfRange(infoDict, from, to);
-            java.io.ByteArrayOutputStream payload = new java.io.ByteArrayOutputStream();
+            ByteArrayOutputStream payload = new ByteArrayOutputStream();
             Map<BString, BencodeValue> header = new TreeMap<>(BString.UNSIGNED_ORDER);
             header.put(BString.of("msg_type"), new BInteger(1));
             header.put(BString.of("piece"), new BInteger(piece));
@@ -147,17 +136,6 @@ public final class MetadataSeeder implements AutoCloseable {
             out.add(new ExtendedMessage(UT_METADATA_ID, payload.toByteArray()));
         }
         return out;
-    }
-
-    private byte[] readBlock(Request request) throws IOException {
-        long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
-        ByteBuffer buffer = ByteBuffer.allocate(request.length());
-        while (buffer.hasRemaining()) {
-            if (content.read(buffer, offset + buffer.position()) < 0) {
-                throw new IOException("unexpected eof at " + (offset + buffer.position()));
-            }
-        }
-        return buffer.array();
     }
 
     @Override

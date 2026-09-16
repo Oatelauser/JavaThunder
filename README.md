@@ -18,10 +18,13 @@
 ## 30 秒上手
 
 ```java
-import io.github.oatelauser.thunder.api.*;
-import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
+import io.github.oatelauser.thunder.api.DownloadOptions;
+import io.github.oatelauser.thunder.api.DownloadTask;
+import io.github.oatelauser.thunder.api.ProgressSnapshot;
+import io.github.oatelauser.thunder.api.TaskListener;
+import io.github.oatelauser.thunder.api.TorrentClient;
 
-try (TorrentClient client = DefaultTorrentClient.builder().build()) {
+try (TorrentClient client = TorrentClient.create()) {
     DownloadTask task = client.download(
         Path.of("ubuntu.torrent"),
         DownloadOptions.defaults()
