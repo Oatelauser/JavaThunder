@@ -17,6 +17,10 @@ import java.util.List;
  *
  * <p>多文件种子（B3）：{@code files} 非空，{@code length} = 全部文件长度之和，
  * Piece 覆盖文件的拼接字节流（可跨文件边界）；{@code name} 为根目录名。
+ *
+ * <p>WebSeed（BEP 19）：{@code webSeeds} 为顶层 url-list 归一化的 HTTP 兜底源列表，
+ * 空列表表示无。磁力路径（元数据来自 BEP 9 的裸 info 字典）天然为空——url-list
+ * 是顶层字段，不在 info 内。
  */
 public record TorrentMetadata(
         byte[] infoHash,
@@ -30,7 +34,8 @@ public record TorrentMetadata(
         long pieceLength,
         byte[] pieces,
         boolean privateFlag,
-        List<TorrentFile> files) {
+        List<TorrentFile> files,
+        List<String> webSeeds) {
 
     /**
      * 多文件种子中的一个文件：相对根目录的路径 + 在拼接字节流中的偏移。
@@ -66,6 +71,7 @@ public record TorrentMetadata(
         announceList = List.copyOf(announceList);
         pieces = pieces.clone();
         files = List.copyOf(files);
+        webSeeds = List.copyOf(webSeeds);
     }
 
     public boolean multiFile() {

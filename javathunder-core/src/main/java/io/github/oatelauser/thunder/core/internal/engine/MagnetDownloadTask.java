@@ -1,6 +1,12 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
-import io.github.oatelauser.thunder.api.*;
+import io.github.oatelauser.thunder.api.DownloadOptions;
+import io.github.oatelauser.thunder.api.DownloadResult;
+import io.github.oatelauser.thunder.api.DownloadTask;
+import io.github.oatelauser.thunder.api.MagnetUri;
+import io.github.oatelauser.thunder.api.ProgressSnapshot;
+import io.github.oatelauser.thunder.api.TaskListener;
+import io.github.oatelauser.thunder.api.TaskState;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;

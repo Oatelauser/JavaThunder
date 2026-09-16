@@ -69,7 +69,9 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 ## 第三阶段（按需/远期）
 
 - BEP 6 快速扩展
-- BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）
+- BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）——**已实现（v1，0.5.0）**：单文件
+  `url-list` 自动启用、按件 Range 拉取、源级退避熔断、与 Peer 通道在途互斥；
+  多文件 WebSeed（BEP 53 草案）未实现
 - BEP 52 v2 / 混合种子（Merkle 树 + SHA-256）
 
 ## 明确不实现

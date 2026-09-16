@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 测试用种子由 Bencode 编码器构造；期望 info-hash 由测试自行对 info 字典字节做 SHA-1，
@@ -272,6 +273,61 @@ class TorrentParserTest {
             infoFields.put(BString.of("pieces"), new BString(new byte[20]));
             byte[] bytes = torrent(new BDict(infoFields), Map.of());
             assertThrows(IllegalArgumentException.class, () -> TorrentParser.parse(bytes));
+        }
+    }
+
+    /** url-list（BEP 19）：双形态归一、缺省为空、非法形态拒绝、不参与 info-hash。 */
+    @Nested
+    class WebSeedList {
+
+        @Test
+        void singleStringFormNormalizesToOneElementList() {
+            Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
+            top.put(BString.of("url-list"), BString.of("http://mirror.example/file.iso"));
+            TorrentMetadata meta = TorrentParser.parse(torrent(infoDict(), top));
+            assertEquals(List.of("http://mirror.example/file.iso"), meta.webSeeds());
+        }
+
+        @Test
+        void listOfStringsFormIsKeptInOrder() {
+            Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
+            top.put(BString.of("url-list"), new BList(List.of(
+                    BString.of("http://a.example/f"), BString.of("http://b.example/f"))));
+            TorrentMetadata meta = TorrentParser.parse(torrent(infoDict(), top));
+            assertEquals(List.of("http://a.example/f", "http://b.example/f"), meta.webSeeds());
+        }
+
+        @Test
+        void absentFieldYieldsEmptyList() {
+            assertEquals(List.of(), TorrentParser.parse(torrent(infoDict(), Map.of())).webSeeds());
+        }
+
+        @Test
+        void nonStringFormIsRejected() {
+            Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
+            top.put(BString.of("url-list"), new BInteger(3));
+            byte[] bytes = torrent(infoDict(), top);
+            assertThrows(IllegalArgumentException.class, () -> TorrentParser.parse(bytes));
+        }
+
+        @Test
+        void urlListDoesNotAffectInfoHash() {
+            byte[] plain = TorrentParser.parse(torrent(infoDict(), Map.of())).infoHash();
+            Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
+            top.put(BString.of("url-list"), BString.of("http://mirror.example/file.iso"));
+            byte[] withUrlList = TorrentParser.parse(torrent(infoDict(), top)).infoHash();
+            assertArrayEquals(plain, withUrlList);
+        }
+
+        @Test
+        void trackerlessUrlListOnlyTorrentIsAccepted() {
+            // 纯 WebSeed 种子（无 announce/announce-list，仅 url-list）应可解析
+            Map<BString, BencodeValue> raw = new TreeMap<>(BString.UNSIGNED_ORDER);
+            raw.put(BString.of("url-list"), BString.of("http://mirror.example/file.iso"));
+            raw.put(BString.of("info"), infoDict());
+            TorrentMetadata meta = TorrentParser.parse(Bencode.encode(new BDict(raw)));
+            assertEquals(List.of("http://mirror.example/file.iso"), meta.webSeeds());
+            assertTrue(meta.trackerTiers().isEmpty(), "url-list-only torrent has no tracker tiers");
         }
     }
 }

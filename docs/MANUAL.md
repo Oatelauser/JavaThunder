@@ -397,6 +397,33 @@ options.rateLimits(/*↓*/ 512 * 1024, /*↑*/ 64 * 1024);
 - 内网分发：每台下载机自动成为分片的中继供给者——**这就是 §1.5"机器越多越快"的机制落地**
 - 想抑制它：§4.5 的上传限速；想贡献更多：完成后转做种（§5.1）
 
+### 4.7 HTTP 兜底源（WebSeed，BEP 19）
+
+**依赖**：仅 core。种子里带 `url-list`（指向完整文件的 HTTP 地址）即**自动启用，零配置零代码**——引擎在 Peer 通道之外开一条并行的 HTTP 通道，按件（Range 请求）从 HTTP 源拉取，与 Peer 下载互不重复、互为备份。典型场景：
+
+- **冷启动保险**：新分发的种子还没人做完种（Swarm 里没有 Seed），HTTP 源保证第一批下载者也能跑满
+- **镜像分发兜底**：内网大规模分发时即使所有 Peer 都被拖慢，HTTP 文件服务器/对象存储仍能补齐缺口
+- **无 tracker 分发**：`url-list`-only 的种子（无 announce）也能直接下载
+
+行为边界（自动处理，无需干预）：
+
+- HTTP 源必须支持 `Range` 请求（绝大多数静态服务器/对象存储都支持）；返回 200 全量的源会被弃用
+- 源数据与种子不符（校验失败）连续 2 件即停用 HTTP 通道，Peer 通道照常完成下载；反之 Peer 全挂时 HTTP 通道兜底
+- HTTP 下载与 Peer 下载**共享同一对限速桶**（全局 + 任务级，§4.5），不会绕过限速
+- 磁力链接的元数据来自 BEP 9（裸 info 字典），天然不含 `url-list`——WebSeed 只对 .torrent 生效
+- 当前版本：单文件种子的 `url-list`（BEP 19 本体）；多文件 HTTP 源（BEP 53，草案态）未实现
+
+用 testkit 造一个带兜底源的种子（给自己的集成测试/内网分发用）：
+
+```java
+// announceUrl 传 null 即"纯 WebSeed 种子"（无 tracker）
+GeneratedTorrent seed = TorrentGenerator.generate(dir, "model.bin", sizeBytes,
+        pieceLength, announceUrl, List.of("http://mirror.lan/model.bin"), new Random());
+DownloadTask task = client.download(seed.torrentFile(), options);   // HTTP 通道自动生效
+```
+
+分发侧只要把完整文件放到任意支持 Range 的 HTTP 服务上（nginx / 对象存储签名 URL 均可），把该 URL 写进种子的 `url-list`。
+
 ---
 
 ## 第 5 章 上传与分发场景：我要把文件给别人
@@ -688,8 +715,8 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 
 ## 第 9 章 协议兼容（BEP）速查
 
-实现：BEP 3(v1+多文件)/9/10/11/12/15/20/23/27 完整，BEP 5 查询模式（可选模块）；
-容忍解码：BEP 6；未实现：BEP 52(v2)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
+实现：BEP 3(v1+多文件)/9/10/11/12/15/19/20/23/27 完整，BEP 5 查询模式（可选模块）；
+容忍解码：BEP 6；未实现：BEP 52(v2)、BEP 53(多文件 WebSeed)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
 
 ## 第 10 章 部署要点
 

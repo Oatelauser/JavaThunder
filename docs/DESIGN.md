@@ -398,6 +398,23 @@ private 种子除外）。
 16 字节精简报文协议：`connect`（60s 缓存 connection_id）→ `announce`；事务 ID 校验、
 指数退避重传；与 HTTP Tracker 并列为 Peer 来源，优先级相同。
 
+### 6.5a WebSeed HTTP 兜底源（BEP 19，已实现 v1）
+
+顶层 `url-list`（单字符串/列表双形态归一）指向完整文件的 HTTP 地址。引擎内为与 Peer
+通道**平行的独立通道**，非伪 Peer：
+
+- `webseed/HttpRangeClient`：整件 `Range: bytes=a-b` 拉取（一次 RTT + 顺序流，优于逐块）；
+  多源轮询、瞬态失败指数退避（2s 起翻倍、上限 60s、成功复位）、连续 2 次熔断该源；
+  两类硬失败立即熔断——HTTP 200（忽略 Range 回全量，大文件不可接受）与 416
+  （区间越界 = 源数据与种子不符的强信号）。全源熔断即停通道，Peer 照常。
+- `engine/WebSeedFetcher`：拉取循环挑"本地缺失 ∩ 未被占用"的件（availability 升序，
+  与 Peer 选件同语义），认领进 verifying 集合即对 Peer 选件隐藏（两通道不重复拉取）；
+  整件经既有组装-校验-落盘路径落定（与 Peer 完成路径共用 `completeVerifiedPiece` 尾部）；
+  连续 2 个坏件停通道。内存上界 = 1 件在途；速率与 Peer 共享同一对两级令牌桶。
+- 生命周期随会话（start/pause/resume/cancel/fail）；磁力路径（BEP 9 裸 info 字典）
+  天然无 url-list，不生效。
+- 范围：v1 为单文件种子（BEP 19 本体）；多文件 HTTP 源（BEP 53，草案）未实现。
+
 ### 6.6 多文件种子（B3，已实现）
 
 `info.files[]`（`path[]` + `length`）按累积偏移映射到同一 Piece 流：`TorrentMetadata.files`

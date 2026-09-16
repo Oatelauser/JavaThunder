@@ -16,7 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * v1 .torrent 解析器（BEP 3 / 12 / 27）。
+ * v1 .torrent 解析器（BEP 3 / 12 / 19 / 27）。
  *
  * <p>info-hash 必须对 info 字典的<b>原始字节区间</b>计算——本解析器在扫描顶层字典时记录
  * info 值的字节边界，禁止"解码后重编码再哈希"（规范形可能与原始字节不一致）。
@@ -51,7 +51,8 @@ public final class TorrentParser {
             @Nullable String createdBy,
             @Nullable Long creationDateSec,
             BDict info,
-            byte[] infoRawBytes) {
+            byte[] infoRawBytes,
+            List<String> webSeeds) {
     }
 
     private static Scanned scan(byte[] bytes) {
@@ -67,7 +68,7 @@ public final class TorrentParser {
             throw new IllegalArgumentException("missing info dict");
         }
         return new Scanned(top.announce, top.announceList, top.comment, top.createdBy,
-                top.creationDateSec, top.info, sliceInfoRaw(buf, top));
+                top.creationDateSec, top.info, sliceInfoRaw(buf, top), top.webSeeds);
     }
 
     /**
@@ -116,6 +117,7 @@ public final class TorrentParser {
         switch (key) {
             case "announce" -> top.announce = asString(value, "announce");
             case "announce-list" -> top.announceList = asTiers(value);
+            case "url-list" -> top.webSeeds = asUrlList(value);
             case "comment" -> top.comment = asString(value, "comment");
             case "created by" -> top.createdBy = asString(value, "created by");
             case "creation date" -> top.creationDateSec = asInteger(value, "creation date").value();
@@ -140,6 +142,8 @@ public final class TorrentParser {
     private static final class TopLevel {
         @Nullable String announce;
         List<List<String>> announceList = List.of();
+        /** WebSeed 兜底源（BEP 19 顶层 url-list，不参与 info-hash）。 */
+        List<String> webSeeds = List.of();
         @Nullable String comment;
         @Nullable String createdBy;
         @Nullable Long creationDateSec;
@@ -158,7 +162,7 @@ public final class TorrentParser {
         Scanned scanned = new Scanned(
                 trackers.isEmpty() ? null : trackers.get(0),
                 tiers,
-                null, null, null, info, new byte[0]);
+                null, null, null, info, new byte[0], List.of());
         // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
         return buildWithHash(scanned, infoHash);
     }
@@ -167,13 +171,13 @@ public final class TorrentParser {
         TorrentMetadata meta = build(s);
         return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
                 meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
-                meta.pieces(), meta.privateFlag(), meta.files());
+                meta.pieces(), meta.privateFlag(), meta.files(), meta.webSeeds());
     }
 
     private static TorrentMetadata build(Scanned s) {
-        if (s.announce() == null && s.announceList().isEmpty()) {
-            throw new IllegalArgumentException("no tracker in torrent (announce/announce-list); "
-                    + "trackerless download arrives with DHT in phase 2");
+        if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
+            throw new IllegalArgumentException("no tracker and no url-list in torrent; "
+                    + "trackerless download requires DHT (inject via peerDiscovery)");
         }
         String name = requireString(s.info(), "name");
         if (name.isEmpty()) {
@@ -214,7 +218,7 @@ public final class TorrentParser {
 
         return new TorrentMetadata(sha1(s.infoRawBytes()), s.announce(), s.announceList(),
                 s.comment(), s.createdBy(), s.creationDateSec(),
-                name, length, pieceLength, pieces.value(), privateFlag, files);
+                name, length, pieceLength, pieces.value(), privateFlag, files, s.webSeeds());
     }
 
     /**
@@ -323,6 +327,21 @@ public final class TorrentParser {
             result.add(List.copyOf(urls));
         }
         return List.copyOf(result);
+    }
+
+    /** url-list（BEP 19）：单字符串（单源旧形态）或字符串列表（多源）归一化为列表。 */
+    private static List<String> asUrlList(BencodeValue value) {
+        if (value instanceof BString single) {
+            return List.of(single.text());
+        }
+        if (!(value instanceof BList list)) {
+            throw new IllegalArgumentException("url-list must be a byte string or a list of byte strings");
+        }
+        List<String> urls = new ArrayList<>();
+        for (BencodeValue url : list.value()) {
+            urls.add(asString(url, "url-list entry"));
+        }
+        return List.copyOf(urls);
     }
 
     private static byte[] sha1(byte[] data) {

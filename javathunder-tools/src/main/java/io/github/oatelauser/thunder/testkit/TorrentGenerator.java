@@ -6,6 +6,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import org.jspecify.annotations.Nullable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -37,6 +38,15 @@ public final class TorrentGenerator {
 
     public static GeneratedTorrent generate(Path dir, String name, int sizeBytes, int pieceLength,
             String announceUrl, Random random) throws IOException {
+        return generate(dir, name, sizeBytes, pieceLength, announceUrl, List.of(), random);
+    }
+
+    /**
+     * 完整形态：可附带 WebSeed 兜底源（BEP 19 顶层 url-list）。{@code announceUrl} 传
+     * null 且 {@code webSeeds} 非空时生成纯 WebSeed 种子（无 tracker，仅 HTTP 源）。
+     */
+    public static GeneratedTorrent generate(Path dir, String name, int sizeBytes, int pieceLength,
+            @Nullable String announceUrl, List<String> webSeeds, Random random) throws IOException {
         byte[] content = new byte[sizeBytes];
         random.nextBytes(content);
         Path contentFile = dir.resolve(name);
@@ -57,7 +67,16 @@ public final class TorrentGenerator {
         info.put(BString.of("length"), new BInteger(sizeBytes));
         info.put(BString.of("pieces"), new BString(pieces));
         Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
-        top.put(BString.of("announce"), BString.of(announceUrl));
+        if (announceUrl != null) {
+            top.put(BString.of("announce"), BString.of(announceUrl));
+        }
+        if (!webSeeds.isEmpty()) {
+            List<BencodeValue> urls = new ArrayList<>();
+            for (String url : webSeeds) {
+                urls.add(BString.of(url));
+            }
+            top.put(BString.of("url-list"), new BList(urls));
+        }
         top.put(BString.of("info"), new BDict(info));
         Path torrentFile = dir.resolve(name + ".torrent");
         Files.write(torrentFile, Bencode.encode(new BDict(top)));

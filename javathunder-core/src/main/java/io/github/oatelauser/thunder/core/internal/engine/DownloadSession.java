@@ -21,6 +21,7 @@ import io.github.oatelauser.thunder.core.internal.tracker.TrackerClient;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
 import io.github.oatelauser.thunder.core.internal.tracker.TrackerGateway;
 import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
+import io.github.oatelauser.thunder.core.internal.webseed.HttpRangeClient;
 import io.github.oatelauser.thunder.core.internal.wire.BitfieldMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Cancel;
 import io.github.oatelauser.thunder.core.internal.wire.Choke;
@@ -49,6 +50,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -113,6 +115,9 @@ public final class DownloadSession {
     private final TrackerGateway gateway;
     private final TrackerAnnouncer announcer;
     private final PexManager pex;
+    /** HTTP 兜底源通道（BEP 19，url-list 为空则不存在）；与 Peer 通道平行、互为备份。 */
+    @Nullable
+    private final WebSeedFetcher webSeed;
     private final ConcurrentHashMap<String, PeerSession> peers = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, Integer> badPiecesByPeer = new ConcurrentHashMap<>();
@@ -174,6 +179,9 @@ public final class DownloadSession {
                 () -> Math.max(0, meta.length() - localCardinality() * meta.pieceLength()),
                 this::offerCandidate, stats::uploaded, stats::downloaded);
         this.pex = new PexManager(meta, config.maxPeers());
+        this.webSeed = meta.webSeeds().isEmpty()
+                ? null
+                : new WebSeedFetcher(meta, new HttpRangeClient(meta.webSeeds(), meta.length()), this);
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -186,6 +194,7 @@ public final class DownloadSession {
         restoreResume();
         setState(TaskState.DOWNLOADING);
         spawnLoops();
+        startWebSeed();
     }
 
     /**
@@ -240,12 +249,25 @@ public final class DownloadSession {
         };
     }
 
+    private void startWebSeed() {
+        if (webSeed != null) {
+            webSeed.start();
+        }
+    }
+
+    private void stopWebSeed() {
+        if (webSeed != null) {
+            webSeed.stop();
+        }
+    }
+
     public synchronized void pause() {
         if (state != TaskState.DOWNLOADING && state != TaskState.SEEDING) {
             return;
         }
         pausedFrom = state;
         running.set(false);
+        stopWebSeed();
         closeAllPeers();
         announcer.announce(TrackerEvent.STOPPED);
         saveResumeQuietly();
@@ -260,6 +282,7 @@ public final class DownloadSession {
         // 回到暂停前的活跃态：SEEDING（seed-only / seedAfterComplete）与 DOWNLOADING 语义不同
         setState(pausedFrom != null ? pausedFrom : TaskState.DOWNLOADING);
         spawnLoops();
+        startWebSeed();
     }
 
     public synchronized void cancel(boolean deleteData) {
@@ -267,6 +290,7 @@ public final class DownloadSession {
             return;
         }
         running.set(false);
+        stopWebSeed();
         closeAllPeers();
         announcer.announce(TrackerEvent.STOPPED);
         try {
@@ -289,6 +313,7 @@ public final class DownloadSession {
 
     private void fail(Throwable error) {
         running.set(false);
+        stopWebSeed();
         closeAllPeers();
         try {
             storage.close();
@@ -757,6 +782,17 @@ public final class DownloadSession {
         if (localHas(piece)) {
             return; // 与并行路径竞争，对方已落定
         }
+        completeVerifiedPiece(piece);
+        if (state == TaskState.DOWNLOADING) {
+            refillRequests(source);
+        }
+    }
+
+    /**
+     * 件校验通过后的落定——Peer 与 WebSeed 两条完成路径的公共尾部：位图落定、
+ * 断点脏标记、事件扇出与 Have 广播，全部收齐触发 complete。
+     */
+    private void completeVerifiedPiece(int piece) {
         localSet(piece);
         verifyingPieces.remove(piece); // 好件：本地位图已覆盖，隐藏使命结束
         store.markDirty(); // 降频：progressLoop 定时刷盘，不再每件一写
@@ -765,9 +801,7 @@ public final class DownloadSession {
         log.debug("piece {}/{} verified", piece + 1, meta.pieceCount());
         if (localAllSet()) {
             complete();
-            return;
         }
-        refillRequests(source);
     }
 
     /**
@@ -971,6 +1005,73 @@ public final class DownloadSession {
         TaskState from = state;
         state = to;
         dispatcher.stateChanged(from, to);
+    }
+
+    // ---------------------------------------------------------------- web seed 挂点（WebSeedFetcher 经此与会话协作）
+
+    /** WebSeed 通道是否应继续拉取（下载态且会话运行中；SEEDING/暂停/完成即停）。 */
+    boolean webSeedActive() {
+        return running.get() && state == TaskState.DOWNLOADING;
+    }
+
+    /** 该件是否已校验落定。 */
+    boolean hasPiece(int piece) {
+        return localHas(piece);
+    }
+
+    /** 该件是否已被任一通道占用（Peer 组装/在途 或 校验中）。 */
+    boolean pieceClaimed(int piece) {
+        return verifyingPieces.contains(piece) || activePieces.contains(piece);
+    }
+
+    /** WebSeed 认领一件（进 verifying 集合即对 Peer 选件隐藏，防两通道重复拉取）。 */
+    void claimPieceForWebSeed(int piece) {
+        verifyingPieces.add(piece);
+    }
+
+    /** WebSeed 放弃认领（拉取失败/坏件），交还 Peer 通道。 */
+    void releaseWebSeedClaim(int piece) {
+        verifyingPieces.remove(piece);
+    }
+
+    /** 该件的 Swarm 持有数（选件排序用）。 */
+    int pieceAvailability(int piece) {
+        return scheduler.availability(piece);
+    }
+
+    /** WebSeed 字节计入两级限速（与 Peer 通道共享同一对令牌桶）与下载计数。 */
+    void webSeedDownloaded(int bytes) throws InterruptedException {
+        config.globalDownload().acquire(bytes);
+        if (taskDownloadLimit != null) {
+            taskDownloadLimit.acquire(bytes);
+        }
+        stats.addDownloaded(bytes);
+    }
+
+    /**
+     * WebSeed 整件校验并落盘：按 16KiB 块拆分组装（复用既有校验/落盘路径），
+     * 通过则走公共落定尾部。
+     *
+     * @return false = 哈希不符（坏件，从未落盘）；IOException = 存储故障（应失败任务）
+     */
+    boolean verifyAndStoreWebSeedPiece(int piece, byte[] body) throws IOException {
+        List<BlockRequest> blocks = scheduler.blocksOf(piece);
+        PieceAssembler assembler = new PieceAssembler(storage.pieceLengthOf(piece), blocks);
+        int slot = 0;
+        for (BlockRequest block : blocks) {
+            assembler.blocks[slot++] =
+                    Arrays.copyOfRange(body, block.begin(), block.begin() + block.length());
+        }
+        boolean verified = PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+        if (verified) {
+            completeVerifiedPiece(piece);
+        }
+        return verified;
+    }
+
+    /** WebSeed 通道遭遇不可恢复故障时委托会话失败整个任务。 */
+    void failTask(Throwable error) {
+        fail(error);
     }
 
     private boolean localHas(int index) {
