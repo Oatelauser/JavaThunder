@@ -22,10 +22,14 @@ final class UdpTrackerServer {
     static final int ACTION_CONNECT = 0;
     static final int ACTION_ANNOUNCE = 1;
     static final int ACTION_ERROR = 3;
-    /** BEP 15 event 数值：1=completed，3=stopped。 */
+    /**
+     * BEP 15 event 数值：1=completed，3=stopped。
+     */
     private static final int EVENT_COMPLETED = 1;
     private static final int EVENT_STOPPED = 3;
-    /** core UdpTrackerClient 布局的 announce 请求最小长度（port 84..88、numwant 88..92）。 */
+    /**
+     * core UdpTrackerClient 布局的 announce 请求最小长度（port 84..88、numwant 88..92）。
+     */
     private static final int ANNOUNCE_REQUEST_BYTES = 92;
 
     private final DatagramSocket socket;
@@ -34,14 +38,16 @@ final class UdpTrackerServer {
     private final int announceIntervalSeconds;
 
     UdpTrackerServer(DatagramSocket socket, SwarmRegistry registry, TrackerMetrics metrics,
-                     int announceIntervalSeconds) {
+            int announceIntervalSeconds) {
         this.socket = socket;
         this.registry = registry;
         this.metrics = metrics;
         this.announceIntervalSeconds = announceIntervalSeconds;
     }
 
-    /** 启动接收循环（虚拟线程）；socket 关闭时退出。 */
+    /**
+     * 启动接收循环（虚拟线程）；socket 关闭时退出。
+     */
     void serveAsync() {
         Thread.ofVirtual().name("tracker-udp-" + socket.getLocalPort()).start(this::serve);
     }

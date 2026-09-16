@@ -10,7 +10,9 @@ import io.github.oatelauser.thunder.core.internal.engine.DownloadSession;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** {@link DownloadTask} 的会话适配。 */
+/**
+ * {@link DownloadTask} 的会话适配。
+ */
 public final class DownloadTaskImpl implements DownloadTask {
 
     private final DownloadSession session;

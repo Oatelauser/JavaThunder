@@ -26,23 +26,25 @@ public final class PeerWireCodec {
             case Have h -> frame(4, 4, buf -> buf.putInt(h.pieceIndex()));
             case BitfieldMessage b -> frame(5, b.bits().length, buf -> buf.put(b.bits()));
             case Request r -> frame(6, 12, buf ->
-                buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
+                    buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
             case PieceMessage p -> frame(7, 8 + p.block().length, buf ->
-                buf.putInt(p.pieceIndex()).putInt(p.begin()).put(p.block()));
+                    buf.putInt(p.pieceIndex()).putInt(p.begin()).put(p.block()));
             case Cancel c -> frame(8, 12, buf ->
-                buf.putInt(c.pieceIndex()).putInt(c.begin()).putInt(c.length()));
+                    buf.putInt(c.pieceIndex()).putInt(c.begin()).putInt(c.length()));
             case HaveAll h -> single(14);
             case HaveNone h -> single(15);
             case RejectRequest r -> frame(16, 12, buf ->
-                buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
+                    buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
             case ExtendedMessage e -> frame(20, 1 + e.payload().length, buf ->
-                buf.put((byte) e.extendedId()).put(e.payload()));
+                    buf.put((byte) e.extendedId()).put(e.payload()));
             case UnsupportedMessage u -> throw new PeerWireException(
-                "cannot encode unsupported message id " + u.id());
+                    "cannot encode unsupported message id " + u.id());
         };
     }
 
-    /** 从缓冲区当前位置解码一帧，结束后位置停在该帧之后。 */
+    /**
+     * 从缓冲区当前位置解码一帧，结束后位置停在该帧之后。
+     */
     public static PeerWireMessage decodeFrame(ByteBuffer buf) {
         if (buf.remaining() < LENGTH_PREFIX) {
             throw new PeerWireException("frame length prefix truncated");
@@ -56,12 +58,14 @@ public final class PeerWireCodec {
         }
         if (buf.remaining() < length) {
             throw new PeerWireException("frame payload truncated: declared " + length
-                + ", available " + buf.remaining());
+                    + ", available " + buf.remaining());
         }
         return decodeMessage(buf.get() & 0xFF, (int) length - 1, buf);
     }
 
-    /** 按消息 ID（BEP 3）解码载荷；长度前缀与整帧完整性已由 {@link #decodeFrame} 校验。 */
+    /**
+     * 按消息 ID（BEP 3）解码载荷；长度前缀与整帧完整性已由 {@link #decodeFrame} 校验。
+     */
     private static PeerWireMessage decodeMessage(int id, int payloadLength, ByteBuffer buf) {
         return switch (id) {
             case 0 -> requireLength(payloadLength, 0, Choke.INSTANCE);
@@ -94,20 +98,26 @@ public final class PeerWireCodec {
         };
     }
 
-    /** have：4 字节 piece 序号。 */
+    /**
+     * have：4 字节 piece 序号。
+     */
     private static PeerWireMessage decodeHave(int payloadLength, ByteBuffer buf) {
         requireExact(payloadLength, 4, "have");
         return new Have(buf.getInt());
     }
 
-    /** bitfield：载荷即原始位图字节，位数与 piece 数的对齐由上层校验。 */
+    /**
+     * bitfield：载荷即原始位图字节，位数与 piece 数的对齐由上层校验。
+     */
     private static PeerWireMessage decodeBitfield(int payloadLength, ByteBuffer buf) {
         byte[] bits = new byte[payloadLength];
         buf.get(bits);
         return new BitfieldMessage(bits);
     }
 
-    /** piece：8 字节头（piece 序号 + 块内偏移）之后是整个 Block 数据。 */
+    /**
+     * piece：8 字节头（piece 序号 + 块内偏移）之后是整个 Block 数据。
+     */
     private static PeerWireMessage decodePiece(int payloadLength, ByteBuffer buf) {
         requireAtLeast(payloadLength, 8, "piece");
         int pieceIndex = buf.getInt();
@@ -117,7 +127,9 @@ public final class PeerWireCodec {
         return new PieceMessage(pieceIndex, begin, block);
     }
 
-    /** 扩展消息（BEP 10）：首字节为握手协商出的子 ID，其后是 bencoded 载荷。 */
+    /**
+     * 扩展消息（BEP 10）：首字节为握手协商出的子 ID，其后是 bencoded 载荷。
+     */
     private static PeerWireMessage decodeExtended(int payloadLength, ByteBuffer buf) {
         if (payloadLength < 1) {
             throw new PeerWireException("extended message requires a sub-id byte");
@@ -129,7 +141,7 @@ public final class PeerWireCodec {
     }
 
     private static byte[] single(int id) {
-        return new byte[]{0, 0, 0, 1, (byte) id};
+        return new byte[]{ 0, 0, 0, 1, (byte) id };
     }
 
     private interface PayloadWriter {

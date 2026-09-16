@@ -47,7 +47,9 @@ public final class UdpTrackerClient implements AutoCloseable {
         this.socket.setSoTimeout(5000);
     }
 
-    /** 支持 udp://host:port/announce 形态；其他 scheme 返回 false 交回 HTTP 客户端。 */
+    /**
+     * 支持 udp://host:port/announce 形态；其他 scheme 返回 false 交回 HTTP 客户端。
+     */
     public static boolean supports(String url) {
         return url != null && url.startsWith("udp://");
     }
@@ -77,9 +79,9 @@ public final class UdpTrackerClient implements AutoCloseable {
         }
         int transactionId = newTransactionId();
         ByteBuffer out = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
-            .putLong(CONNECT_PROTOCOL_ID)
-            .putInt(0) // action: connect
-            .putInt(transactionId);
+                .putLong(CONNECT_PROTOCOL_ID)
+                .putInt(0) // action: connect
+                .putInt(transactionId);
         ByteBuffer response = exchange(address, out.array(), transactionId, 0);
         long id = response.getLong(8);
         connections.put(key, new Connection(id, now));
@@ -87,21 +89,21 @@ public final class UdpTrackerClient implements AutoCloseable {
     }
 
     private AnnounceResponse announceWith(InetSocketAddress address, long connectionId,
-                                          AnnounceRequest request)
-        throws IOException, InterruptedException {
+            AnnounceRequest request)
+            throws IOException, InterruptedException {
         int transactionId = newTransactionId();
         ByteBuffer out = ByteBuffer.allocate(98).order(ByteOrder.BIG_ENDIAN)
-            .putLong(connectionId)
-            .putInt(1) // action: announce
-            .putInt(transactionId)
-            .put(request.infoHash())
-            .put(request.peerId())
-            .putLong(request.downloaded())
-            .putLong(request.uploaded())
-            .putLong(request.left())
-            .putInt(eventAction(request.event()))
-            .putInt(request.port())
-            .putInt(request.numwant()); // key/extensions 略（BEP 15 可选字段）
+                .putLong(connectionId)
+                .putInt(1) // action: announce
+                .putInt(transactionId)
+                .put(request.infoHash())
+                .put(request.peerId())
+                .putLong(request.downloaded())
+                .putLong(request.uploaded())
+                .putLong(request.left())
+                .putInt(eventAction(request.event()))
+                .putInt(request.port())
+                .putInt(request.numwant()); // key/extensions 略（BEP 15 可选字段）
         ByteBuffer response = exchange(address, out.array(), transactionId, 1);
         // BEP 15 应答头：action/transaction_id 之外为 interval/leechers/seeders（注意与 HTTP
         // 的 complete/incomplete 顺序相反，leechers 在前），peer 紧凑表从偏移 20 起
@@ -115,9 +117,11 @@ public final class UdpTrackerClient implements AutoCloseable {
         return new AnnounceResponse(interval, seeders, leechers, peers, null);
     }
 
-    /** 发送并等待同事务 ID 的响应；action 不符（含 error=3）抛异常。指数退避重试。 */
+    /**
+     * 发送并等待同事务 ID 的响应；action 不符（含 error=3）抛异常。指数退避重试。
+     */
     private ByteBuffer exchange(InetSocketAddress address, byte[] wire, int transactionId,
-                                int expectedAction) throws IOException, InterruptedException {
+            int expectedAction) throws IOException, InterruptedException {
         long backoff = 500;
         IOException last = null;
         for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -126,13 +130,13 @@ public final class UdpTrackerClient implements AutoCloseable {
             }
             try {
                 socket.send(new DatagramPacket(wire, wire.length, address.getAddress(),
-                    address.getPort()));
+                        address.getPort()));
                 byte[] buffer = new byte[2048];
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 socket.receive(packet);
                 ByteBuffer response = ByteBuffer.wrap(
-                    Arrays.copyOf(packet.getData(), packet.getLength()))
-                    .order(ByteOrder.BIG_ENDIAN);
+                                Arrays.copyOf(packet.getData(), packet.getLength()))
+                        .order(ByteOrder.BIG_ENDIAN);
                 if (response.remaining() < 8 || response.getInt(4) != transactionId) {
                     continue; // 杂音/迟到旧事务：静默重试
                 }
@@ -143,7 +147,7 @@ public final class UdpTrackerClient implements AutoCloseable {
                     response.position(8);
                     response.get(message);
                     throw new TrackerException("udp tracker error: "
-                        + new String(message, StandardCharsets.UTF_8));
+                            + new String(message, StandardCharsets.UTF_8));
                 }
                 if (action != expectedAction) {
                     continue;

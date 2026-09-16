@@ -54,7 +54,9 @@ final class KrpcRpc implements AutoCloseable {
         return socket.getLocalPort();
     }
 
-    /** 阻塞式请求-响应：登记事务 future，等接收线程按事务 ID 配对完成；超时/失败返回 null。 */
+    /**
+     * 阻塞式请求-响应：登记事务 future，等接收线程按事务 ID 配对完成；超时/失败返回 null。
+     */
     KrpcMessage.Parsed roundTrip(InetSocketAddress address, KrpcMessage.Builder query) {
         byte[] transactionId = query.transactionId();
         CompletableFuture<KrpcMessage.Parsed> future = new CompletableFuture<>();
@@ -70,7 +72,9 @@ final class KrpcRpc implements AutoCloseable {
         }
     }
 
-    /** 发后不管（bootstrap 探测）：响应由接收线程经 observer 进路由表。 */
+    /**
+     * 发后不管（bootstrap 探测）：响应由接收线程经 observer 进路由表。
+     */
     void sendQuery(InetSocketAddress address, KrpcMessage.Builder query) {
         try {
             byte[] wire = query.encode();

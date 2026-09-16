@@ -2,7 +2,9 @@ package io.github.oatelauser.thunder.core.internal.wire;
 
 import java.util.Arrays;
 
-/** 一个 Block 的数据（ID 7，载荷 = piece 序号 + 块内偏移 + 原始字节）。 */
+/**
+ * 一个 Block 的数据（ID 7，载荷 = piece 序号 + 块内偏移 + 原始字节）。
+ */
 public record PieceMessage(int pieceIndex, int begin, byte[] block) implements PeerWireMessage {
 
     // 注意：内部类型，构造不做防御性 clone——解码热路径每块 16KiB，克隆会使分配翻倍。
@@ -11,8 +13,8 @@ public record PieceMessage(int pieceIndex, int begin, byte[] block) implements P
     @Override
     public boolean equals(Object o) {
         return o instanceof PieceMessage other
-            && pieceIndex == other.pieceIndex && begin == other.begin
-            && Arrays.equals(block, other.block);
+                && pieceIndex == other.pieceIndex && begin == other.begin
+                && Arrays.equals(block, other.block);
     }
 
     @Override

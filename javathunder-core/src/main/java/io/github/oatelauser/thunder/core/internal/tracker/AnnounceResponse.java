@@ -10,11 +10,11 @@ import java.util.List;
  * （调用方决定退避/换 tier），此时 peers 为空。
  */
 public record AnnounceResponse(
-    int interval,
-    int seeders,
-    int leechers,
-    List<InetSocketAddress> peers,
-    @Nullable String failureReason) {
+        int interval,
+        int seeders,
+        int leechers,
+        List<InetSocketAddress> peers,
+        @Nullable String failureReason) {
 
     public AnnounceResponse {
         peers = List.copyOf(peers);

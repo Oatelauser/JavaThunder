@@ -19,20 +19,22 @@ import java.util.List;
  * Piece 覆盖文件的拼接字节流（可跨文件边界）；{@code name} 为根目录名。
  */
 public record TorrentMetadata(
-    byte[] infoHash,
-    @Nullable String announce,
-    List<List<String>> announceList,
-    @Nullable String comment,
-    @Nullable String createdBy,
-    @Nullable Long creationDateSec,
-    String name,
-    long length,
-    long pieceLength,
-    byte[] pieces,
-    boolean privateFlag,
-    List<TorrentFile> files) {
+        byte[] infoHash,
+        @Nullable String announce,
+        List<List<String>> announceList,
+        @Nullable String comment,
+        @Nullable String createdBy,
+        @Nullable Long creationDateSec,
+        String name,
+        long length,
+        long pieceLength,
+        byte[] pieces,
+        boolean privateFlag,
+        List<TorrentFile> files) {
 
-    /** 多文件种子中的一个文件：相对根目录的路径 + 在拼接字节流中的偏移。 */
+    /**
+     * 多文件种子中的一个文件：相对根目录的路径 + 在拼接字节流中的偏移。
+     */
     public record TorrentFile(List<String> path, long offset, long length) {
     }
 
@@ -78,7 +80,9 @@ public record TorrentMetadata(
         return Arrays.copyOfRange(pieces, index * 20, index * 20 + 20);
     }
 
-    /** 实际可用的 Tracker 分层：announce-list 优先，否则由 announce 组成单层。 */
+    /**
+     * 实际可用的 Tracker 分层：announce-list 优先，否则由 announce 组成单层。
+     */
     public List<List<String>> trackerTiers() {
         if (!announceList.isEmpty()) {
             return announceList;

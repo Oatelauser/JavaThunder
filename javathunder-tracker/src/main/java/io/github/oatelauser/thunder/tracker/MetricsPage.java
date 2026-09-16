@@ -2,7 +2,9 @@ package io.github.oatelauser.thunder.tracker;
 
 import java.util.Map;
 
-/** /metrics Prometheus 文本格式（0.0.4）渲染（纯函数）。 */
+/**
+ * /metrics Prometheus 文本格式（0.0.4）渲染（纯函数）。
+ */
 final class MetricsPage {
 
     private MetricsPage() {

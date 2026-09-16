@@ -20,7 +20,9 @@ import java.util.Arrays;
  */
 public final class StorageManager implements TorrentStorage {
 
-    /** 写通道池大小：Windows 上单句柄位置写会串行化，分片解除多 Peer 并发写的互斥。 */
+    /**
+     * 写通道池大小：Windows 上单句柄位置写会串行化，分片解除多 Peer 并发写的互斥。
+     */
     private static final int WRITE_CHANNELS = 4;
 
     private final TorrentMetadata meta;
@@ -28,7 +30,9 @@ public final class StorageManager implements TorrentStorage {
     private final Path finalFile;
     private final FileChannel[] channels;
 
-    /** 实际工作文件：seed-only 导入时数据已在最终名（无 .part），直接以它为对象。 */
+    /**
+     * 实际工作文件：seed-only 导入时数据已在最终名（无 .part），直接以它为对象。
+     */
     private final Path workFile;
 
     public StorageManager(TorrentMetadata meta, Path targetDir) throws IOException {
@@ -52,7 +56,7 @@ public final class StorageManager implements TorrentStorage {
         this.channels = new FileChannel[WRITE_CHANNELS];
         for (int i = 0; i < WRITE_CHANNELS; i++) {
             channels[i] = FileChannel.open(workFile,
-                StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                    StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         }
         if (workFile == partFile) {
             // 预分配（仅全新下载）：截长防残留，末位写一字节撑出全尺寸（稀疏）
@@ -67,13 +71,19 @@ public final class StorageManager implements TorrentStorage {
         return channels[Math.floorMod(pieceIndex, channels.length)];
     }
 
-    /** Block 落盘：写入位置 = pieceIndex × pieceLength + begin。 */
+    /**
+     * Block 落盘：写入位置 = pieceIndex × pieceLength + begin。
+     */
+    @Override
     public void writeBlock(int pieceIndex, int begin, byte[] block) throws IOException {
         checkBlock(pieceIndex, begin, block);
         channelFor(pieceIndex).write(ByteBuffer.wrap(block), pieceOffset(pieceIndex) + begin);
     }
 
-    /** 整 Piece 的块序列 gather 直写（引擎零拷贝组装路径：块引用即缓冲区）。 */
+    /**
+     * 整 Piece 的块序列 gather 直写（引擎零拷贝组装路径：块引用即缓冲区）。
+     */
+    @Override
     public void writePieceBuffers(int pieceIndex, ByteBuffer[] buffers) throws IOException {
         int expected = pieceLengthOf(pieceIndex);
         long total = 0;
@@ -82,7 +92,7 @@ public final class StorageManager implements TorrentStorage {
         }
         if (total != expected) {
             throw new IllegalArgumentException("piece " + pieceIndex + " expects "
-                + expected + " bytes, got " + total);
+                    + expected + " bytes, got " + total);
         }
         FileChannel channel = channelFor(pieceIndex);
         // gather 写基于通道自身 position：设位 + 通道监视器防并发串位（池内 4 通道仍并行）
@@ -101,7 +111,10 @@ public final class StorageManager implements TorrentStorage {
         }
     }
 
-    /** 读回整个 Piece 计算 SHA-1，与种子的分片哈希比对。 */
+    /**
+     * 读回整个 Piece 计算 SHA-1，与种子的分片哈希比对。
+     */
+    @Override
     public boolean verifyPiece(int pieceIndex) throws IOException {
         checkPieceIndex(pieceIndex);
         int length = pieceLengthOf(pieceIndex);
@@ -117,12 +130,15 @@ public final class StorageManager implements TorrentStorage {
         return Arrays.equals(actual, meta.pieceHash(pieceIndex));
     }
 
-    /** 读取一个 Block（上传服务用）。 */
+    /**
+     * 读取一个 Block（上传服务用）。
+     */
+    @Override
     public byte[] readBlock(int pieceIndex, int begin, int length) throws IOException {
         checkPieceIndex(pieceIndex);
         if (begin < 0 || length <= 0 || begin + (long) length > pieceLengthOf(pieceIndex)) {
             throw new IllegalArgumentException("read [" + begin + "," + (begin + length)
-                + ") outside piece " + pieceIndex + " of length " + pieceLengthOf(pieceIndex));
+                    + ") outside piece " + pieceIndex + " of length " + pieceLengthOf(pieceIndex));
         }
         ByteBuffer buffer = ByteBuffer.allocate(length);
         while (buffer.hasRemaining()) {
@@ -133,7 +149,10 @@ public final class StorageManager implements TorrentStorage {
         return buffer.array();
     }
 
-    /** Piece 校验失败后清零该区间，供引擎重新调度下载。 */
+    /**
+     * Piece 校验失败后清零该区间，供引擎重新调度下载。
+     */
+    @Override
     public void clearPiece(int pieceIndex) throws IOException {
         checkPieceIndex(pieceIndex);
         byte[] zeros = new byte[8192];
@@ -147,7 +166,10 @@ public final class StorageManager implements TorrentStorage {
         }
     }
 
-    /** 全部 Piece 完成后：落盘并原子改名为最终文件名。 */
+    /**
+     * 全部 Piece 完成后：落盘并原子改名为最终文件名。
+     */
+    @Override
     public void finish() throws IOException {
         for (FileChannel channel : channels) {
             channel.force(true);
@@ -158,18 +180,22 @@ public final class StorageManager implements TorrentStorage {
         }
     }
 
+    @Override
     public Path partFile() {
         return partFile;
     }
 
+    @Override
     public Path finalFile() {
         return finalFile;
     }
 
+    @Override
     public int pieceCount() {
         return meta.pieceCount();
     }
 
+    @Override
     public int pieceLengthOf(int pieceIndex) {
         checkPieceIndex(pieceIndex);
         long offset = pieceOffset(pieceIndex);
@@ -183,7 +209,7 @@ public final class StorageManager implements TorrentStorage {
     private void checkPieceIndex(int pieceIndex) {
         if (pieceIndex < 0 || pieceIndex >= meta.pieceCount()) {
             throw new IllegalArgumentException("piece index " + pieceIndex
-                + " out of [0," + meta.pieceCount() + ")");
+                    + " out of [0," + meta.pieceCount() + ")");
         }
     }
 
@@ -191,7 +217,7 @@ public final class StorageManager implements TorrentStorage {
         checkPieceIndex(pieceIndex);
         if (begin < 0 || block.length == 0 || begin + (long) block.length > pieceLengthOf(pieceIndex)) {
             throw new IllegalArgumentException("block [" + begin + "," + (begin + block.length)
-                + ") outside piece " + pieceIndex + " of length " + pieceLengthOf(pieceIndex));
+                    + ") outside piece " + pieceIndex + " of length " + pieceLengthOf(pieceIndex));
         }
     }
 

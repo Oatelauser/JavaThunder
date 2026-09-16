@@ -129,7 +129,9 @@ public final class DownloadSession {
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private volatile TaskState state = TaskState.QUEUED;
-    /** pause() 前的活跃态（DOWNLOADING/SEEDING）：resume() 回原态——做种暂停后恢复仍是做种。 */
+    /**
+     * pause() 前的活跃态（DOWNLOADING/SEEDING）：resume() 回原态——做种暂停后恢复仍是做种。
+     */
     private TaskState pausedFrom;
 
     public DownloadSession(TorrentMetadata meta, DownloadOptions options,
@@ -207,7 +209,7 @@ public final class DownloadSession {
             }
             if (!verified) {
                 fail(new IllegalStateException("seed-only: piece " + i
-                    + " failed verification — data incomplete or corrupt, use download() instead"));
+                        + " failed verification — data incomplete or corrupt, use download() instead"));
                 return;
             }
             localSet(i);
@@ -383,7 +385,9 @@ public final class DownloadSession {
         });
     }
 
-    /** 候选入队：过滤自连回声（tracker/PEX/DHT 把我们自己回给我们）与已连接会话。 */
+    /**
+     * 候选入队：过滤自连回声（tracker/PEX/DHT 把我们自己回给我们）与已连接会话。
+     */
     private void offerCandidate(InetSocketAddress address) {
         if (PeerAddresses.isSelfConnection(address, config.listenPort())) {
             return; // 我们自己
@@ -567,7 +571,9 @@ public final class DownloadSession {
         }
     }
 
-    /** Have/Unchoke 后的异步补发：worker 线程内持 session 监视器重填请求管线。 */
+    /**
+     * Have/Unchoke 后的异步补发：worker 线程内持 session 监视器重填请求管线。
+     */
     private void requestRefillAsync(PeerSession session) {
         if (state == TaskState.DOWNLOADING) {
             blockWorkers.execute(() -> {
@@ -744,7 +750,9 @@ public final class DownloadSession {
         }
     }
 
-    /** 校验通过的状态迁移（须在 source 监视器内调用）。 */
+    /**
+     * 校验通过的状态迁移（须在 source 监视器内调用）。
+     */
     private void onVerifiedPiece(PeerSession source, int piece) {
         if (localHas(piece)) {
             return; // 与并行路径竞争，对方已落定
@@ -762,7 +770,9 @@ public final class DownloadSession {
         refillRequests(source);
     }
 
-    /** 坏件处置（须在 source 监视器内调用）：从未落盘，丢弃组装器即可重下，无清盘成本。 */
+    /**
+     * 坏件处置（须在 source 监视器内调用）：从未落盘，丢弃组装器即可重下，无清盘成本。
+     */
     private void onBadPiece(PeerSession source, int piece) {
         verifyingPieces.remove(piece); // 坏件：允许重选重下
         int bad = badPiecesByPeer.merge(source.key, 1, Integer::sum);
@@ -897,7 +907,7 @@ public final class DownloadSession {
         // 字节级进度（已校验件 + 在途已收块）：块一到进度就动，不等整片校验——
         // 大件种子按"完成片数"计会在首片完成前长时间显示 0%，观测上不可接受
         double fraction = meta.length() == 0 ? 1.0
-            : Math.min(1.0, (double) downloadedRemainingBasis() / meta.length());
+                : Math.min(1.0, (double) downloadedRemainingBasis() / meta.length());
         long remaining = Math.max(0, meta.length() - downloadedRemainingBasis());
         Long eta = stats.downloadRate() > 0 && remaining > 0
                 ? remaining * 1000 / stats.downloadRate() : null;
@@ -940,7 +950,9 @@ public final class DownloadSession {
         return transportHandler;
     }
 
-    /** 全片段最小持有者数（本地位图 + 调度器远端位图单源）。 */
+    /**
+     * 全片段最小持有者数（本地位图 + 调度器远端位图单源）。
+     */
     private double availability() {
         int min = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {

@@ -27,7 +27,9 @@ public final class MultiFileStorage implements TorrentStorage {
     private final TorrentMetadata meta;
     private final Path rootDir;
     private final Path partRoot;
-    /** seed-only 导入模式：工作路径=最终路径，finish() 的 move 跳过。 */
+    /**
+     * seed-only 导入模式：工作路径=最终路径，finish() 的 move 跳过。
+     */
     private final boolean importMode;
     private final FileChannel[] channels;
     private final TorrentMetadata.TorrentFile[] files;
@@ -61,7 +63,7 @@ public final class MultiFileStorage implements TorrentStorage {
                 Path staged = stagedPath(i);
                 Files.createDirectories(staged.getParent());
                 channels[i] = FileChannel.open(staged,
-                    StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                        StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
                 if (!importMode) {
                     channels[i].write(ByteBuffer.wrap(new byte[1]), files[i].length() - 1); // 稀疏预分配
                 }
@@ -97,7 +99,7 @@ public final class MultiFileStorage implements TorrentStorage {
         long fileOffset = pieceIndex * meta.pieceLength() - files[fileIndex].offset();
         while (remaining > 0) {
             int chunk = (int) Math.min(Math.min(buffer.length, remaining),
-                files[fileIndex].length() - fileOffset);
+                    files[fileIndex].length() - fileOffset);
             ByteBuffer view = ByteBuffer.wrap(buffer, 0, chunk);
             while (view.hasRemaining()) {
                 if (channels[fileIndex].read(view, fileOffset + view.position()) < 0) {
@@ -215,7 +217,9 @@ public final class MultiFileStorage implements TorrentStorage {
         }
     }
 
-    /** 拼接流偏移 scatter 写：一个缓冲可跨多个文件边界；0 字节文件无 channel，跳过其零长段。 */
+    /**
+     * 拼接流偏移 scatter 写：一个缓冲可跨多个文件边界；0 字节文件无 channel，跳过其零长段。
+     */
     private void scatterWrite(long streamOffset, List<byte[]> chunks) throws IOException {
         int fileIndex = fileIndexFor(streamOffset);
         long fileOffset = streamOffset - files[fileIndex].offset();
@@ -223,7 +227,7 @@ public final class MultiFileStorage implements TorrentStorage {
             int chunkOff = 0;
             while (chunkOff < chunk.length) {
                 int writable = (int) Math.min(chunk.length - chunkOff,
-                    files[fileIndex].length() - fileOffset);
+                        files[fileIndex].length() - fileOffset);
                 if (writable > 0) {
                     channels[fileIndex].write(ByteBuffer.wrap(chunk, chunkOff, writable), fileOffset);
                     fileOffset += writable;

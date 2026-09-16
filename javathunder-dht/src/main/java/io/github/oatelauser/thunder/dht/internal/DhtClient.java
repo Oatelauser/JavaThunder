@@ -44,7 +44,9 @@ public final class DhtClient implements AutoCloseable {
         this.rpc = new KrpcRpc(port, this::recordResponder);
     }
 
-    /** 响应者观察：写进路由表；无 id 的响应跳过（仍会被 KrpcRpc 做事务配对）。 */
+    /**
+     * 响应者观察：写进路由表；无 id 的响应跳过（仍会被 KrpcRpc 做事务配对）。
+     */
     private void recordResponder(InetSocketAddress source, Parsed message) {
         try {
             table.offer(message.nodeId(), source.getAddress().getHostAddress(), source.getPort());
@@ -104,7 +106,9 @@ public final class DhtClient implements AutoCloseable {
         return result;
     }
 
-    /** 迭代 get_peers 主体：每轮向 alpha 个最近节点查询，聚合 values 中的 peer 地址；拿到 token 的节点随即 announce_peer。 */
+    /**
+     * 迭代 get_peers 主体：每轮向 alpha 个最近节点查询，聚合 values 中的 peer 地址；拿到 token 的节点随即 announce_peer。
+     */
     private List<InetSocketAddress> lookupPeers(NodeId target) {
         List<InetSocketAddress> peers = new ArrayList<>();
         Set<String> announced = new HashSet<>();
@@ -118,7 +122,9 @@ public final class DhtClient implements AutoCloseable {
         return peers;
     }
 
-    /** 向单节点发 get_peers：收集 values、向 token 持有者 announce_peer、并入更近节点。 */
+    /**
+     * 向单节点发 get_peers：收集 values、向 token 持有者 announce_peer、并入更近节点。
+     */
     private void queryGetPeers(RoutingTable.Entry entry, NodeId target,
             List<InetSocketAddress> peers, Set<String> announced, Frontier frontier) {
         InetSocketAddress address = new InetSocketAddress(entry.host(), entry.port());
@@ -143,7 +149,9 @@ public final class DhtClient implements AutoCloseable {
         addCloserNodes(response, frontier);
     }
 
-    /** 把响应 nodes 里的更近节点写进路由表并入 frontier（get_peers 路径）。 */
+    /**
+     * 把响应 nodes 里的更近节点写进路由表并入 frontier（get_peers 路径）。
+     */
     private void addCloserNodes(Parsed response, Frontier frontier) {
         for (PeerAddr closer : response.nodes()) {
             if (closer.nodeId() == null) {
@@ -170,7 +178,9 @@ public final class DhtClient implements AutoCloseable {
         return found;
     }
 
-    /** 向单节点发 find_node：更近节点写进路由表、结果集与 frontier。 */
+    /**
+     * 向单节点发 find_node：更近节点写进路由表、结果集与 frontier。
+     */
     private void queryFindNode(RoutingTable.Entry entry, NodeId target,
             List<RoutingTable.Entry> found, Frontier frontier) {
         Parsed response = rpc.roundTrip(new InetSocketAddress(entry.host(), entry.port()),

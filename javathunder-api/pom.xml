@@ -34,12 +34,14 @@
         <artifactId>japicmp-maven-plugin</artifactId>
         <version>0.23.1</version>
         <configuration>
+          <!-- oldVersion 用 file 指向本地仓库基线 jar 而非 dependency 坐标：基线版本与
+               当前项目版本相同时，dependency 会被 reactor 解析成本模块刚构建的 jar，
+               old==new 恒零差异，护栏失效（file 方式始终取仓库里安装的基线；
+               见 tracker/tools pom 同注）。基线始终对上一个发布 tag（CI/本地自举安装）。 -->
           <oldVersion>
-            <dependency>
-              <groupId>${project.groupId}</groupId>
-              <artifactId>${project.artifactId}</artifactId>
-              <version>0.3.0</version><!-- API 基线：始终对上一个发布 tag -->
-            </dependency>
+            <file>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-api/0.4.0/javathunder-api-0.4.0.jar</path>
+            </file>
           </oldVersion>
           <newVersion>
             <file>

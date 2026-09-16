@@ -12,13 +12,17 @@ final class PeerAddresses {
     private PeerAddresses() {
     }
 
-    /** 会话键：解析地址用数字 IP，未解析（DNS 失败）回退主机名，仍可作去重键。 */
+    /**
+     * 会话键：解析地址用数字 IP，未解析（DNS 失败）回退主机名，仍可作去重键。
+     */
     static String key(InetSocketAddress address) {
         return (address.getAddress() != null ? address.getAddress().getHostAddress()
                 : address.getHostString()) + ":" + address.getPort();
     }
 
-    /** 自连识别：tracker/PEX/DHT 把我们自己回给我们的形态（回环或通配地址 + 自己的监听端口）。 */
+    /**
+     * 自连识别：tracker/PEX/DHT 把我们自己回给我们的形态（回环或通配地址 + 自己的监听端口）。
+     */
     static boolean isSelfConnection(InetSocketAddress address, int listenPort) {
         return address.getPort() == listenPort
                 && (address.getAddress().isLoopbackAddress() || address.getAddress().isAnyLocalAddress());

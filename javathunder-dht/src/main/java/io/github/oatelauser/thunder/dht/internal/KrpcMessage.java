@@ -22,7 +22,9 @@ import java.util.TreeMap;
  */
 public final class KrpcMessage {
 
-    /** 20 字节 DHT 节点 ID。 */
+    /**
+     * 20 字节 DHT 节点 ID。
+     */
     public record NodeId(byte[] bytes) {
         public NodeId {
             if (bytes.length != 20) {
@@ -31,7 +33,9 @@ public final class KrpcMessage {
             bytes = bytes.clone();
         }
 
-        /** XOR 距离（Kademlia 度量），大端序比较。 */
+        /**
+         * XOR 距离（Kademlia 度量），大端序比较。
+         */
         public byte[] distanceTo(NodeId other) {
             byte[] out = new byte[20];
             for (int i = 0; i < 20; i++) {
@@ -55,7 +59,9 @@ public final class KrpcMessage {
         }
     }
 
-    /** 紧凑节点/对端地址（26 字节 = id+ip+port / 6 字节 = ip+port）。 */
+    /**
+     * 紧凑节点/对端地址（26 字节 = id+ip+port / 6 字节 = ip+port）。
+     */
     public record PeerAddr(byte @Nullable [] nodeId, String host, int port) {
 
         public static PeerAddr compact6(byte[] six) {
@@ -63,7 +69,7 @@ public final class KrpcMessage {
                 throw new IllegalArgumentException("compact peer must be 6 bytes");
             }
             String host = (six[0] & 0xFF) + "." + (six[1] & 0xFF) + "."
-                + (six[2] & 0xFF) + "." + (six[3] & 0xFF);
+                    + (six[2] & 0xFF) + "." + (six[3] & 0xFF);
             int port = ((six[4] & 0xFF) << 8) | (six[5] & 0xFF);
             return new PeerAddr(null, host, port);
         }
@@ -84,6 +90,7 @@ public final class KrpcMessage {
             copy.putAll(d.value());
             return copy;
         }
+
         private final Map<BString, BencodeValue> dict = new TreeMap<>(BString.UNSIGNED_ORDER);
         private final byte[] transactionId;
 
@@ -106,7 +113,7 @@ public final class KrpcMessage {
         public static Builder error(byte[] transactionId, int code, String message) {
             Builder builder = new Builder(transactionId, "e");
             builder.dict.put(BString.of("e"), new BList(List.of(
-                new BInteger(code), BString.of(message))));
+                    new BInteger(code), BString.of(message))));
             return builder;
         }
 
@@ -121,7 +128,7 @@ public final class KrpcMessage {
         private Builder section(String section, String key, BencodeValue value) {
             BencodeValue existing = dict.get(BString.of(section));
             Map<BString, BencodeValue> map = existing instanceof BDict d
-                ? copyDict(d) : new TreeMap<>(BString.UNSIGNED_ORDER);
+                    ? copyDict(d) : new TreeMap<>(BString.UNSIGNED_ORDER);
             map.put(BString.of(key), value);
             dict.put(BString.of(section), new BDict(map));
             return this;
@@ -131,7 +138,7 @@ public final class KrpcMessage {
             BString section = BString.of(dict.containsKey(BString.of("q")) ? "a" : "r");
             BencodeValue existing = dict.get(section);
             Map<BString, BencodeValue> map = existing instanceof BDict d
-                ? copyDict(d) : new TreeMap<>(BString.UNSIGNED_ORDER);
+                    ? copyDict(d) : new TreeMap<>(BString.UNSIGNED_ORDER);
             map.put(BString.of("id"), new BString(id.bytes()));
             dict.put(section, new BDict(map));
             return this;
@@ -141,13 +148,17 @@ public final class KrpcMessage {
             return Bencode.encode(new BDict(dict));
         }
 
-        /** 本构建器将写入线格式的事务 ID（发送方据此登记/撤销事务配对，免二次解析报文）。 */
+        /**
+         * 本构建器将写入线格式的事务 ID（发送方据此登记/撤销事务配对，免二次解析报文）。
+         */
         public byte[] transactionId() {
             return transactionId.clone();
         }
     }
 
-    /** 解析后的 KRPC 报文。 */
+    /**
+     * 解析后的 KRPC 报文。
+     */
     public record Parsed(byte[] transactionId, String type,
                          String method, @Nullable BDict args,
                          @Nullable BDict response,
@@ -194,7 +205,7 @@ public final class KrpcMessage {
 
         public byte[] token() {
             return response != null && response.get("token") instanceof BString token
-                ? token.value() : null;
+                    ? token.value() : null;
         }
     }
 
@@ -202,8 +213,8 @@ public final class KrpcMessage {
         try {
             BencodeValue decoded = Bencode.decode(wire);
             if (!(decoded instanceof BDict dict)
-                || !(dict.get("t") instanceof BString t)
-                || !(dict.get("y") instanceof BString y)) {
+                    || !(dict.get("t") instanceof BString t)
+                    || !(dict.get("y") instanceof BString y)) {
                 throw new IllegalArgumentException("krpc requires t and y");
             }
             String type = y.text();
@@ -212,8 +223,8 @@ public final class KrpcMessage {
             BDict response = dict.get("r") instanceof BDict r ? r : null;
             List<Object> error = null;
             if (dict.get("e") instanceof BList e && e.value().size() == 2
-                && e.value().get(0) instanceof BInteger code
-                && e.value().get(1) instanceof BString message) {
+                    && e.value().get(0) instanceof BInteger code
+                    && e.value().get(1) instanceof BString message) {
                 error = List.of((int) code.value(), message.text());
             }
             return new Parsed(t.value(), type, method, args, response, error);

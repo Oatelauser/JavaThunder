@@ -19,7 +19,9 @@ public final class Bitfield {
         this.bits = new byte[(pieceCount + 7) / 8];
     }
 
-    /** 全部位置 1 的位图（BEP 6 HaveAll 的等价表示）；尾部空闲位仍保持为零。 */
+    /**
+     * 全部位置 1 的位图（BEP 6 HaveAll 的等价表示）；尾部空闲位仍保持为零。
+     */
     public static Bitfield allSet(int pieceCount) {
         Bitfield bitfield = new Bitfield(pieceCount);
         Arrays.fill(bitfield.bits, (byte) 0xFF);
@@ -31,7 +33,9 @@ public final class Bitfield {
         return bitfield;
     }
 
-    /** 从线协议字节恢复；字节数必须恰为 ⌈N/8⌉ 且空闲位为零。 */
+    /**
+     * 从线协议字节恢复；字节数必须恰为 ⌈N/8⌉ 且空闲位为零。
+     */
     public static Bitfield fromBytes(byte[] bytes, int pieceCount) {
         if (pieceCount <= 0) {
             throw new IllegalArgumentException("pieceCount must be positive: " + pieceCount);
@@ -39,7 +43,7 @@ public final class Bitfield {
         int expected = (pieceCount + 7) / 8;
         if (bytes.length != expected) {
             throw new IllegalArgumentException("bitfield must be " + expected
-                + " bytes for " + pieceCount + " pieces, got " + bytes.length);
+                    + " bytes for " + pieceCount + " pieces, got " + bytes.length);
         }
         int validBitsInLastByte = pieceCount - (expected - 1) * 8;
         if (validBitsInLastByte < 8) {
@@ -99,7 +103,7 @@ public final class Bitfield {
     @Override
     public boolean equals(Object o) {
         return o instanceof Bitfield other
-            && pieceCount == other.pieceCount && Arrays.equals(bits, other.bits);
+                && pieceCount == other.pieceCount && Arrays.equals(bits, other.bits);
     }
 
     @Override

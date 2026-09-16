@@ -10,42 +10,46 @@ import java.nio.file.Path;
  * @param restartVerifyMode           断点续传的重启校验档位（默认 FULL；大镜像建议 SAMPLED）
  */
 public record DownloadOptions(
-    Path targetDir,
-    boolean resumeEnabled,
-    boolean verifyOnRestart,
-    boolean seedAfterComplete,
-    long downloadLimitBytesPerSecond,
-    long uploadLimitBytesPerSecond,
-    RestartVerifyMode restartVerifyMode) {
+        Path targetDir,
+        boolean resumeEnabled,
+        boolean verifyOnRestart,
+        boolean seedAfterComplete,
+        long downloadLimitBytesPerSecond,
+        long uploadLimitBytesPerSecond,
+        RestartVerifyMode restartVerifyMode) {
 
-    /** @deprecated 用 {@link #restartVerifyMode} 三档替代布尔开关；等价于 FULL/NONE。 */
+    /**
+     * @deprecated 用 {@link #restartVerifyMode} 三档替代布尔开关；等价于 FULL/NONE。
+     */
     @Deprecated
     public DownloadOptions(Path targetDir, boolean resumeEnabled, boolean verifyOnRestart,
-                           boolean seedAfterComplete, long downloadLimitBytesPerSecond,
-                           long uploadLimitBytesPerSecond) {
+            boolean seedAfterComplete, long downloadLimitBytesPerSecond, long uploadLimitBytesPerSecond) {
         this(targetDir, resumeEnabled, verifyOnRestart, seedAfterComplete,
-            downloadLimitBytesPerSecond, uploadLimitBytesPerSecond,
-            verifyOnRestart ? RestartVerifyMode.FULL : RestartVerifyMode.NONE);
+                downloadLimitBytesPerSecond, uploadLimitBytesPerSecond,
+                verifyOnRestart ? RestartVerifyMode.FULL : RestartVerifyMode.NONE);
     }
 
     public static DownloadOptions defaults() {
-        return new DownloadOptions(Path.of("downloads"), true, true, false, 0, 0,
-            RestartVerifyMode.FULL);
+        return new DownloadOptions(Path.of("downloads"), true, true, false,
+                0, 0, RestartVerifyMode.FULL);
     }
 
     public DownloadOptions targetDir(Path dir) {
         return new DownloadOptions(dir, resumeEnabled, verifyOnRestart, seedAfterComplete,
-            downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, restartVerifyMode);
+                downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, restartVerifyMode);
     }
 
     public DownloadOptions rateLimits(long downloadBytesPerSecond, long uploadBytesPerSecond) {
         return new DownloadOptions(targetDir, resumeEnabled, verifyOnRestart, seedAfterComplete,
-            downloadBytesPerSecond, uploadLimitBytesPerSecond, restartVerifyMode);
+                downloadBytesPerSecond, uploadBytesPerSecond, restartVerifyMode);
     }
 
-    /** 重启校验三档快捷设置。 */
+    /**
+     * 重启校验三档快捷设置。
+     */
     public DownloadOptions restartVerify(RestartVerifyMode mode) {
         return new DownloadOptions(targetDir, resumeEnabled, mode != RestartVerifyMode.NONE,
-            seedAfterComplete, downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, mode);
+                seedAfterComplete, downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, mode);
     }
+
 }

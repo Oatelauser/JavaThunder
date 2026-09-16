@@ -3,14 +3,15 @@ package io.github.oatelauser.thunder.core.internal.peer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 
-/** Peer ID 生成，BEP 20 Azureus 风格前缀 {@code -JT0001-} + 12 位随机字母数字。 */
+/**
+ * Peer ID 生成，BEP 20 Azureus 风格前缀 {@code -JT0001-} + 12 位随机字母数字。
+ */
 public final class PeerIds {
 
     public static final String CLIENT_PREFIX = "-JT0001-";
-
-    private static final String ALPHANUMERIC =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final String ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
 
     private PeerIds() {
     }

@@ -5,14 +5,18 @@ import io.github.oatelauser.thunder.core.internal.bencode.BDict;
 import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+
 import org.jspecify.annotations.Nullable;
 
-/** HTTP announce 端点（BEP 3/23）：query 解析 → 领域作用 → bencode 响应。 */
+/**
+ * HTTP announce 端点（BEP 3/23）：query 解析 → 领域作用 → bencode 响应。
+ */
 final class AnnounceHttpHandler {
 
     private final SwarmRegistry registry;
@@ -64,7 +68,9 @@ final class AnnounceHttpHandler {
         }
     }
 
-    /** 标准 announce 响应：interval/complete/incomplete/peers（compact）。 */
+    /**
+     * 标准 announce 响应：interval/complete/incomplete/peers（compact）。
+     */
     private byte[] announceResponse(SwarmRegistry.SwarmView view) {
         return Bencode.encode(BDict.of(Map.of(
                 BString.of("complete"), new BInteger(view.seeders()),

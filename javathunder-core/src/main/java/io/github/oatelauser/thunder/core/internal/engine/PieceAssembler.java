@@ -10,10 +10,10 @@ import java.util.concurrent.ConcurrentHashMap;
 final class PieceAssembler {
 
     final byte[][] blocks;
-    final int[] blockLengths;
     final int pieceLength;
-    final Set<BlockRequest> received = ConcurrentHashMap.newKeySet();
+    final int[] blockLengths;
     final int expectedBlocks;
+    final Set<BlockRequest> received = ConcurrentHashMap.newKeySet();
 
     PieceAssembler(int pieceLength, List<BlockRequest> blocksOfPiece) {
         this.pieceLength = pieceLength;

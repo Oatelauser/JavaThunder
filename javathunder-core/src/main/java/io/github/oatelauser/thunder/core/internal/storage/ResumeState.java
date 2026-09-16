@@ -48,7 +48,7 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
     public static void save(Path file, ResumeState state) throws IOException {
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         try (FileChannel channel = FileChannel.open(tmp,
-            StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
             channel.write(encode(state));
         }
         Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
@@ -99,7 +99,9 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
         return new ResumeState(infoHash, pieceCount, completed, uploaded, downloaded, lastActiveEpochMs);
     }
 
-    /** 删除状态文件（连同下载文件一起删除任务时调用）。幂等。 */
+    /**
+     * 删除状态文件（连同下载文件一起删除任务时调用）。幂等。
+     */
     public static void delete(Path file) {
         try {
             Files.deleteIfExists(file);
@@ -111,8 +113,8 @@ public record ResumeState(byte[] infoHash, int pieceCount, Bitfield completed,
     private static ByteBuffer encode(ResumeState state) {
         byte[] bits = state.completed().toBytes();
         ByteBuffer buf = ByteBuffer
-            .allocate(MAGIC.length + 2 + 20 + 4 + bits.length + 8 + 8 + 8 + 4)
-            .order(ByteOrder.LITTLE_ENDIAN);
+                .allocate(MAGIC.length + 2 + 20 + 4 + bits.length + 8 + 8 + 8 + 4)
+                .order(ByteOrder.LITTLE_ENDIAN);
         buf.put(MAGIC);
         buf.putShort(VERSION);
         buf.put(state.infoHash());

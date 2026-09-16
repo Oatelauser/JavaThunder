@@ -58,7 +58,9 @@ final class PexManager {
         return new ExtendedMessage(0, Bencode.encode(new BDict(handshake)));
     }
 
-    /** BEP 10 扩展握手（对端 → 我们）：记录其 ut_pex 子 ID（有则开启 PEX 接收）。 */
+    /**
+     * BEP 10 扩展握手（对端 → 我们）：记录其 ut_pex 子 ID（有则开启 PEX 接收）。
+     */
     void onRemoteHandshake(PeerSession session, byte[] payload) {
         try {
             var value = Bencode.decodeValue(ByteBuffer.wrap(payload));
@@ -86,8 +88,7 @@ final class PexManager {
         }
         try {
             var value = Bencode.decodeValue(ByteBuffer.wrap(payload));
-            if (!(value instanceof BDict dict)
-                    || !(dict.get("added") instanceof BString added)) {
+            if (!(value instanceof BDict dict) || !(dict.get("added") instanceof BString added)) {
                 return;
             }
             byte[] data = added.value();
@@ -139,8 +140,7 @@ final class PexManager {
         for (PeerSession session : peers.values()) {
             if (session.remotePexId > 0) {
                 try {
-                    session.channel.write(
-                            new ExtendedMessage(session.remotePexId, payload));
+                    session.channel.write(new ExtendedMessage(session.remotePexId, payload));
                     recipients++;
                 } catch (RuntimeException ignored) {
                     // 通道关闭竞态：写失败由 close 路径收尾

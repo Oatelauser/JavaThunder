@@ -26,17 +26,21 @@ public final class DhtPeerDiscovery implements PeerDiscoverySource {
         this.client = client;
     }
 
-    /** 公网默认 bootstrap 节点。 */
+    /**
+     * 公网默认 bootstrap 节点。
+     */
     public static DhtPeerDiscovery create() throws IOException {
         return create(DhtClient.DEFAULT_BOOTSTRAP);
     }
 
-    /** 自定义 bootstrap（内网自建）。 */
+    /**
+     * 自定义 bootstrap（内网自建）。
+     */
     public static DhtPeerDiscovery create(List<String> bootstrapNodes) throws IOException {
         DhtClient client = new DhtClient(0);
         DhtPeerDiscovery discovery = new DhtPeerDiscovery(client);
         Thread.ofVirtual().name("javathunder-dht-bootstrap").start(() ->
-            client.bootstrap(bootstrapNodes));
+                client.bootstrap(bootstrapNodes));
         return discovery;
     }
 
@@ -52,7 +56,9 @@ public final class DhtPeerDiscovery implements PeerDiscoverySource {
         return client.getPeers(infoHash);
     }
 
-    /** 已知 DHT 节点数（健康度观测：自举是否完成、路由表是否在增长）。 */
+    /**
+     * 已知 DHT 节点数（健康度观测：自举是否完成、路由表是否在增长）。
+     */
     public int knownNodes() {
         return client.knownNodes();
     }

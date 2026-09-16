@@ -62,7 +62,7 @@ public final class NioTransport implements PeerTransport {
         } catch (IOException e) {
             throw new IllegalStateException("cannot open selector", e);
         }
-        this.selectorThread = Thread.ofPlatform().name("javathunder-nio").daemon(true).start(this::eventLoop);
+        this.selectorThread = Thread.ofPlatform().name("THUNDER-NIO").daemon(true).start(this::eventLoop);
     }
 
     @Override
@@ -221,8 +221,8 @@ public final class NioTransport implements PeerTransport {
         long now = System.currentTimeMillis();
         for (NioChannel channel : channels) {
             long deadline = channel.phase == Phase.ESTABLISHED
-                ? channel.lastActivity + IDLE_TIMEOUT_MILLIS
-                : channel.deadline;
+                    ? channel.lastActivity + IDLE_TIMEOUT_MILLIS
+                    : channel.deadline;
             if (now > deadline) {
                 channel.closeWith(new IOException("timeout in phase " + channel.phase));
             }
@@ -330,7 +330,7 @@ public final class NioTransport implements PeerTransport {
         }
 
         private void established(Handshake handshake, TransportHandler handler,
-                                 boolean remoteSupportsExtensions) {
+                boolean remoteSupportsExtensions) {
             remotePeerIdValue = handshake.peerId();
             this.remoteSupportsExtensions = remoteSupportsExtensions;
             if (remoteAddressValue == null) {
@@ -344,7 +344,9 @@ public final class NioTransport implements PeerTransport {
             handler.onConnected(this); // 监听器在此回调内挂好
         }
 
-        /** 批量投递：一次读批的全部帧合成一个 List 一次回调（批内线序保持）。 */
+        /**
+         * 批量投递：一次读批的全部帧合成一个 List 一次回调（批内线序保持）。
+         */
         private void deliverFrames() {
             List<PeerWireMessage> batch = new ArrayList<>();
             while (readBuffer.remaining() >= 4) {
@@ -479,9 +481,9 @@ public final class NioTransport implements PeerTransport {
 
         private static int peekLength(ByteBuffer buffer) {
             return ((buffer.get(buffer.position()) & 0xFF) << 24)
-                | ((buffer.get(buffer.position() + 1) & 0xFF) << 16)
-                | ((buffer.get(buffer.position() + 2) & 0xFF) << 8)
-                | (buffer.get(buffer.position() + 3) & 0xFF);
+                    | ((buffer.get(buffer.position() + 1) & 0xFF) << 16)
+                    | ((buffer.get(buffer.position() + 2) & 0xFF) << 8)
+                    | (buffer.get(buffer.position() + 3) & 0xFF);
         }
 
         @Override
@@ -522,11 +524,11 @@ public final class NioTransport implements PeerTransport {
             closeQuietly(socket);
             if (pendingHandler != null && phase != Phase.ESTABLISHED) {
                 pendingHandler.onConnectFailed(remoteAddressValue == null
-                    ? new InetSocketAddress(0) : remoteAddressValue, cause == null
-                    ? new IOException("closed before established") : cause);
+                        ? new InetSocketAddress(0) : remoteAddressValue, cause == null
+                        ? new IOException("closed before established") : cause);
             }
             log.debug("nio channel {} closed: {}", remoteAddressValue,
-                cause == null ? "local close" : cause.toString());
+                    cause == null ? "local close" : cause.toString());
             closeListener.accept(cause);
         }
     }

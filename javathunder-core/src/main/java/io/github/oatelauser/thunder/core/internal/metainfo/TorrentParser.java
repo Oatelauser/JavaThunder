@@ -34,7 +34,9 @@ public final class TorrentParser {
         return build(scanned);
     }
 
-    /** 从 .torrent 原始字节切出 info 字典的原始字节区间（ut_metadata 供元数据用；纯定位，不做 announce 等业务校验）。 */
+    /**
+     * 从 .torrent 原始字节切出 info 字典的原始字节区间（ut_metadata 供元数据用；纯定位，不做 announce 等业务校验）。
+     */
     public static byte[] extractInfoDict(byte[] bytes) {
         if (bytes.length > Bencode.MAX_INPUT_BYTES) {
             throw new IllegalArgumentException("torrent exceeds input limit: " + bytes.length);
@@ -43,13 +45,13 @@ public final class TorrentParser {
     }
 
     private record Scanned(
-        @Nullable String announce,
-        List<List<String>> announceList,
-        @Nullable String comment,
-        @Nullable String createdBy,
-        @Nullable Long creationDateSec,
-        BDict info,
-        byte[] infoRawBytes) {
+            @Nullable String announce,
+            List<List<String>> announceList,
+            @Nullable String comment,
+            @Nullable String createdBy,
+            @Nullable Long creationDateSec,
+            BDict info,
+            byte[] infoRawBytes) {
     }
 
     private static Scanned scan(byte[] bytes) {
@@ -68,7 +70,9 @@ public final class TorrentParser {
                 top.creationDateSec, top.info, sliceInfoRaw(buf, top));
     }
 
-    /** 逐条扫描顶层字典直到 'e'；info 值记录原始字节边界（info-hash 语义，见类注释）。 */
+    /**
+     * 逐条扫描顶层字典直到 'e'；info 值记录原始字节边界（info-hash 语义，见类注释）。
+     */
     private static TopLevel scanTopLevel(ByteBuffer buf) {
         TopLevel top = new TopLevel();
         while (true) {
@@ -92,7 +96,9 @@ public final class TorrentParser {
         }
     }
 
-    /** 解析 info 值并记录其原始字节区间 [infoStart, infoEnd)。 */
+    /**
+     * 解析 info 值并记录其原始字节区间 [infoStart, infoEnd)。
+     */
     private static void readInfo(ByteBuffer buf, TopLevel top) {
         top.infoStart = buf.position();
         BencodeValue value = Bencode.decodeValue(buf);
@@ -103,7 +109,9 @@ public final class TorrentParser {
         top.info = infoDict;
     }
 
-    /** 顶层已知字段分发；未知键静默跳过（前向兼容未知扩展）。 */
+    /**
+     * 顶层已知字段分发；未知键静默跳过（前向兼容未知扩展）。
+     */
     private static void readTopLevelField(String key, BencodeValue value, TopLevel top) {
         switch (key) {
             case "announce" -> top.announce = asString(value, "announce");
@@ -116,7 +124,9 @@ public final class TorrentParser {
         }
     }
 
-    /** 回退 position 从原始字节切出 info 字典区间（纯读取，不影响已完成的扫描）。 */
+    /**
+     * 回退 position 从原始字节切出 info 字典区间（纯读取，不影响已完成的扫描）。
+     */
     private static byte[] sliceInfoRaw(ByteBuffer buf, TopLevel top) {
         byte[] infoRaw = new byte[top.infoEnd - top.infoStart];
         buf.position(top.infoStart);
@@ -124,7 +134,9 @@ public final class TorrentParser {
         return infoRaw;
     }
 
-    /** 顶层字典扫描的累积结果：announce 等已知字段 + info 值与其字节边界。 */
+    /**
+     * 顶层字典扫描的累积结果：announce 等已知字段 + info 值与其字节边界。
+     */
     private static final class TopLevel {
         @Nullable String announce;
         List<List<String>> announceList = List.of();
@@ -136,15 +148,17 @@ public final class TorrentParser {
         int infoEnd = -1;
     }
 
-    /** 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。 */
+    /**
+     * 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。
+     */
     public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoHash, List<String> trackers) {
         List<List<String>> tiers = trackers.isEmpty()
-            ? List.of()
-            : List.of(List.copyOf(trackers));
+                ? List.of()
+                : List.of(List.copyOf(trackers));
         Scanned scanned = new Scanned(
-            trackers.isEmpty() ? null : trackers.get(0),
-            tiers,
-            null, null, null, info, new byte[0]);
+                trackers.isEmpty() ? null : trackers.get(0),
+                tiers,
+                null, null, null, info, new byte[0]);
         // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
         return buildWithHash(scanned, infoHash);
     }
@@ -152,14 +166,14 @@ public final class TorrentParser {
     private static TorrentMetadata buildWithHash(Scanned s, byte[] infoHash) {
         TorrentMetadata meta = build(s);
         return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
-            meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
-            meta.pieces(), meta.privateFlag(), meta.files());
+                meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
+                meta.pieces(), meta.privateFlag(), meta.files());
     }
 
     private static TorrentMetadata build(Scanned s) {
         if (s.announce() == null && s.announceList().isEmpty()) {
             throw new IllegalArgumentException("no tracker in torrent (announce/announce-list); "
-                + "trackerless download arrives with DHT in phase 2");
+                    + "trackerless download arrives with DHT in phase 2");
         }
         String name = requireString(s.info(), "name");
         if (name.isEmpty()) {
@@ -193,14 +207,14 @@ public final class TorrentParser {
         long expectedPieces = (length + pieceLength - 1) / pieceLength;
         if (pieces.value().length / 20 != expectedPieces) {
             throw new IllegalArgumentException("piece count mismatch: pieces has "
-                + (pieces.value().length / 20) + " hashes, length/piece-length implies " + expectedPieces);
+                    + (pieces.value().length / 20) + " hashes, length/piece-length implies " + expectedPieces);
         }
         boolean privateFlag = s.info().value().containsKey(BString.of("private"))
-            && asInteger(s.info().get("private"), "private").value() == 1;
+                && asInteger(s.info().get("private"), "private").value() == 1;
 
         return new TorrentMetadata(sha1(s.infoRawBytes()), s.announce(), s.announceList(),
-            s.comment(), s.createdBy(), s.creationDateSec(),
-            name, length, pieceLength, pieces.value(), privateFlag, files);
+                s.comment(), s.createdBy(), s.creationDateSec(),
+                name, length, pieceLength, pieces.value(), privateFlag, files);
     }
 
     /**
@@ -231,9 +245,9 @@ public final class TorrentParser {
             for (BencodeValue componentValue : pathList.value()) {
                 String component = asString(componentValue, "files entry path component");
                 if (component.isEmpty() || "..".equals(component) || component.contains("\\")
-                    || component.contains("/") || component.contains(":")
-                    || component.chars().anyMatch(c -> c < 0x20)
-                    || isWindowsReserved(component)) {
+                        || component.contains("/") || component.contains(":")
+                        || component.chars().anyMatch(c -> c < 0x20)
+                        || isWindowsReserved(component)) {
                     throw new IllegalArgumentException("unsafe path component in torrent: " + component);
                 }
                 path.add(component);
@@ -246,7 +260,7 @@ public final class TorrentParser {
 
     private static boolean isWindowsReserved(String component) {
         String stem = component.contains(".")
-            ? component.substring(0, component.indexOf('.')) : component;
+                ? component.substring(0, component.indexOf('.')) : component;
         return switch (stem.toUpperCase()) {
             case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
                  "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",

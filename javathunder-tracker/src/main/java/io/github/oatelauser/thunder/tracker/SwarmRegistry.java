@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
+
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -22,7 +23,9 @@ import org.jspecify.annotations.Nullable;
  */
 final class SwarmRegistry {
 
-    /** swarm 成员：lastSeen 驱动过期；sticky（直接注册）不过期。 */
+    /**
+     * swarm 成员：lastSeen 驱动过期；sticky（直接注册）不过期。
+     */
     private static final class Peer {
         volatile long lastSeenMillis;
         volatile boolean seeder;
@@ -35,11 +38,15 @@ final class SwarmRegistry {
         }
     }
 
-    /** announce 作用后的快照：全量计数 + 排除 self 的 IPv4 compact peers。 */
+    /**
+     * announce 作用后的快照：全量计数 + 排除 self 的 IPv4 compact peers。
+     */
     record SwarmView(int seeders, int leechers, byte[] peersCompact) {
     }
 
-    /** 一次 announce 的领域参数（HTTP/UDP 各自解析后传入）。 */
+    /**
+     * 一次 announce 的领域参数（HTTP/UDP 各自解析后传入）。
+     */
     record Announce(byte[] infoHash, InetSocketAddress self, boolean seeder,
                     boolean stopped, boolean completed, int maxPeers) {
     }
@@ -47,9 +54,13 @@ final class SwarmRegistry {
     private final int announceIntervalSeconds;
     private final ConcurrentMap<String, ConcurrentMap<InetSocketAddress, Peer>> swarms =
             new ConcurrentHashMap<>();
-    /** info-hash(hex) → completed 累计；独立于 swarm 存活。 */
+    /**
+     * info-hash(hex) → completed 累计；独立于 swarm 存活。
+     */
     private final ConcurrentMap<String, AtomicLong> downloads = new ConcurrentHashMap<>();
-    /** null = 白名单关闭（全放行）；元素为 info-hash hex。 */
+    /**
+     * null = 白名单关闭（全放行）；元素为 info-hash hex。
+     */
     private volatile @Nullable Set<String> whitelist;
 
     SwarmRegistry(int announceIntervalSeconds) {
@@ -62,7 +73,9 @@ final class SwarmRegistry {
 
     // ---- 白名单 ----
 
-    /** 拒绝文案；放行返回 null。 */
+    /**
+     * 拒绝文案；放行返回 null。
+     */
     @Nullable
     String denyReason(byte[] infoHash) {
         Set<String> allowed = whitelist;
@@ -105,7 +118,7 @@ final class SwarmRegistry {
             return view(swarm, null, -1);
         }
         long now = System.currentTimeMillis();
-        boolean[] becameSeeder = {false};
+        boolean[] becameSeeder = { false };
         swarm.compute(announce.self(), (address, existing) -> {
             if (existing == null) {
                 becameSeeder[0] = announce.seeder();
@@ -123,7 +136,9 @@ final class SwarmRegistry {
         return view(swarm, announce.self(), announce.maxPeers());
     }
 
-    /** 种子方直接注册（FakeSeeder 形态）：无 announce 生命周期，不过期。 */
+    /**
+     * 种子方直接注册（FakeSeeder 形态）：无 announce 生命周期，不过期。
+     */
     void register(byte[] infoHash, int port) {
         swarmOf(infoHash).compute(new InetSocketAddress("127.0.0.1", port), (address, existing) -> {
             if (existing == null) {
@@ -136,7 +151,9 @@ final class SwarmRegistry {
         });
     }
 
-    /** 摘除过期 Peer（now - lastSeen &gt; expiry，sticky 除外），回收空 swarm；返回摘除数。 */
+    /**
+     * 摘除过期 Peer（now - lastSeen &gt; expiry，sticky 除外），回收空 swarm；返回摘除数。
+     */
     int sweepExpiredPeers() {
         long now = System.currentTimeMillis();
         long expiry = expiryMillis();
@@ -160,7 +177,9 @@ final class SwarmRegistry {
 
     // ---- 快照与统计 ----
 
-    /** 每个 info-hash（hex）的 seeders/leechers/总数；空 swarm 不出现。 */
+    /**
+     * 每个 info-hash（hex）的 seeders/leechers/总数；空 swarm 不出现。
+     */
     Map<String, EmbeddedTracker.SwarmStats> stats() {
         Map<String, EmbeddedTracker.SwarmStats> snapshot = new LinkedHashMap<>();
         for (Map.Entry<String, ConcurrentMap<InetSocketAddress, Peer>> entry : swarms.entrySet()) {
@@ -174,7 +193,9 @@ final class SwarmRegistry {
         return Collections.unmodifiableMap(snapshot);
     }
 
-    /** 单 swarm 的 scrape 计数：complete/downloaded/incomplete；未知 hash 全零。 */
+    /**
+     * 单 swarm 的 scrape 计数：complete/downloaded/incomplete；未知 hash 全零。
+     */
     Map<String, Long> scrapeEntry(String hex) {
         ConcurrentMap<InetSocketAddress, Peer> swarm = swarms.get(hex);
         SwarmView counted = swarm == null ? new SwarmView(0, 0, new byte[0]) : view(swarm, null, -1);
@@ -186,14 +207,18 @@ final class SwarmRegistry {
         return entry;
     }
 
-    /** 全部已知 info-hash（活动 swarm ∪ 有 completed 计数者）。 */
+    /**
+     * 全部已知 info-hash（活动 swarm ∪ 有 completed 计数者）。
+     */
     Set<String> knownHashes() {
         Set<String> hexes = new LinkedHashSet<>(swarms.keySet());
         hexes.addAll(downloads.keySet());
         return hexes;
     }
 
-    /** 全局 completed 计数总和。 */
+    /**
+     * 全局 completed 计数总和。
+     */
     long totalDownloads() {
         long total = 0;
         for (AtomicLong counter : downloads.values()) {
@@ -210,9 +235,11 @@ final class SwarmRegistry {
         return swarms.computeIfAbsent(HexFormat.of().formatHex(infoHash), k -> new ConcurrentHashMap<>());
     }
 
-    /** 全量计数 + compact peers；self=null 表示不含任何 peer（stopped 响应语义）。 */
+    /**
+     * 全量计数 + compact peers；self=null 表示不含任何 peer（stopped 响应语义）。
+     */
     private SwarmView view(ConcurrentMap<InetSocketAddress, Peer> swarm,
-                           @Nullable InetSocketAddress self, int maxPeers) {
+            @Nullable InetSocketAddress self, int maxPeers) {
         int seeders = 0;
         int leechers = 0;
         ByteArrayOutputStream peers = new ByteArrayOutputStream();

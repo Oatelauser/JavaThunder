@@ -17,7 +17,9 @@ public final class RoutingTable {
     public static final int K = 8;
     private static final long STALE_MILLIS = 15 * 60 * 1000;
 
-    /** 节点条目：id + 地址 + 最近活跃时间。 */
+    /**
+     * 节点条目：id + 地址 + 最近活跃时间。
+     */
     public record Entry(KrpcMessage.NodeId id, String host, int port, AtomicLong lastActive) {
         Entry(KrpcMessage.NodeId id, String host, int port) {
             this(id, host, port, new AtomicLong(System.currentTimeMillis()));
@@ -35,7 +37,9 @@ public final class RoutingTable {
         this.self = self;
     }
 
-    /** 插入/刷新节点；容量满且全为新鲜节点时丢弃（真实实现应 ping 最旧者后替换，此处简化）。 */
+    /**
+     * 插入/刷新节点；容量满且全为新鲜节点时丢弃（真实实现应 ping 最旧者后替换，此处简化）。
+     */
     public void offer(KrpcMessage.NodeId id, String host, int port) {
         if (id.equals(self)) {
             return;
@@ -56,7 +60,9 @@ public final class RoutingTable {
         nodes.put(id.hex(), new Entry(id, host, port));
     }
 
-    /** 按 XOR 距离取离目标最近的 n 个活跃节点。 */
+    /**
+     * 按 XOR 距离取离目标最近的 n 个活跃节点。
+     */
     public List<Entry> nearest(KrpcMessage.NodeId target, int n) {
         long now = System.currentTimeMillis();
         List<Entry> alive = new ArrayList<>();
@@ -66,7 +72,7 @@ public final class RoutingTable {
             }
         }
         alive.sort(Comparator.comparing(entry -> entry.id().distanceTo(target),
-            RoutingTable::compareBytes));
+                RoutingTable::compareBytes));
         return alive.size() > n ? new ArrayList<>(alive.subList(0, n)) : alive;
     }
 
@@ -91,7 +97,9 @@ public final class RoutingTable {
         return compareBytes(a.distanceTo(self), b.distanceTo(self));
     }
 
-    /** 无符号大端字典序（XOR 距离比较语义）。 */
+    /**
+     * 无符号大端字典序（XOR 距离比较语义）。
+     */
     static int compareBytes(byte[] a, byte[] b) {
         for (int i = 0; i < Math.min(a.length, b.length); i++) {
             int left = a[i] & 0xFF;

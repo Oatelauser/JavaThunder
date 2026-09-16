@@ -18,7 +18,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-/** HTTP Tracker 客户端（BEP 3 / 23）。线程安全：单实例可被多任务并发使用。 */
+/**
+ * HTTP Tracker 客户端（BEP 3 / 23）。线程安全：单实例可被多任务并发使用。
+ */
 public final class TrackerClient {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
@@ -36,14 +38,14 @@ public final class TrackerClient {
 
     public AnnounceResponse announce(String announceUrl, AnnounceRequest request) {
         HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(buildUrl(announceUrl, request)))
-            .timeout(REQUEST_TIMEOUT)
-            .header("User-Agent", "JavaThunder/0.1")
-            .GET()
-            .build();
+                .timeout(REQUEST_TIMEOUT)
+                .header("User-Agent", "JavaThunder/0.1")
+                .GET()
+                .build();
         byte[] body;
         try {
             HttpResponse<byte[]> response =
-                http.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+                    http.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() / 100 != 2) {
                 throw new TrackerException("tracker HTTP " + response.statusCode() + ": " + announceUrl);
             }

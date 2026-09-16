@@ -13,15 +13,19 @@ public interface PeerTransport extends AutoCloseable {
      * 绑定入站监听端口。
      *
      * @param preferredPort 期望端口；传 0 由系统分配
-     * @param router 入站握手路由
+     * @param router        入站握手路由
      * @return 实际绑定端口
      */
     int listen(int preferredPort, HandshakeRouter router);
 
-    /** 发起出站连接（含握手，目标 info-hash 按连接传入——一个 transport 服务多个会话）。 */
+    /**
+     * 发起出站连接（含握手，目标 info-hash 按连接传入——一个 transport 服务多个会话）。
+     */
     void connect(InetSocketAddress address, byte[] infoHash, TransportHandler handler);
 
-    /** 已绑定的监听端口；未监听返回 -1。 */
+    /**
+     * 已绑定的监听端口；未监听返回 -1。
+     */
     int listeningPort();
 
     @Override

@@ -1,6 +1,7 @@
 package io.github.oatelauser.thunder.tracker;
 
 import com.sun.net.httpserver.HttpServer;
+
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -9,6 +10,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -26,7 +28,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EmbeddedTracker implements AutoCloseable {
 
-    /** 每个 swarm 的可观测快照：做种 / 下载 / 总数。 */
+    /**
+     * 每个 swarm 的可观测快照：做种 / 下载 / 总数。
+     */
     public record SwarmStats(int seeders, int leechers, int total) {
     }
 
@@ -67,22 +71,30 @@ public final class EmbeddedTracker implements AutoCloseable {
 
     // ---- 工厂 ----
 
-    /** testkit 兼容：回环 + 随机端口 + interval=2s。 */
+    /**
+     * testkit 兼容：回环 + 随机端口 + interval=2s。
+     */
     public static EmbeddedTracker start() throws IOException {
         return start(InetAddress.getLoopbackAddress(), 0, 2);
     }
 
-    /** 固定端口（0 = 随机），回环 + interval=2s。 */
+    /**
+     * 固定端口（0 = 随机），回环 + interval=2s。
+     */
     public static EmbeddedTracker start(int port) throws IOException {
         return start(port, 2);
     }
 
-    /** 固定端口（0 = 随机）+ 自定间隔（秒）：小间隔可加速过期类测试。回环绑定。 */
+    /**
+     * 固定端口（0 = 随机）+ 自定间隔（秒）：小间隔可加速过期类测试。回环绑定。
+     */
     public static EmbeddedTracker start(int port, int announceIntervalSeconds) throws IOException {
         return start(InetAddress.getLoopbackAddress(), port, announceIntervalSeconds);
     }
 
-    /** 完全控制绑定地址 / 端口 / announce 间隔（生产入口：通配地址 + 6881 + 1800s）。 */
+    /**
+     * 完全控制绑定地址 / 端口 / announce 间隔（生产入口：通配地址 + 6881 + 1800s）。
+     */
     public static EmbeddedTracker start(InetAddress bindAddress, int port, int announceIntervalSeconds)
             throws IOException {
         if (announceIntervalSeconds <= 0) {
@@ -111,23 +123,31 @@ public final class EmbeddedTracker implements AutoCloseable {
 
     // ---- 查询 API ----
 
-    /** 实际监听端口（固定端口绑定时即传入值）。 */
+    /**
+     * 实际监听端口（固定端口绑定时即传入值）。
+     */
     public int port() {
         return server.getAddress().getPort();
     }
 
-    /** 回环形态的 announce URL（无论绑定地址为何，回环总是可达）。 */
+    /**
+     * 回环形态的 announce URL（无论绑定地址为何，回环总是可达）。
+     */
     public String announceUrl() {
         return "http://127.0.0.1:" + port() + "/announce";
     }
 
-    /** UDP 监听端口；未开启返回 -1。 */
+    /**
+     * UDP 监听端口；未开启返回 -1。
+     */
     public int udpPort() {
         UdpTrackerServer current = udp;
         return current == null ? -1 : current.port();
     }
 
-    /** 回环形态的 UDP announce URL；未开启返回 null。 */
+    /**
+     * 回环形态的 UDP announce URL；未开启返回 null。
+     */
     public @Nullable String udpAnnounceUrl() {
         int port = udpPort();
         return port < 0 ? null : "udp://127.0.0.1:" + port + "/announce";
@@ -154,36 +174,48 @@ public final class EmbeddedTracker implements AutoCloseable {
         return bindPort;
     }
 
-    /** 种子方直接注册（FakeSeeder 用，绕过 announce）：无 announce 生命周期，不过期。 */
+    /**
+     * 种子方直接注册（FakeSeeder 用，绕过 announce）：无 announce 生命周期，不过期。
+     */
     public void register(byte[] infoHash, int port) {
         registry.register(infoHash, port);
     }
 
-    /** 每个 info-hash（hex）的 seeders/leechers/总数快照；空 swarm 不出现。 */
+    /**
+     * 每个 info-hash（hex）的 seeders/leechers/总数快照；空 swarm 不出现。
+     */
     public Map<String, SwarmStats> stats() {
         return registry.stats();
     }
 
     // ---- 白名单 ----
 
-    /** 启用白名单：仅列出的 info-hash 可 announce（scrape/统计不受限）；重复调用替换旧表。 */
+    /**
+     * 启用白名单：仅列出的 info-hash 可 announce（scrape/统计不受限）；重复调用替换旧表。
+     */
     public void enableWhitelist(Collection<byte[]> infoHashes) {
         registry.enableWhitelist(infoHashes);
     }
 
-    /** 关闭白名单（默认：全放行）。 */
+    /**
+     * 关闭白名单（默认：全放行）。
+     */
     public void disableWhitelist() {
         registry.disableWhitelist();
     }
 
-    /** 白名单是否启用。 */
+    /**
+     * 白名单是否启用。
+     */
     public boolean whitelistEnabled() {
         return registry.whitelistEnabled();
     }
 
     // ---- 测试钩子与生命周期 ----
 
-    /** 确定性触发一轮过期清理（单测用）；返回摘除数。 */
+    /**
+     * 确定性触发一轮过期清理（单测用）；返回摘除数。
+     */
     int sweepExpiredPeers() {
         return registry.sweepExpiredPeers();
     }

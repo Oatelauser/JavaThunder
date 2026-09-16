@@ -110,7 +110,9 @@ final class TrackerAnnouncer {
         }
     }
 
-    /** 当前 announce 间隔（秒）；tracker 应答可更新，全败退避会抬高。 */
+    /**
+     * 当前 announce 间隔（秒）；tracker 应答可更新，全败退避会抬高。
+     */
     int intervalSeconds() {
         return intervalSeconds;
     }

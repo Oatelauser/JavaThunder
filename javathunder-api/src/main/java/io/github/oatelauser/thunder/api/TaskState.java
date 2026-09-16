@@ -1,6 +1,8 @@
 package io.github.oatelauser.thunder.api;
 
-/** 下载任务状态机（DESIGN §3.3）。 */
+/**
+ * 下载任务状态机（DESIGN §3.3）。
+ */
 public enum TaskState {
     QUEUED,
     VERIFYING,

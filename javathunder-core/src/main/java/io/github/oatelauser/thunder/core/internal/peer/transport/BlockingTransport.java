@@ -41,7 +41,7 @@ public final class BlockingTransport implements PeerTransport {
             ServerSocket serverSocket = new ServerSocket(preferredPort, LISTEN_BACKLOG);
             this.listenSocket = serverSocket;
             this.listeningPort = serverSocket.getLocalPort();
-            Thread.ofVirtual().name("javathunder-accept").start(() -> acceptLoop(serverSocket, router));
+            Thread.ofVirtual().name("THUNDER-ACCEPT").start(() -> acceptLoop(serverSocket, router));
             return listeningPort;
         } catch (IOException e) {
             throw new IllegalStateException("cannot bind port " + preferredPort, e);
@@ -74,7 +74,7 @@ public final class BlockingTransport implements PeerTransport {
             out.write(Handshake.encode(handshake.infoHash(), peerId));
             out.flush();
             PeerConnection connection =
-                PeerConnection.established(socket, handshake.peerId(), Handshake.supportsExtensions(wire));
+                    PeerConnection.established(socket, handshake.peerId(), Handshake.supportsExtensions(wire));
             BlockingChannel channel = new BlockingChannel(connection);
             handler.onConnected(channel);
             channel.start();
@@ -88,7 +88,7 @@ public final class BlockingTransport implements PeerTransport {
         Thread.ofVirtual().name("javathunder-connect-" + address).start(() -> {
             try {
                 PeerConnection connection =
-                    PeerConnection.connect(address, infoHash, peerId, CONNECT_TIMEOUT_MILLIS);
+                        PeerConnection.connect(address, infoHash, peerId, CONNECT_TIMEOUT_MILLIS);
                 BlockingChannel channel = new BlockingChannel(connection);
                 handler.onConnected(channel);
                 channel.start();
@@ -134,7 +134,9 @@ public final class BlockingTransport implements PeerTransport {
         }
     }
 
-    /** 阻塞式通道：一条读虚拟线程把消息推给监听器。 */
+    /**
+     * 阻塞式通道：一条读虚拟线程把消息推给监听器。
+     */
     static final class BlockingChannel implements PeerChannel {
 
         private final PeerConnection connection;

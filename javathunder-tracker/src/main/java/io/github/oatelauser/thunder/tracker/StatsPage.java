@@ -3,14 +3,16 @@ package io.github.oatelauser.thunder.tracker;
 import java.util.Map;
 import java.util.Set;
 
-/** /stats 人类可读 HTML 渲染（纯函数：状态进，页面出）。 */
+/**
+ * /stats 人类可读 HTML 渲染（纯函数：状态进，页面出）。
+ */
 final class StatsPage {
 
     private StatsPage() {
     }
 
     static String render(SwarmRegistry registry, TrackerMetrics metrics,
-                         int udpPort, boolean whitelistEnabled) {
+            int udpPort, boolean whitelistEnabled) {
         Map<String, EmbeddedTracker.SwarmStats> perSwarm = registry.stats();
         Set<String> hexes = registry.knownHashes();
         long totalSeeders = 0;

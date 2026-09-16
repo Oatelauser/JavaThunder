@@ -4,10 +4,14 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 
-/** 种子存储契约：单文件（StorageManager）与多文件（MultiFileStorage）共同面向引擎的接口。 */
+/**
+ * 种子存储契约：单文件（StorageManager）与多文件（MultiFileStorage）共同面向引擎的接口。
+ */
 public interface TorrentStorage extends AutoCloseable {
 
-    /** 测试造态入口（构造断点/部分数据场景）；生产写路径走 {@link #writePieceBuffers}。 */
+    /**
+     * 测试造态入口（构造断点/部分数据场景）；生产写路径走 {@link #writePieceBuffers}。
+     */
     void writeBlock(int pieceIndex, int begin, byte[] block) throws IOException;
 
     boolean verifyPiece(int pieceIndex) throws IOException;

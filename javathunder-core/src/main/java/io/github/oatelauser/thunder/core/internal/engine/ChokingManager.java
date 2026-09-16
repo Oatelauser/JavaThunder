@@ -21,12 +21,12 @@ public final class ChokingManager {
     private static final int RECIPROCATION_SLOTS = 4;
 
     private final Random random;
-    /** 速率记账走并发容器（C5-2）：每块一次的 record* 不再进监视器。 */
-    private final ConcurrentMap<Object, Long> receivedFromPeer =
-        new ConcurrentHashMap<>();
-    private final ConcurrentMap<Object, Long> sentToPeer =
-        new ConcurrentHashMap<>();
     private Object optimisticPeer;
+    private final ConcurrentMap<Object, Long> sentToPeer = new ConcurrentHashMap<>();
+    /**
+     * 速率记账走并发容器（C5-2）：每块一次的 record* 不再进监视器。
+     */
+    private final ConcurrentMap<Object, Long> receivedFromPeer = new ConcurrentHashMap<>();
 
     public ChokingManager(Random random) {
         this.random = random;
@@ -60,7 +60,7 @@ public final class ChokingManager {
             }
         }
         ranked.sort(Comparator.comparingLong((Object peer) ->
-            receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
+                receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
         for (Object peer : ranked) {
             if (unchoked.size() >= RECIPROCATION_SLOTS) {
                 break;
@@ -73,7 +73,9 @@ public final class ChokingManager {
         return unchoked;
     }
 
-    /** 乐观槽轮换（引擎每 30s 调一次）。 */
+    /**
+     * 乐观槽轮换（引擎每 30s 调一次）。
+     */
     public synchronized Set<Object> rotateOptimistic(Set<Object> connected, Set<Object> interestedInUs) {
         Set<Object> unchoked = new HashSet<>(currentTopReciprocators(interestedInUs));
         pickOptimistic(connected, interestedInUs, unchoked);
@@ -91,7 +93,7 @@ public final class ChokingManager {
             }
         }
         ranked.sort(Comparator.comparingLong(peer ->
-            receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
+                receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
         for (Object peer : ranked) {
             if (top.size() >= RECIPROCATION_SLOTS) {
                 break;

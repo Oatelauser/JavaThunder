@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -25,13 +26,19 @@ import org.jspecify.annotations.Nullable;
  */
 public final class TrackerMain {
 
-    /** BitTorrent 客户端默认监听端口段起点。 */
+    /**
+     * BitTorrent 客户端默认监听端口段起点。
+     */
     private static final int DEFAULT_PORT = 6881;
 
-    /** BEP 3 常规 announce 间隔（30 分钟）。 */
+    /**
+     * BEP 3 常规 announce 间隔（30 分钟）。
+     */
     private static final int DEFAULT_ANNOUNCE_INTERVAL_SECONDS = 1800;
 
-    /** 解析结果：udpPort=null 表示与 HTTP 同端口、0 表示关闭；whitelist=null 表示关闭。 */
+    /**
+     * 解析结果：udpPort=null 表示与 HTTP 同端口、0 表示关闭；whitelist=null 表示关闭。
+     */
     record Options(int port, int announceIntervalSeconds,
                    @Nullable Integer udpPort, @Nullable List<byte[]> whitelist) {
     }
@@ -74,7 +81,9 @@ public final class TrackerMain {
         Thread.currentThread().join(); // 驻留直至被杀（hook 负责关停）
     }
 
-    /** 包可见：单测覆盖参数解析（含 --whitelist 文本值不得走数字校验）。 */
+    /**
+     * 包可见：单测覆盖参数解析（含 --whitelist 文本值不得走数字校验）。
+     */
     static Options parse(String[] args) {
         int port = DEFAULT_PORT;
         int interval = DEFAULT_ANNOUNCE_INTERVAL_SECONDS;
@@ -110,7 +119,9 @@ public final class TrackerMain {
         return args[index];
     }
 
-    /** 逗号分隔 hex，或 @file（行/逗号分隔，空行与 # 注释——含行内——忽略）。 */
+    /**
+     * 逗号分隔 hex，或 @file（行/逗号分隔，空行与 # 注释——含行内——忽略）。
+     */
     private static List<byte[]> parseWhitelist(String spec) {
         List<String> tokens = new ArrayList<>();
         try {
@@ -144,7 +155,7 @@ public final class TrackerMain {
 
     private static InetAddress wildcardAddress() {
         try {
-            return InetAddress.getByAddress(new byte[]{0, 0, 0, 0});
+            return InetAddress.getByAddress(new byte[]{ 0, 0, 0, 0 });
         } catch (IOException e) {
             throw new AssertionError("unreachable: literal 0.0.0.0", e);
         }

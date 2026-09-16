@@ -81,7 +81,9 @@ public final class ResumeStore {
         return sample;
     }
 
-    /** 标记断点已变更（件完成）；由 {@link #flushIfDue} 周期合并落盘。 */
+    /**
+     * 标记断点已变更（件完成）；由 {@link #flushIfDue} 周期合并落盘。
+     */
     public void markDirty() {
         dirty.set(true);
     }
@@ -100,7 +102,9 @@ public final class ResumeStore {
         return true;
     }
 
-    /** 立即保存；I/O 失败只告警不抛——断点文件丢失只损失续传粒度，不该失败任务。 */
+    /**
+     * 立即保存；I/O 失败只告警不抛——断点文件丢失只损失续传粒度，不该失败任务。
+     */
     public void saveNow(Bitfield localSnapshot) {
         try {
             ResumeState.save(file, new ResumeState(infoHash, pieceCount, localSnapshot,
@@ -111,7 +115,9 @@ public final class ResumeStore {
         }
     }
 
-    /** 删除状态文件（连同下载数据一起删除任务时调用）。 */
+    /**
+     * 删除状态文件（连同下载数据一起删除任务时调用）。
+     */
     public void delete() {
         ResumeState.delete(file);
     }

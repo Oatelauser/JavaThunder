@@ -26,9 +26,9 @@ public final class PieceScheduler {
     private final int pieceCount;
     private final long pieceLength;
     private final long totalLength;
+    private final Object[] stripeLocks = new Object[STRIPES];
     private final Map<Object, Bitfield> peers = new ConcurrentHashMap<>();
     private final Set<BlockRequest> inFlight = ConcurrentHashMap.newKeySet();
-    private final Object[] stripeLocks = new Object[STRIPES];
 
     public PieceScheduler(int pieceCount, long pieceLength, long totalLength) {
         this.pieceCount = pieceCount;
@@ -75,7 +75,9 @@ public final class PieceScheduler {
         return peers.get(peerKey);
     }
 
-    /** 全部已注册远端位图的弱一致视图（availability 等遍历场景）。 */
+    /**
+     * 全部已注册远端位图的弱一致视图（availability 等遍历场景）。
+     */
     public Iterable<Bitfield> remotes() {
         return peers.values();
     }
@@ -119,7 +121,9 @@ public final class PieceScheduler {
         return bestFree >= 0 ? bestFree : bestBusy;
     }
 
-    /** 无锁热路径：并发容器的 values() 弱一致遍历对计数场景安全。 */
+    /**
+     * 无锁热路径：并发容器的 values() 弱一致遍历对计数场景安全。
+     */
     public int availability(int pieceIndex) {
         int count = 0;
         for (Bitfield remote : peers.values()) {
@@ -130,7 +134,9 @@ public final class PieceScheduler {
         return count;
     }
 
-    /** 一个 Piece 按 16 KiB 拆分的全部 Block（末块取剩余长度）。纯函数。 */
+    /**
+     * 一个 Piece 按 16 KiB 拆分的全部 Block（末块取剩余长度）。纯函数。
+     */
     public List<BlockRequest> blocksOf(int pieceIndex) {
         long offset = pieceIndex * pieceLength;
         long pieceSize = Math.min(pieceLength, totalLength - offset);
@@ -141,7 +147,9 @@ public final class PieceScheduler {
         return List.copyOf(blocks);
     }
 
-    /** 在途块表：并发容器，无锁（add/remove/contains 单键原子）。 */
+    /**
+     * 在途块表：并发容器，无锁（add/remove/contains 单键原子）。
+     */
     public void markInFlight(BlockRequest request) {
         inFlight.add(request);
     }

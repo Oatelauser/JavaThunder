@@ -31,11 +31,15 @@ public interface TorrentClient extends AutoCloseable {
      */
     DownloadTask seed(Path torrentFile, SeedOptions options) throws Exception;
 
-    /** 停止全部任务并释放资源（监听端口、事件线程、发现源）。 */
+    /**
+     * 停止全部任务并释放资源（监听端口、事件线程、发现源）。
+     */
     @Override
     void close();
 
-    /** 全默认配置创建客户端。 */
+    /**
+     * 全默认配置创建客户端。
+     */
     static TorrentClient create() throws IOException {
         return builder().build();
     }
@@ -61,25 +65,39 @@ public interface TorrentClient extends AutoCloseable {
         NIO, BLOCKING
     }
 
-    /** 客户端配置面：见 {@link #builder()}。 */
+    /**
+     * 客户端配置面：见 {@link #builder()}。
+     */
     interface Builder {
 
-        /** Peer 监听端口。 */
+        /**
+         * Peer 监听端口。
+         */
         Builder listenPort(int port);
 
-        /** 全局并发任务上限（超出则排队）。 */
+        /**
+         * 全局并发任务上限（超出则排队）。
+         */
         Builder maxConcurrentTasks(int max);
 
-        /** 单任务的 Peer 连接上限。 */
+        /**
+         * 单任务的 Peer 连接上限。
+         */
         Builder maxPeersPerTask(int max);
 
-        /** 全局下载限速（字节/秒；≤0 不限）。 */
+        /**
+         * 全局下载限速（字节/秒；≤0 不限）。
+         */
         Builder downloadLimitBytesPerSecond(long bytesPerSecond);
 
-        /** 全局上传限速（字节/秒；≤0 不限）。 */
+        /**
+         * 全局上传限速（字节/秒；≤0 不限）。
+         */
         Builder uploadLimitBytesPerSecond(long bytesPerSecond);
 
-        /** 注入监听器回调线程；缺省为库内单线程守护线程。 */
+        /**
+         * 注入监听器回调线程；缺省为库内单线程守护线程。
+         */
         Builder listenerExecutor(Executor executor);
 
         /**
@@ -88,10 +106,14 @@ public interface TorrentClient extends AutoCloseable {
          */
         Builder peerDiscovery(PeerDiscoverySource source);
 
-        /** 传输实现选择；缺省 NIO（ADR-0003 生产路径），BLOCKING 为阻塞参照实现。 */
+        /**
+         * 传输实现选择；缺省 NIO（ADR-0003 生产路径），BLOCKING 为阻塞参照实现。
+         */
         Builder transport(Transport transport);
 
-        /** 创建客户端（绑定监听端口、启动事件线程）。 */
+        /**
+         * 创建客户端（绑定监听端口、启动事件线程）。
+         */
         TorrentClient build() throws IOException;
     }
 }

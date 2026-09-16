@@ -2,6 +2,7 @@ package io.github.oatelauser.thunder.core.internal.wire;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -14,7 +15,9 @@ public final class CompactPeer {
     private CompactPeer() {
     }
 
-    /** 从字节数组的指定偏移解出一个地址（调用方保证 [offset, offset+6) 可读且长度对齐 6）。 */
+    /**
+     * 从字节数组的指定偏移解出一个地址（调用方保证 [offset, offset+6) 可读且长度对齐 6）。
+     */
     public static InetSocketAddress decode6(byte[] data, int offset) {
         String host = (data[offset] & 0xFF) + "." + (data[offset + 1] & 0xFF) + "."
                 + (data[offset + 2] & 0xFF) + "." + (data[offset + 3] & 0xFF);
@@ -22,7 +25,9 @@ public final class CompactPeer {
         return new InetSocketAddress(host, port);
     }
 
-    /** 从 ByteBuffer 的绝对偏移解出一个地址（UDP 应答场景，不移动 position）。 */
+    /**
+     * 从 ByteBuffer 的绝对偏移解出一个地址（UDP 应答场景，不移动 position）。
+     */
     public static InetSocketAddress decode6(ByteBuffer buf, int offset) {
         String host = (buf.get(offset) & 0xFF) + "." + (buf.get(offset + 1) & 0xFF) + "."
                 + (buf.get(offset + 2) & 0xFF) + "." + (buf.get(offset + 3) & 0xFF);

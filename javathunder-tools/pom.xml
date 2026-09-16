@@ -68,8 +68,8 @@
            消费方是与库同步重编译的用户测试代码，源码级不兼容可接受；
            但已编译测试字节码的可链接性必须保证，故 binary 门槛不可省。
            包名沿用历史 io.github.oatelauser.thunder.testkit（原 testkit 模块坐标）。
-           tools 自 v0.3.0 才以本坐标发布，基线即 v0.3.0。
-           oldVersion 用 file 指向本地仓库基线 jar：dependency 方式在同版本（0.3.0）下
+           tools 首发于 v0.3.0；基线随每版发布上移（当前 v0.4.0）。
+           oldVersion 用 file 指向本地仓库基线 jar：dependency 方式在同版本下
            会被 reactor 解析成本模块自身，护栏失效（见 tracker pom 同注）。 -->
       <plugin>
         <groupId>com.github.siom79.japicmp</groupId>
@@ -78,19 +78,19 @@
         <configuration>
           <oldVersion>
             <file>
-              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tools/0.3.0/javathunder-tools-0.3.0.jar</path>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tools/0.4.0/javathunder-tools-0.4.0.jar</path>
             </file>
           </oldVersion>
           <oldClassPathDependencies>
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-core</artifactId>
-              <version>0.3.0</version>
+              <version>0.4.0</version>
             </dependency>
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-tracker</artifactId>
-              <version>0.3.0</version>
+              <version>0.4.0</version>
             </dependency>
           </oldClassPathDependencies>
           <!-- 显式 old/new 类路径成对出现：只配 old 会让 new 侧类路径为空，
@@ -122,13 +122,6 @@
             <includes>
               <include>io.github.oatelauser.thunder.testkit</include>
             </includes>
-            <!-- 0.4.0 有意移除（0.x 政策）：暴露 core 内部类型的差分开关旧形态，
-                 改用 Transports.select() + api 级 Builder.transport(Transport)。
-                 发布后基线上移至 v0.4.0 时本条 excludes 应随之删除。
-                 注意方法级 exclude 必须带括号（无括号按字段模式匹配，无法命中方法）。 -->
-            <excludes>
-              <exclude>io.github.oatelauser.thunder.testkit.Transports#fromSystemProperty()</exclude>
-            </excludes>
           </parameter>
           <skip>${skipJapicmp}</skip>
         </configuration>

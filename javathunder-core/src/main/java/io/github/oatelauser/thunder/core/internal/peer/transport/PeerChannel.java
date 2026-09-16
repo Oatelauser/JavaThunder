@@ -21,22 +21,31 @@ public interface PeerChannel extends AutoCloseable {
 
     byte[] remotePeerId();
 
-    /** 对端握手保留位是否声明支持 BEP 10 扩展协议（未握手完成前 false）。 */
+    /**
+     * 对端握手保留位是否声明支持 BEP 10 扩展协议（未握手完成前 false）。
+     */
     default boolean remoteSupportsExtensions() {
         return false;
     }
 
-    /** 发送一条消息（可能排队，由实现决定何时刷出）。 */
+    /**
+     * 发送一条消息（可能排队，由实现决定何时刷出）。
+     */
     void write(PeerWireMessage message);
 
-    /** 批量发送：NIO 实现合成单缓冲一次刷出，减少唤醒与队列开销。 */
+    /**
+     * 批量发送：NIO 实现合成单缓冲一次刷出，减少唤醒与队列开销。
+     */
     default void write(List<PeerWireMessage> messages) {
         for (PeerWireMessage message : messages) {
             write(message);
         }
     }
 
-    /** 关闭连接；幂等；触发 closeListener（cause=null 表示主动关闭）。 */
+    /**
+     * 关闭连接；幂等；触发 closeListener（cause=null 表示主动关闭）。
+     */
+    @Override
     void close();
 
     void setMessageListener(Consumer<List<PeerWireMessage>> listener);

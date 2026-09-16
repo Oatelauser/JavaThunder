@@ -141,7 +141,9 @@ public final class MetadataFetcher {
         });
     }
 
-    /** 候选入队：过滤自连回声与已连接会话——与下载会话同一判定（{@link PeerAddresses}）。 */
+    /**
+     * 候选入队：过滤自连回声与已连接会话——与下载会话同一判定（{@link PeerAddresses}）。
+     */
     private void offerCandidate(InetSocketAddress address) {
         if (PeerAddresses.isSelfConnection(address, listenPort)) {
             return; // 我们自己
@@ -211,7 +213,9 @@ public final class MetadataFetcher {
         channel.write(new ExtendedMessage(0, Bencode.encode(new BDict(handshake))));
     }
 
-    /** 消息分发：只处理 BEP 10 扩展消息（握手与 ut_metadata data），其余不影响元数据交换。 */
+    /**
+     * 消息分发：只处理 BEP 10 扩展消息（握手与 ut_metadata data），其余不影响元数据交换。
+     */
     private boolean handle(MetadataSession session, PeerWireMessage message) {
         if (!(message instanceof ExtendedMessage extended)) {
             return true; // 非扩展消息不影响元数据交换
@@ -225,7 +229,9 @@ public final class MetadataFetcher {
         return true;
     }
 
-    /** BEP 10 扩展握手：协商对端的 ut_metadata 子 ID 与 metadata_size，两者齐备即开始请求分块。 */
+    /**
+     * BEP 10 扩展握手：协商对端的 ut_metadata 子 ID 与 metadata_size，两者齐备即开始请求分块。
+     */
     private boolean handleHandshake(MetadataSession session, byte[] payload) {
         BDict handshake = decode(payload);
         if (handshake == null) {
@@ -270,7 +276,9 @@ public final class MetadataFetcher {
         copyBlock(session, payload, buf.position(), piece, totalPieces);
     }
 
-    /** 把 data 分块的原始字节拷入重组缓冲对应区间；收齐全部分块即整体交付 SHA-1 校验。 */
+    /**
+     * 把 data 分块的原始字节拷入重组缓冲对应区间；收齐全部分块即整体交付 SHA-1 校验。
+     */
     private void copyBlock(MetadataSession session, byte[] payload, int headerEnd,
             int piece, int totalPieces) {
         int from = piece * METADATA_BLOCK;
@@ -330,7 +338,9 @@ public final class MetadataFetcher {
         }
     }
 
-    /** @return true = 被中断（调用方据此退出循环）。 */
+    /**
+     * @return true = 被中断（调用方据此退出循环）。
+     */
     private static boolean sleepMillis(long millis) {
         try {
             Thread.sleep(millis);

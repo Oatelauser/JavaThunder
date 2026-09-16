@@ -7,6 +7,8 @@ package io.github.oatelauser.thunder.api;
  */
 public interface TorrentClientProvider {
 
-    /** 返回实现侧的配置构建器。 */
+    /**
+     * 返回实现侧的配置构建器。
+     */
     TorrentClient.Builder newBuilder();
 }

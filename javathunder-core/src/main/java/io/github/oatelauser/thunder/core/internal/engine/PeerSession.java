@@ -24,8 +24,7 @@ final class PeerSession {
      * 是主流实现事实标准，且 ttorrent 1.5 的 Piece.record 在收到 offset=0 的块时会重置
      * 整片缓冲——乱序块 0 会静默抹掉已收块导致校验失败（A1 互操作实测）。
      */
-    final ExecutorService serveExecutor =
-            Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
+    final ExecutorService serveExecutor = Executors.newVirtualThreadPerTaskExecutor();
     volatile boolean peerChokingUs = true;
     volatile boolean weChokingThem = true;
     volatile boolean remoteInterested;

@@ -31,7 +31,9 @@ public final class PeerConnection implements AutoCloseable {
     private final OutputStream out;
     private final byte[] remotePeerId;
     private final InetSocketAddress remoteAddress;
-    /** 对端握手保留位是否声明 BEP 10 扩展协议（established 旧重载默认 false）。 */
+    /**
+     * 对端握手保留位是否声明 BEP 10 扩展协议（established 旧重载默认 false）。
+     */
     private volatile boolean remoteSupportsExtensions;
 
     private PeerConnection(Socket socket, byte[] remotePeerId) throws IOException {
@@ -40,12 +42,14 @@ public final class PeerConnection implements AutoCloseable {
         this.out = new BufferedOutputStream(socket.getOutputStream(), 32 * 1024);
         this.remotePeerId = remotePeerId;
         this.remoteAddress = new InetSocketAddress(
-            socket.getInetAddress().getHostAddress(), socket.getPort());
+                socket.getInetAddress().getHostAddress(), socket.getPort());
     }
 
-    /** 主动连接：先发握手再收对端握手，info-hash 不符立即断开。 */
+    /**
+     * 主动连接：先发握手再收对端握手，info-hash 不符立即断开。
+     */
     public static PeerConnection connect(InetSocketAddress address, byte[] infoHash, byte[] peerId,
-                                         int connectTimeoutMillis) throws IOException {
+            int connectTimeoutMillis) throws IOException {
         Socket socket = new Socket();
         try {
             socket.connect(address, connectTimeoutMillis);
@@ -72,7 +76,9 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
-    /** 入站连接：先收对端握手（校验 info-hash），再回自己的握手。 */
+    /**
+     * 入站连接：先收对端握手（校验 info-hash），再回自己的握手。
+     */
     public static PeerConnection accept(Socket socket, byte[] infoHash, byte[] peerId) throws IOException {
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
@@ -91,9 +97,11 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
-    /** 入站连接（对端握手已由路由方预读并校验）。 */
+    /**
+     * 入站连接（对端握手已由路由方预读并校验）。
+     */
     public static PeerConnection acceptWithHandshake(Socket socket, Handshake remote,
-                                                      byte[] infoHash, byte[] peerId) throws IOException {
+            byte[] infoHash, byte[] peerId) throws IOException {
         try {
             socket.getOutputStream().write(Handshake.encode(infoHash, peerId));
             socket.getOutputStream().flush();
@@ -109,25 +117,31 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
-    /** 用已完成握手的 socket 包装连接（入站路由路径用）。 */
+    /**
+     * 用已完成握手的 socket 包装连接（入站路由路径用）。
+     */
     public static PeerConnection established(Socket socket, byte[] remotePeerId) throws IOException {
         return established(socket, remotePeerId, false);
     }
 
-    /** 同上，但携带对端握手的 BEP 10 保留位声明（调用方已读过对端握手线格式）。 */
+    /**
+     * 同上，但携带对端握手的 BEP 10 保留位声明（调用方已读过对端握手线格式）。
+     */
     public static PeerConnection established(Socket socket, byte[] remotePeerId,
-                                             boolean remoteSupportsExtensions) throws IOException {
+            boolean remoteSupportsExtensions) throws IOException {
         socket.setSoTimeout(READ_TIMEOUT_MILLIS);
         PeerConnection connection = new PeerConnection(socket, remotePeerId);
         connection.remoteSupportsExtensions = remoteSupportsExtensions;
         return connection;
     }
 
-    /** 阻塞读一帧；EOF 抛 IOException。 */
+    /**
+     * 阻塞读一帧；EOF 抛 IOException。
+     */
     public PeerWireMessage read() throws IOException {
         byte[] header = readFully(in, 4);
         long length = ((header[0] & 0xFFL) << 24) | ((header[1] & 0xFFL) << 16)
-            | ((header[2] & 0xFFL) << 8) | (header[3] & 0xFFL);
+                | ((header[2] & 0xFFL) << 8) | (header[3] & 0xFFL);
         if (length == 0) {
             return KeepAlive.INSTANCE;
         }
@@ -149,7 +163,9 @@ public final class PeerConnection implements AutoCloseable {
         return remotePeerId.clone();
     }
 
-    /** 对端握手保留位是否声明支持 BEP 10 扩展协议。 */
+    /**
+     * 对端握手保留位是否声明支持 BEP 10 扩展协议。
+     */
     public boolean remoteSupportsExtensions() {
         return remoteSupportsExtensions;
     }

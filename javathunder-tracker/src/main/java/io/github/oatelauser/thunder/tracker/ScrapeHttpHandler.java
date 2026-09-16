@@ -6,13 +6,16 @@ import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
-/** scrape 端点（BEP 48）：?info_hash=... 可重复；缺省返回全部已知 swarm；未知 hash 全零。 */
+/**
+ * scrape 端点（BEP 48）：?info_hash=... 可重复；缺省返回全部已知 swarm；未知 hash 全零。
+ */
 final class ScrapeHttpHandler {
 
     private final SwarmRegistry registry;

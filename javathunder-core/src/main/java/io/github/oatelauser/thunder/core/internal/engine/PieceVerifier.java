@@ -21,7 +21,7 @@ final class PieceVerifier {
 
     /**
      * @return 校验通过且已落盘返回 true；哈希不符返回 false（不落盘——坏件
-     *         从未写入磁盘，丢弃组装器即可重下，无清盘成本）
+     * 从未写入磁盘，丢弃组装器即可重下，无清盘成本）
      * @throws IOException 落盘 I/O 失败，原样上抛（调用方据此失败整个任务）
      */
     static boolean verifyAndStore(TorrentStorage storage, TorrentMetadata meta,

@@ -12,7 +12,9 @@ import java.util.Set;
  */
 final class Frontier {
 
-    /** Kademlia 并发度：每轮同时询问的最近节点数。 */
+    /**
+     * Kademlia 并发度：每轮同时询问的最近节点数。
+     */
     static final int ALPHA = 3;
     private static final int MAX_ENTRIES = 32;
 
@@ -25,7 +27,9 @@ final class Frontier {
         this.entries = new ArrayList<>(seed);
     }
 
-    /** 弹出本批 alpha 个候选（其中已查询过的跳过，保持原批语义）；候选耗尽返回空表。 */
+    /**
+     * 弹出本批 alpha 个候选（其中已查询过的跳过，保持原批语义）；候选耗尽返回空表。
+     */
     List<RoutingTable.Entry> takeBatch() {
         List<RoutingTable.Entry> taken = new ArrayList<>(
                 entries.subList(0, Math.min(ALPHA, entries.size())));
@@ -34,12 +38,16 @@ final class Frontier {
         return taken;
     }
 
-    /** 加入响应中发现的更近候选（排序与截断交给 {@link #tighten()}）。 */
+    /**
+     * 加入响应中发现的更近候选（排序与截断交给 {@link #tighten()}）。
+     */
     void offer(RoutingTable.Entry entry) {
         entries.add(entry);
     }
 
-    /** 轮末收紧：按与目标的异或距离排序并截断。 */
+    /**
+     * 轮末收紧：按与目标的异或距离排序并截断。
+     */
     void tighten() {
         entries.sort((a, b) -> RoutingTable.compareBytes(
                 a.id().distanceTo(target), b.id().distanceTo(target)));

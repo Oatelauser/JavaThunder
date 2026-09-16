@@ -4,12 +4,16 @@ import com.sun.net.httpserver.HttpExchange;
 import io.github.oatelauser.thunder.core.internal.bencode.BDict;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+
 import org.jspecify.annotations.Nullable;
 
-/** HTTP 端点公共响应工具：bencode（tracker 默认）与文本（stats/metrics）。 */
+/**
+ * HTTP 端点公共响应工具：bencode（tracker 默认）与文本（stats/metrics）。
+ */
 final class Http {
 
     private Http() {

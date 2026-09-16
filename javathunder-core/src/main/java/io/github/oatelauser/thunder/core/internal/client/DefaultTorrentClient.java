@@ -216,8 +216,8 @@ public final class DefaultTorrentClient implements TorrentClient {
         }
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(torrentFile));
         DownloadOptions options = new DownloadOptions(
-            seedOptions.dataDir(), true, true, /*seedAfterComplete=*/ true,
-            0, seedOptions.uploadLimitBytesPerSecond(), RestartVerifyMode.FULL);
+                seedOptions.dataDir(), true, true, /*seedAfterComplete=*/ true,
+                0, seedOptions.uploadLimitBytesPerSecond(), RestartVerifyMode.FULL);
         return startSession(meta, options, /*seedOnly=*/ true);
     }
 

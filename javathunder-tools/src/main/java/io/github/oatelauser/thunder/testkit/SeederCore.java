@@ -20,7 +20,9 @@ public final class SeederCore {
     private SeederCore() {
     }
 
-    /** 按文件分块读：positioned channel 读（D2：内存与文件大小无关）。 */
+    /**
+     * 按文件分块读：positioned channel 读（D2：内存与文件大小无关）。
+     */
     public static byte[] readBlock(FileChannel content, TorrentMetadata meta, Request request) throws IOException {
         long offset = request.pieceIndex() * meta.pieceLength() + request.begin();
         ByteBuffer buffer = ByteBuffer.allocate(request.length());
@@ -32,7 +34,9 @@ public final class SeederCore {
         return buffer.array();
     }
 
-    /** 种子方开场通告——满位图 + 立即 unchoke（声明全量持有、无条件供块）。 */
+    /**
+     * 种子方开场通告——满位图 + 立即 unchoke（声明全量持有、无条件供块）。
+     */
     public static List<PeerWireMessage> seederHello(TorrentMetadata meta) {
         return List.of(new BitfieldMessage(Bitfield.allSet(meta.pieceCount()).toBytes()), Unchoke.INSTANCE);
     }

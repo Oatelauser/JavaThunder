@@ -1,12 +1,6 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
-import io.github.oatelauser.thunder.api.DownloadOptions;
-import io.github.oatelauser.thunder.api.DownloadResult;
-import io.github.oatelauser.thunder.api.DownloadTask;
-import io.github.oatelauser.thunder.api.MagnetUri;
-import io.github.oatelauser.thunder.api.ProgressSnapshot;
-import io.github.oatelauser.thunder.api.TaskListener;
-import io.github.oatelauser.thunder.api.TaskState;
+import io.github.oatelauser.thunder.api.*;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -25,8 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class MagnetDownloadTask implements DownloadTask {
 
-    private static final Logger log =
-        LoggerFactory.getLogger(MagnetDownloadTask.class);
+    private static final Logger log = LoggerFactory.getLogger(MagnetDownloadTask.class);
 
     private final CompletableFuture<TorrentMetadata> metadataFuture;
     private final MagnetUri magnet;
@@ -44,8 +37,8 @@ public final class MagnetDownloadTask implements DownloadTask {
     }
 
     public MagnetDownloadTask(CompletableFuture<TorrentMetadata> metadataFuture, MagnetUri magnet,
-                              DownloadOptions options, SessionStarter starter, Runnable slotRelease,
-                              Executor eventExecutor) {
+            DownloadOptions options, SessionStarter starter, Runnable slotRelease,
+            Executor eventExecutor) {
         this.metadataFuture = metadataFuture;
         this.magnet = magnet;
         this.options = options;
@@ -107,7 +100,7 @@ public final class MagnetDownloadTask implements DownloadTask {
     public ProgressSnapshot snapshot() {
         DownloadTask task = delegate.get();
         return task != null ? task.snapshot()
-            : new ProgressSnapshot(0, 0, 0, 0, 0, 0, 0, null);
+                : new ProgressSnapshot(0, 0, 0, 0, 0, 0, 0, null);
     }
 
     @Override

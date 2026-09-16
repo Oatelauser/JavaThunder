@@ -16,10 +16,11 @@ public final class RateLimiter {
     public static final int MIN_BURST_BYTES = 16 * 1024;
     private static final long MAX_REFILL_GAP_NANOS = 64_000_000_000L; // 64s
 
-    private final long rateBytesPerSecond;
     private final long capacity;
     private final LongSupplier clock;
+    private final long rateBytesPerSecond;
     private final ReentrantLock lock = new ReentrantLock();
+
     private long availableTokens;
     private long lastRefillNanos;
 

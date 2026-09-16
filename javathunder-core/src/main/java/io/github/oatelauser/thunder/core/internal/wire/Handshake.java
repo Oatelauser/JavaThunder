@@ -13,9 +13,13 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
 
     private static final byte[] PROTOCOL = "BitTorrent protocol".getBytes(StandardCharsets.US_ASCII);
     private static final int WIRE_LENGTH = 1 + PROTOCOL.length + 8 + 20 + 20;
-    /** BEP 10 扩展协议位掩码（规范原文：bit 20 counting from 0, {@code reserved[5] & 0x10}）。 */
+    /**
+     * BEP 10 扩展协议位掩码（规范原文：bit 20 counting from 0, {@code reserved[5] & 0x10}）。
+     */
     public static final int EXTENSION_BIT_MASK = 0x10;
-    /** 线格式偏移：保留区 [20,28) 的第 5 字节 = wire[25]。 */
+    /**
+     * 线格式偏移：保留区 [20,28) 的第 5 字节 = wire[25]。
+     */
     public static final int EXTENSION_BIT_OFFSET = 25;
 
     public Handshake {
@@ -54,9 +58,11 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         return new Handshake(infoHash, peerId);
     }
 
-    /** 对端是否声明支持扩展协议（BEP 10：reserved[5] & 0x10）。 */
+    /**
+     * 对端是否声明支持扩展协议（BEP 10：reserved[5] & 0x10）。
+     */
     public static boolean supportsExtensions(byte[] wire) {
         return wire.length > EXTENSION_BIT_OFFSET
-            && (wire[EXTENSION_BIT_OFFSET] & EXTENSION_BIT_MASK) != 0;
+                && (wire[EXTENSION_BIT_OFFSET] & EXTENSION_BIT_MASK) != 0;
     }
 }

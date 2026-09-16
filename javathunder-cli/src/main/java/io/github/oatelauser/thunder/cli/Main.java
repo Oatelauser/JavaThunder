@@ -11,7 +11,9 @@ import io.github.oatelauser.thunder.api.TorrentClient;
 import java.nio.file.Path;
 import java.util.List;
 
-/** CLI 示例：javathunder download <torrent> [--dir <目录>] */
+/**
+ * CLI 示例：javathunder download <torrent> [--dir <目录>]
+ */
 public final class Main {
 
     public static void main(String[] args) throws Exception {
@@ -35,10 +37,10 @@ public final class Main {
                 @Override
                 public void onProgress(ProgressSnapshot p) {
                     String eta = p.etaMillis() == null ? "--"
-                        : String.format("%dm%02ds", p.etaMillis() / 60000, p.etaMillis() / 1000 % 60);
+                            : String.format("%dm%02ds", p.etaMillis() / 60000, p.etaMillis() / 1000 % 60);
                     System.out.printf("\r%.1f%%  ↓ %d KB/s  ↑ %d KB/s  peers=%d  health=%.1f  eta=%s  ",
-                        p.fraction() * 100, p.downloadRateBps() / 1024, p.uploadRateBps() / 1024,
-                        p.connectedPeers(), p.availability(), eta);
+                            p.fraction() * 100, p.downloadRateBps() / 1024, p.uploadRateBps() / 1024,
+                            p.connectedPeers(), p.availability(), eta);
                 }
 
                 @Override
@@ -48,7 +50,7 @@ public final class Main {
             });
             DownloadResult result = task.future().join();
             System.out.printf("%ncompleted: %s (%d bytes, %ds)%n",
-                result.file(), result.bytes(), result.elapsed().toSeconds());
+                    result.file(), result.bytes(), result.elapsed().toSeconds());
         }
     }
 

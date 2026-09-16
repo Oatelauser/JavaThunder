@@ -6,9 +6,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
 import org.jspecify.annotations.Nullable;
 
-/** raw query-string 解析（%XX → 原始字节）；同名键（如多次 info_hash）聚合为列表。 */
+/**
+ * raw query-string 解析（%XX → 原始字节）；同名键（如多次 info_hash）聚合为列表。
+ */
 final class Query {
 
     private Query() {
@@ -30,17 +33,19 @@ final class Query {
         return params;
     }
 
-    static @Nullable byte[] first(Map<String, List<byte[]>> params, String key) {
+    static byte[] first(Map<String, List<byte[]>> params, String key) {
         List<byte[]> values = params.get(key);
         return values == null || values.isEmpty() ? null : values.get(0);
     }
 
-    static @Nullable String textOf(@Nullable byte[] bytes) {
+    static String textOf(byte[] bytes) {
         return bytes == null ? null : new String(bytes, StandardCharsets.US_ASCII);
     }
 
-    /** left=0 → seeder；缺失或非法按 leecher 处理。 */
-    static boolean seederByLeft(@Nullable byte[] leftBytes) {
+    /**
+     * left=0 → seeder；缺失或非法按 leecher 处理。
+     */
+    static boolean seederByLeft(byte[] leftBytes) {
         if (leftBytes == null) {
             return false;
         }
