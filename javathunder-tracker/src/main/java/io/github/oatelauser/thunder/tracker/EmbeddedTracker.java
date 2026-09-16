@@ -9,29 +9,49 @@ import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
+
+import org.jspecify.annotations.Nullable;
 
 /**
- * 内嵌 HTTP Tracker（BEP 3/23）：内存 Peer 表，compact 响应。
+ * 内嵌 Tracker：HTTP announce（BEP 3/23）+ UDP announce（BEP 15）。内存 Peer 表，
+ * compact 响应。
  *
  * <p>生产化能力：固定端口（{@link #start(int)}）、Peer 过期清理（后台虚拟线程，
  * {@code now - lastSeen > announceInterval × 2} 摘除）、{@code event=stopped}
  * 立即摘除、按 info-hash 的 seeders/leechers 统计（{@link #stats()}）。
  * announce 响应用 core 的 bencode 编码（字典键规范形排序）。
  *
- * <p>testkit 兼容默认：{@link #start()} 绑定回环、随机端口、interval=2s；
- * {@link #register(byte[], int)} 直接注册的 Peer 无 announce 生命周期，不过期。
- * {@link TrackerServer} 是生产外观（0.0.0.0 绑定、长间隔），两者共用本实现。
+ * <p><b>UDP（BEP 15 服务端）</b>：默认关闭，{@link #enableUdp(int)} 开启
+ * （port=0 与 HTTP 同端口）。connect 无状态——每次 connect 发回新生成的
+ * connection_id，announce 不校验之（客户端可任意缓存）。announce 请求布局
+ * 镜像 core 的 {@code UdpTrackerClient}：connection_id(8)/action(4)/
+ * transaction_id(4)/info_hash(20)/peer_id(20)/downloaded(8)/uploaded(8)/
+ * left(8)/event(4)/port(4)/numwant(4)（标准 BEP 15 的 ip/key 字段位置被该
+ * 客户端用于 port/numwant，服务端对齐之）。报文不完整或 action 未知一律
+ * 静默丢弃（防放大，BEP 15 安全建议）。事务 ID 原样回带。
+ *
+ * <p>testkit 兼容默认：{@link #start()} 绑定回环、随机端口、interval=2s、
+ * 无 UDP；{@link #register(byte[], int)} 直接注册的 Peer 无 announce
+ * 生命周期，不过期。{@link TrackerServer} 是生产外观（0.0.0.0 绑定、长间隔），
+ * 两者共用本实现。
  */
 public final class EmbeddedTracker implements AutoCloseable {
 
@@ -52,8 +72,21 @@ public final class EmbeddedTracker implements AutoCloseable {
         }
     }
 
+    /** announce 作用后的 swarm 快照：全量计数 + 排除 self 的 IPv4 compact peers。 */
+    private record SwarmSnapshot(int seeders, int leechers, byte[] peersCompact) {
+    }
+
     private static final long MAX_SWEEP_PERIOD_MILLIS = 30_000;
     private static final long MIN_SWEEP_PERIOD_MILLIS = 250;
+
+    /** BEP 15 connect 请求的 protocol_id（常量魔数）。 */
+    static final long CONNECT_PROTOCOL_ID = 0x41727101980AL;
+    static final int ACTION_CONNECT = 0;
+    static final int ACTION_ANNOUNCE = 1;
+    /** BEP 15 event 数值：3=stopped。 */
+    static final int UDP_EVENT_STOPPED = 3;
+    /** core UdpTrackerClient 布局的 announce 请求最小长度（端口 84..88、numwant 88..92）。 */
+    static final int UDP_ANNOUNCE_REQUEST_BYTES = 92;
 
     private final HttpServer server;
     private final ExecutorService httpExecutor;
@@ -62,6 +95,7 @@ public final class EmbeddedTracker implements AutoCloseable {
     private final Thread expirySweeper;
     private final ConcurrentMap<String, ConcurrentMap<InetSocketAddress, Peer>> swarms =
             new ConcurrentHashMap<>();
+    private volatile @Nullable DatagramSocket udpSocket;
     private volatile boolean closed;
 
     private EmbeddedTracker(HttpServer server, ExecutorService httpExecutor, int announceIntervalSeconds) {
@@ -111,7 +145,7 @@ public final class EmbeddedTracker implements AutoCloseable {
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(executor);
         EmbeddedTracker tracker = new EmbeddedTracker(server, executor, announceIntervalSeconds);
-        server.createContext("/announce", tracker::handle);
+        server.createContext("/announce", tracker::handleAnnounce);
         server.start();
         tracker.expirySweeper.start();
         return tracker;
@@ -125,6 +159,38 @@ public final class EmbeddedTracker implements AutoCloseable {
     /** 回环形态的 announce URL（无论绑定地址为何，回环总是可达）。 */
     public String announceUrl() {
         return "http://127.0.0.1:" + port() + "/announce";
+    }
+
+    /**
+     * 开启 UDP announce（BEP 15 服务端，默认关闭）：port &gt; 0 指定监听端口，
+     * port = 0 与 HTTP 同端口；绑定地址与 HTTP 一致。返回实际监听端口。
+     * 每个实例只能开启一次；{@link #close()} 一并释放。
+     */
+    public synchronized int enableUdp(int port) throws IOException {
+        if (closed) {
+            throw new IllegalStateException("tracker is closed");
+        }
+        if (udpSocket != null) {
+            throw new IllegalStateException("udp already enabled on port " + udpSocket.getLocalPort());
+        }
+        int bindPort = port > 0 ? port : server.getAddress().getPort();
+        DatagramSocket socket = new DatagramSocket(
+                new InetSocketAddress(server.getAddress().getAddress(), bindPort));
+        udpSocket = socket;
+        Thread.ofVirtual().name("tracker-udp-" + bindPort).start(() -> serveUdp(socket));
+        return bindPort;
+    }
+
+    /** UDP 监听端口；未开启返回 -1。 */
+    public int udpPort() {
+        DatagramSocket socket = udpSocket;
+        return socket == null ? -1 : socket.getLocalPort();
+    }
+
+    /** 回环形态的 UDP announce URL（{@code udp://127.0.0.1:<port>/announce}）；未开启返回 null。 */
+    public @Nullable String udpAnnounceUrl() {
+        int port = udpPort();
+        return port < 0 ? null : "udp://127.0.0.1:" + port + "/announce";
     }
 
     /**
@@ -147,16 +213,12 @@ public final class EmbeddedTracker implements AutoCloseable {
     public Map<String, SwarmStats> stats() {
         Map<String, SwarmStats> snapshot = new LinkedHashMap<>();
         for (Map.Entry<String, ConcurrentMap<InetSocketAddress, Peer>> entry : swarms.entrySet()) {
-            int seeders = 0;
-            int leechers = 0;
-            for (Peer peer : entry.getValue().values()) {
-                if (peer.seeder) {
-                    seeders++;
-                } else {
-                    leechers++;
-                }
+            if (!entry.getValue().isEmpty()) {
+                SwarmSnapshot counted = snapshot(entry.getValue(), null, -1);
+                snapshot.put(entry.getKey(), new SwarmStats(
+                        counted.seeders(), counted.leechers(),
+                        counted.seeders() + counted.leechers()));
             }
-            snapshot.put(entry.getKey(), new SwarmStats(seeders, leechers, seeders + leechers));
         }
         return Collections.unmodifiableMap(snapshot);
     }
@@ -187,72 +249,35 @@ public final class EmbeddedTracker implements AutoCloseable {
         return evicted;
     }
 
-    private ConcurrentMap<InetSocketAddress, Peer> swarm(byte[] infoHash) {
-        return swarms.computeIfAbsent(HexFormat.of().formatHex(infoHash), k -> new ConcurrentHashMap<>());
-    }
-
-    private void handle(HttpExchange exchange) throws IOException {
-        try {
-            Map<String, byte[]> params = Query.parse(exchange.getRequestURI().getRawQuery());
-            byte[] infoHash = params.get("info_hash");
-            byte[] portBytes = params.get("port");
-            if (infoHash == null || infoHash.length != 20 || portBytes == null) {
-                respond(exchange, Bencode.encode(failure("invalid announce")));
-                return;
-            }
-            int port;
-            try {
-                port = Integer.parseInt(new String(portBytes, StandardCharsets.US_ASCII));
-            } catch (NumberFormatException e) {
-                respond(exchange, Bencode.encode(failure("invalid announce")));
-                return;
-            }
-            String remoteIp = exchange.getRemoteAddress().getAddress().getHostAddress();
-            InetSocketAddress self = new InetSocketAddress(remoteIp, port);
-            ConcurrentMap<InetSocketAddress, Peer> swarm = swarm(infoHash);
-            boolean seeder = seederByLeft(params.get("left"));
-            if (stopped(params.get("event"))) {
-                swarm.remove(self);
-                respond(exchange, Bencode.encode(response(swarm, null)));
-                return;
-            }
-            long now = System.currentTimeMillis();
-            swarm.compute(self, (address, existing) -> {
-                if (existing == null) {
-                    return new Peer(now, seeder, false);
-                }
-                existing.lastSeenMillis = now;
-                existing.seeder = seeder;
-                return existing;
-            });
-            respond(exchange, Bencode.encode(response(swarm, self)));
-        } catch (RuntimeException e) {
-            respond(exchange, Bencode.encode(failure("tracker error: " + e)));
-        }
-    }
-
-    /** left=0 → seeder；缺失按 leecher 处理。 */
-    private static boolean seederByLeft(byte[] leftBytes) {
-        if (leftBytes == null) {
-            return false;
-        }
-        try {
-            return Long.parseLong(new String(leftBytes, StandardCharsets.US_ASCII)) == 0;
-        } catch (NumberFormatException e) {
-            return false;
-        }
-    }
-
-    private static boolean stopped(byte[] eventBytes) {
-        return eventBytes != null && "stopped".equals(new String(eventBytes, StandardCharsets.US_ASCII));
-    }
+    // ---- announce 核心（HTTP 与 UDP 共享） ----
 
     /**
-     * 标准 announce 响应：interval/complete/incomplete/peers（compact）。
-     * 计数含 swarm 全体；self 非 null 时从 peers 里排除自己；
-     * null（stopped 后）返回空 peers。
+     * announce 侧共享副作用：stopped 摘除；否则登记/续期（left=0 → seeder）。
+     * 返回全 swarm 计数 + 排除 self 的 IPv4 compact peers
+     * （stopped 时 peers 为空；maxPeers &gt; 0 时截断）。
      */
-    private BDict response(ConcurrentMap<InetSocketAddress, Peer> swarm, InetSocketAddress self) {
+    private SwarmSnapshot applyAnnounce(byte[] infoHash, InetSocketAddress self, boolean seeder,
+                                        boolean stopped, int maxPeers) {
+        ConcurrentMap<InetSocketAddress, Peer> swarm = swarm(infoHash);
+        if (stopped) {
+            swarm.remove(self);
+            return snapshot(swarm, null, -1);
+        }
+        long now = System.currentTimeMillis();
+        swarm.compute(self, (address, existing) -> {
+            if (existing == null) {
+                return new Peer(now, seeder, false);
+            }
+            existing.lastSeenMillis = now;
+            existing.seeder = seeder;
+            return existing;
+        });
+        return snapshot(swarm, self, maxPeers);
+    }
+
+    /** 全量计数 + compact peers；self=null 表示不含任何 peer（stopped 响应语义）。 */
+    private SwarmSnapshot snapshot(ConcurrentMap<InetSocketAddress, Peer> swarm,
+                                   @Nullable InetSocketAddress self, int maxPeers) {
         int seeders = 0;
         int leechers = 0;
         ByteArrayOutputStream peers = new ByteArrayOutputStream();
@@ -266,6 +291,9 @@ public final class EmbeddedTracker implements AutoCloseable {
             if (self == null || entry.getKey().equals(self)) {
                 continue;
             }
+            if (maxPeers > 0 && peers.size() / 6 >= maxPeers) {
+                continue;
+            }
             byte[] address = entry.getKey().getAddress().getAddress();
             if (address.length != 4) {
                 continue; // compact（BEP 23）仅 IPv4；IPv6 peer 无法表示，跳过
@@ -274,11 +302,139 @@ public final class EmbeddedTracker implements AutoCloseable {
             peers.write(entry.getKey().getPort() >> 8);
             peers.write(entry.getKey().getPort() & 0xFF);
         }
+        return new SwarmSnapshot(seeders, leechers, peers.toByteArray());
+    }
+
+    // ---- HTTP handlers ----
+
+    private void handleAnnounce(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, List<byte[]>> params = Query.parse(exchange.getRequestURI().getRawQuery());
+            byte[] infoHash = Query.first(params, "info_hash");
+            byte[] portBytes = Query.first(params, "port");
+            if (infoHash == null || infoHash.length != 20 || portBytes == null) {
+                respond(exchange, Bencode.encode(failure("invalid announce")));
+                return;
+            }
+            int port;
+            try {
+                port = Integer.parseInt(new String(portBytes, StandardCharsets.US_ASCII));
+            } catch (NumberFormatException e) {
+                respond(exchange, Bencode.encode(failure("invalid announce")));
+                return;
+            }
+            String remoteIp = exchange.getRemoteAddress().getAddress().getHostAddress();
+            InetSocketAddress self = new InetSocketAddress(remoteIp, port);
+            String event = Query.textOf(Query.first(params, "event"));
+            SwarmSnapshot snapshot = applyAnnounce(infoHash, self, seederByLeft(Query.first(params, "left")),
+                    "stopped".equals(event), -1);
+            respond(exchange, Bencode.encode(response(snapshot)));
+        } catch (RuntimeException e) {
+            respond(exchange, Bencode.encode(failure("tracker error: " + e)));
+        }
+    }
+
+    // ---- UDP（BEP 15 服务端） ----
+
+    private void serveUdp(DatagramSocket socket) {
+        byte[] buffer = new byte[2048];
+        while (!closed) {
+            try {
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                socket.receive(packet);
+                ByteBuffer in = ByteBuffer.wrap(buffer, 0, packet.getLength()).order(ByteOrder.BIG_ENDIAN);
+                handleUdpPacket(socket, packet, in);
+            } catch (IOException e) {
+                return; // socket 关闭或不可恢复：退出循环
+            }
+        }
+    }
+
+    private void handleUdpPacket(DatagramSocket socket, DatagramPacket packet, ByteBuffer in) {
+        if (in.remaining() < 16) {
+            return; // 头部不完整：忽略
+        }
+        long connectionId = in.getLong(0);
+        int action = in.getInt(8);
+        int transactionId = in.getInt(12);
+        switch (action) {
+            case ACTION_CONNECT -> {
+                if (connectionId != CONNECT_PROTOCOL_ID || in.remaining() != 16) {
+                    return; // 非法 connect：忽略
+                }
+                ByteBuffer out = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+                        .putInt(ACTION_CONNECT)
+                        .putInt(transactionId)
+                        .putLong(ThreadLocalRandom.current().nextLong());
+                reply(socket, packet, out.array());
+            }
+            case ACTION_ANNOUNCE -> handleUdpAnnounce(socket, packet, transactionId);
+            default -> {
+                // 未知 action：静默丢弃（BEP 15 安全建议：不回包防放大）
+            }
+        }
+    }
+
+    private void handleUdpAnnounce(DatagramSocket socket, DatagramPacket packet, int transactionId) {
+        ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength()).order(ByteOrder.BIG_ENDIAN);
+        if (in.remaining() < UDP_ANNOUNCE_REQUEST_BYTES) {
+            return; // 布局不完整：忽略
+        }
+        byte[] infoHash = new byte[20];
+        in.position(16).get(infoHash);
+        long left = in.position(72).getLong();
+        int event = in.getInt(80);
+        int port = in.getInt(84) & 0xFFFF; // core UdpTrackerClient 布局：port 为 int
+        int numwant = in.getInt(88);
+        InetSocketAddress self = new InetSocketAddress(packet.getAddress().getHostAddress(), port);
+        SwarmSnapshot snapshot = applyAnnounce(infoHash, self, left == 0,
+                event == UDP_EVENT_STOPPED, numwant > 0 ? numwant : -1);
+        // BEP 15 应答头：action/transaction_id 之后为 interval/leechers/seeders（与 HTTP
+        // 的 complete/incomplete 顺序相反，leechers 在前），peer 紧凑表从偏移 20 起
+        ByteBuffer out = ByteBuffer.allocate(20 + snapshot.peersCompact().length)
+                .order(ByteOrder.BIG_ENDIAN)
+                .putInt(ACTION_ANNOUNCE)
+                .putInt(transactionId)
+                .putInt(announceIntervalSeconds)
+                .putInt(snapshot.leechers())
+                .putInt(snapshot.seeders())
+                .put(snapshot.peersCompact());
+        reply(socket, packet, out.array());
+    }
+
+    private static void reply(DatagramSocket socket, DatagramPacket request, byte[] wire) {
+        try {
+            socket.send(new DatagramPacket(wire, wire.length, request.getAddress(), request.getPort()));
+        } catch (IOException ignored) {
+            // 对端消失/网络抖动：UDP 丢包即弃
+        }
+    }
+
+    // ---- 共享工具 ----
+
+    private ConcurrentMap<InetSocketAddress, Peer> swarm(byte[] infoHash) {
+        return swarms.computeIfAbsent(HexFormat.of().formatHex(infoHash), k -> new ConcurrentHashMap<>());
+    }
+
+    /** left=0 → seeder；缺失按 leecher 处理。 */
+    private static boolean seederByLeft(@Nullable byte[] leftBytes) {
+        if (leftBytes == null) {
+            return false;
+        }
+        try {
+            return Long.parseLong(new String(leftBytes, StandardCharsets.US_ASCII)) == 0;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    /** 标准 announce 响应：interval/complete/incomplete/peers（compact）。 */
+    private BDict response(SwarmSnapshot snapshot) {
         return BDict.of(Map.of(
-                BString.of("complete"), new BInteger(seeders),
-                BString.of("incomplete"), new BInteger(leechers),
+                BString.of("complete"), new BInteger(snapshot.seeders()),
+                BString.of("incomplete"), new BInteger(snapshot.leechers()),
                 BString.of("interval"), new BInteger(announceIntervalSeconds),
-                BString.of("peers"), new BString(peers.toByteArray())));
+                BString.of("peers"), new BString(snapshot.peersCompact())));
     }
 
     private static BDict failure(String reason) {
@@ -293,32 +449,48 @@ public final class EmbeddedTracker implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (closed) {
             return;
         }
         closed = true;
         expirySweeper.interrupt();
+        DatagramSocket socket = udpSocket;
+        if (socket != null) {
+            socket.close(); // 阻塞在 receive 的监听线程随之退出
+        }
         server.stop(0);
         httpExecutor.shutdownNow();
         swarms.clear();
     }
 
     /**
-     * raw query 解析（%XX → 原始字节）。
+     * raw query 解析（%XX → 原始字节）；同名键聚合为列表。
      */
     private static final class Query {
-        static Map<String, byte[]> parse(String rawQuery) {
-            Map<String, byte[]> params = new ConcurrentHashMap<>();
+        static Map<String, List<byte[]>> parse(@Nullable String rawQuery) {
+            Map<String, List<byte[]>> params = new LinkedHashMap<>();
+            if (rawQuery == null || rawQuery.isEmpty()) {
+                return params;
+            }
             for (String pair : rawQuery.split("&")) {
                 int eq = pair.indexOf('=');
                 if (eq <= 0) {
                     continue;
                 }
-                params.put(new String(decode(pair.substring(0, eq)), StandardCharsets.UTF_8),
-                        decode(pair.substring(eq + 1)));
+                params.computeIfAbsent(new String(decode(pair.substring(0, eq)), StandardCharsets.UTF_8),
+                        k -> new ArrayList<>()).add(decode(pair.substring(eq + 1)));
             }
             return params;
+        }
+
+        static @Nullable byte[] first(Map<String, List<byte[]>> params, String key) {
+            List<byte[]> values = params.get(key);
+            return values == null || values.isEmpty() ? null : values.get(0);
+        }
+
+        static @Nullable String textOf(@Nullable byte[] bytes) {
+            return bytes == null ? null : new String(bytes, StandardCharsets.US_ASCII);
         }
 
         static byte[] decode(String s) {
