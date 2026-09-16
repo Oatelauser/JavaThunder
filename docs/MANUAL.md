@@ -444,7 +444,7 @@ var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of
 
 | 渠道 | 适用 | 你要做的 |
 |---|---|---|
-| **HTTP Tracker**（种子里写 announce） | 公网种子默认；内网可跑本项目 `javathunder-tracker`（`java -jar javathunder-tracker-*-with-dependencies.jar --port 6881`，opentracker 替代）或 tools 的 `EmbeddedTracker`（进程内嵌） | 种子生成时填 announce 地址 |
+| **HTTP Tracker**（种子里写 announce） | 公网种子默认；内网自建用本项目 `javathunder-tracker`（`java -jar` 即起，见 ROADMAP/README）或 opentracker；测试/进程内嵌用 tools 传递的 `EmbeddedTracker` | 种子生成时填 announce 地址 |
 | **UDP Tracker**（BEP 15） | 同上，UDP 更省开销 | announce 填 `udp://...`，引擎自动分派 |
 | **DHT**（可选模块） | 完全去 tracker；内网自建自举 | 两端 `builder().peerDiscovery(DhtPeerDiscovery.create(...))` |
 | PEX | 已连接的节点互相介绍新节点 | 无需配置，自动 |
@@ -547,6 +547,67 @@ DefaultTorrentClient.builder()
 `LoopbackAcceptanceTest`；三件套 = EmbeddedTracker（传递依赖 tracker 模块提供）
 + TorrentGenerator + FakeSeeder，
 另可用 `-Djavathunder.transport=nio` 让同一测试双传输各跑一遍（差分）。
+
+### 6.6 框架接入（Spring Boot 为例）
+
+**依赖**：仅 core + 你的框架。完整可运行示例见仓库 [`examples/spring-boot`](../examples/spring-boot)
+（独立 Maven 项目，不在主 reactor）：`TorrentClient` Bean 生命周期、REST+SSE 进度接口、
+demo profile 回环冒烟（`curl` 四步：POST → GET → SSE → DELETE）一应俱全。核心姿势四条：
+
+**① client 是重型资源 → 应用级单例 Bean + 关闭回调。** 一个 client 承载监听端口、
+全局限速与事件线程，多任务复用；按请求创建/关闭是典型误用（端口耗尽 + 做不了种）。
+
+```java
+@Configuration(proxyBeanMethods = false)
+class ThunderConfiguration {
+    @Bean(destroyMethod = "close")            // 应用关闭时调 client.close()（姿势④）
+    TorrentClient torrentClient() throws IOException {
+        return DefaultTorrentClient.builder().build();
+    }
+}
+```
+
+**② 回调线程契约：要自定义就注入专用线程池，别借 Web 容器线程。** TaskListener
+回调默认跑在库内单线程（守护线程）；`listenerExecutor(...)` 可换成你管理的池——
+注入一个 2 线程的小池即可（回调只做轻转发，重处理另投队列）。两个方向都别做：
+把回调引到 Tomcat 工作线程（占住请求处理）或公共 ForkJoinPool（阻塞回调拖垮并行流）。
+
+```java
+@Bean(destroyMethod = "shutdown")
+ExecutorService thunderListenerExecutor() {   // 专用池，随应用关闭
+    return Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "javathunder-listener");
+        t.setDaemon(true);
+        return t;
+    });
+}
+
+@Bean(destroyMethod = "close")
+TorrentClient torrentClient(
+        @Qualifier("thunderListenerExecutor") ExecutorService listenerPool) throws IOException {
+    return DefaultTorrentClient.builder().listenerExecutor(listenerPool).build();
+}
+```
+
+**③ 进度暴露：REST 轮询读 `snapshot()`，推送用 SSE 转发 `TaskListener`。**
+轮询零成本——`GET /api/downloads/{id}` 直接返回 `task.snapshot()`（fraction/速率/
+peers/eta/state 一把抓）。推送——`task.addListener(...)` 把 onProgress（~500ms 一帧）
+与 onStateChanged 转发进 `SseEmitter`：连接时先补发一帧当前快照；终态
+（COMPLETED/FAILED/CANCELLED）后 `emitter.complete()`；处理 onTimeout 与客户端断开
+（send 抛 IOException 即关闭），并用一个开关位让后续回调变空操作（API 无 removeListener）。
+回调发生在姿势②的专用池上，转发动作本身线程安全。
+
+**④ 优雅停机 = 应用关闭时调 `close()`。** `client.close()`（AutoCloseable、幂等）
+停止全部任务（断点已随写随存，重启同目录续传）并释放端口与线程；挂到容器的关闭
+钩子上即可——`destroyMethod = "close"`、`@PreDestroy`、`DisposableBean` 三选一，
+Spring 对 AutoCloseable Bean 也会自动推断。Bean 依赖关系自动保证销毁顺序：client
+先 close，它引用的线程池后 shutdown。
+
+**其他框架同理**：Quarkus（`@ApplicationScoped` + `@PreDestroy`）与 Micronaut
+（`@Singleton` + `@PreDestroy`）没有 Spring 的销毁方法推断，显式挂一个 `@PreDestroy`
+调 `close()` 即可；四条姿势里只有注解形式随框架变，单例生命周期、专用回调线程池、
+snapshot 轮询 + 事件推送、关闭时收尾这四件事完全相同（SSE 在 JAX-RS 侧对应
+`SseEventSink`，语义同 `SseEmitter`）。
 
 ---
 

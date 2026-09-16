@@ -55,6 +55,8 @@ try (TorrentClient client = DefaultTorrentClient.builder().build()) {
 | `javathunder-tools` | 种子生成器、测试对端（原 testkit，Java 包名不变） | 造种子 / 写集成测试时 |
 | `javathunder-cli` | 可执行示例 | 参考/体验 |
 
+`examples/` 下是**独立构建**的接入示例（不在主 Maven reactor）：[`examples/spring-boot`](examples/spring-boot) 演示 `TorrentClient` Bean 生命周期、REST+SSE 进度接口与优雅停机（手册 [§6.6](docs/MANUAL.md)）。
+
 ## 安装
 
 **尚未发布到 Maven Central**（计划中）。当前从源码构建：
