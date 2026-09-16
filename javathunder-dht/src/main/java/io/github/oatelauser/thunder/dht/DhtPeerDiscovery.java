@@ -52,6 +52,11 @@ public final class DhtPeerDiscovery implements PeerDiscoverySource {
         return client.getPeers(infoHash);
     }
 
+    /** 已知 DHT 节点数（健康度观测：自举是否完成、路由表是否在增长）。 */
+    public int knownNodes() {
+        return client.knownNodes();
+    }
+
     @Override
     public void close() {
         client.close();

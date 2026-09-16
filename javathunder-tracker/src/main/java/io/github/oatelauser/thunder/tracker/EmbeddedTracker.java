@@ -21,8 +21,8 @@ import org.jspecify.annotations.Nullable;
  * 计数在 {@link TrackerMetrics}。
  *
  * <p>testkit 兼容默认：{@link #start()} 绑定回环、随机端口、interval=2s、
- * 无 UDP 无白名单。生产形态（0.0.0.0、长间隔）见 {@link TrackerServer}；
- * 可执行 jar 入口见 {@link TrackerMain}。
+ * 无 UDP 无白名单。生产形态（0.0.0.0、默认 6881 / 1800s）用
+ * {@link #start(InetAddress, int, int)} 绑通配地址；可执行 jar 入口见 {@link TrackerMain}。
  */
 public final class EmbeddedTracker implements AutoCloseable {
 
@@ -82,7 +82,7 @@ public final class EmbeddedTracker implements AutoCloseable {
         return start(InetAddress.getLoopbackAddress(), port, announceIntervalSeconds);
     }
 
-    /** 完全控制绑定地址 / 端口 / announce 间隔（{@link TrackerServer} 生产入口用它）。 */
+    /** 完全控制绑定地址 / 端口 / announce 间隔（生产入口：通配地址 + 6881 + 1800s）。 */
     public static EmbeddedTracker start(InetAddress bindAddress, int port, int announceIntervalSeconds)
             throws IOException {
         if (announceIntervalSeconds <= 0) {

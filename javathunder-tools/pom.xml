@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
   </parent>
 
   <artifactId>javathunder-tools</artifactId>
@@ -94,17 +94,18 @@
             </dependency>
           </oldClassPathDependencies>
           <!-- 显式 old/new 类路径成对出现：只配 old 会让 new 侧类路径为空，
-               testkit 触达 core internal 类型时分析直接崩（ClassNotFound）。 -->
+               testkit 触达 core internal 类型时分析直接崩（ClassNotFound）。
+               old 侧钉基线版本（0.3.0），new 侧随当前版本。 -->
           <newClassPathDependencies>
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-core</artifactId>
-              <version>0.3.0</version>
+              <version>${project.version}</version>
             </dependency>
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-tracker</artifactId>
-              <version>0.3.0</version>
+              <version>${project.version}</version>
             </dependency>
           </newClassPathDependencies>
           <newVersion>
@@ -121,6 +122,13 @@
             <includes>
               <include>io.github.oatelauser.thunder.testkit</include>
             </includes>
+            <!-- 0.4.0 有意移除（0.x 政策）：暴露 core 内部类型的差分开关旧形态，
+                 改用 Transports.select() + api 级 Builder.transport(Transport)。
+                 发布后基线上移至 v0.4.0 时本条 excludes 应随之删除。
+                 注意方法级 exclude 必须带括号（无括号按字段模式匹配，无法命中方法）。 -->
+            <excludes>
+              <exclude>io.github.oatelauser.thunder.testkit.Transports#fromSystemProperty()</exclude>
+            </excludes>
           </parameter>
           <skip>${skipJapicmp}</skip>
         </configuration>

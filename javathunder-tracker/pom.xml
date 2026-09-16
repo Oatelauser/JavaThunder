@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
   </parent>
 
   <artifactId>javathunder-tracker</artifactId>
@@ -69,7 +69,7 @@
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-core</artifactId>
-              <version>0.3.0</version>
+              <version>${project.version}</version>
             </dependency>
           </newClassPathDependencies>
           <newVersion>
@@ -83,6 +83,12 @@
             <includes>
               <include>io.github.oatelauser.thunder.tracker</include>
             </includes>
+            <!-- 0.4.0 有意移除（0.x 政策）：TrackerServer 是 EmbeddedTracker 的 1:1 纯转发壳。
+                 变更清单见 CHANGELOG 0.4.0 与 MANUAL 迁移章节；发布后基线上移至 v0.4.0 时
+                 本条 excludes 应随之删除。 -->
+            <excludes>
+              <exclude>io.github.oatelauser.thunder.tracker.TrackerServer</exclude>
+            </excludes>
           </parameter>
           <skip>${skipJapicmp}</skip>
         </configuration>

@@ -37,11 +37,12 @@ DHT 已落为独立可选模块（`javathunder-dht`，查询模式），轻量�
 `javathunder-tracker`：现网可用的 tracker（内网分发的"opentracker 替代"，
 纯 Java 零依赖、可执行 jar 直跑：`java -jar javathunder-tracker-*-with-dependencies.jar
 --port 6881 --announce-interval 1800 [--udp-port 6881] [--whitelist <hex>|@file]`）。
-已交付：TrackerServer（固定端口 / announce 间隔过期清理 / stopped 事件摘除 /
-多 swarm 并发 / 可观测统计）+ UDP announce（BEP 15 服务端，默认与 HTTP 同端口，
+已交付：EmbeddedTracker 双形态（内嵌回环 / 生产通配绑定 + 固定端口 + announce 间隔过期清理 /
+stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer 转发壳已于 0.4.0 收编）
++ UDP announce（BEP 15 服务端，默认与 HTTP 同端口，
 `--udp-port 0` 关闭）+ scrape（BEP 48，downloaded 完成累计）+ info-hash 白名单 +
-/stats（HTML）与 /metrics（Prometheus 文本）端点 + 保留 EmbeddedTracker
-（tools 场景零迁移，包 `io.github.oatelauser.thunder.tracker`）。
+/stats（HTML）与 /metrics（Prometheus 文本）端点；可执行 jar 入口 `TrackerMain`。
+保留包 `io.github.oatelauser.thunder.tracker`（tools 场景零迁移）。
 选型依据见 MANUAL §1.3：内网分发自建 tracker 首选，DHT 是去中心化备选而非替代。
 
 #### 附注：集群同步评估（多实例 A/B 互为副本，对标 opentracker live sync；只评估未决策）

@@ -55,7 +55,7 @@ javathunder-cli ──────▶ javathunder-core ──────▶ jav
                          （实现：bencode、        （纯接口，仅依赖
                            tracker、peer、         JSpecify 注解）
                            存储、调度、限速）
-javathunder-tracker ─▶ core（生产/内嵌 HTTP Tracker：TrackerServer、EmbeddedTracker）
+javathunder-tracker ─▶ core（生产/内嵌 HTTP Tracker：EmbeddedTracker、TrackerMain）
 javathunder-tools ──▶ core（种子生成器 / 假 Peer）+ tracker（EmbeddedTracker 引用）
 
 阶段 2 新增：javathunder-dht ──▶ core（可选依赖，轻量用户不引入）
@@ -103,21 +103,28 @@ try (TorrentClient client = TorrentClient.builder()
         .listenPort(6881)
         .maxConcurrentTasks(3)
         .maxPeersPerTask(50)
-        .uploadRateLimit(Rate.ofMbps(10))
+        .uploadLimitBytesPerSecond(512 * 1024)      // 全局上传限速（0 = 不限）
+        .transport(TorrentClient.Transport.NIO)     // 缺省即 NIO，可省
         .build()) {
 
     DownloadTask task = client.download(
         Path.of("ubuntu.torrent"),
-        DownloadOptions.defaults().targetDir(Path.of("downloads")));
+        DownloadOptions.defaults()
+            .targetDir(Path.of("downloads"))
+            .rateLimits(2 * 1024 * 1024, 512 * 1024)   // 任务级 ↓/↑（0 = 不限）
+            .restartVerify(RestartVerifyMode.SAMPLED)); // 重启抽样校验
 
-    task.addListener(TaskListener.onProgress(p ->
-        System.out.printf("%.1f%%  ↓ %s/s  peers=%d  health=%.1f%n",
-            p.fraction() * 100, p.downloadRate(), p.connectedPeers(), p.availability())));
+    task.addListener(new TaskListener() {
+        @Override public void onProgress(ProgressSnapshot p) {
+            System.out.printf("%.1f%%  ↓%dKB/s  peers=%d  health=%.1f%n",
+                p.fraction() * 100, p.downloadRateBps() / 1024,
+                p.connectedPeers(), p.availability());
+        }
+    });
 
-    task.future().thenApply(DownloadResult::verifiedHash).join();
-    task.pause();
-    task.resume();
-    task.cancel(CancelMode.KEEP_DATA);   // 或 DELETE_DATA
+    DownloadResult result = task.future().join();   // 完成即返回；SEEDING 不完成
+    System.out.println(result.file());
+    // 生命周期：task.pause() / task.resume() / task.cancel(false|true 删数据)
 }
 ```
 
@@ -129,15 +136,13 @@ try (TorrentClient client = TorrentClient.builder()
 | `maxConcurrentTasks` | 3 | 全局最大同时下载任务数（其余排队 QUEUED） |
 | `maxPeersPerTask` | 50 | 单任务最大连接 Peer 数 |
 | `downloadLimitBytesPerSecond` / `uploadLimitBytesPerSecond` | 0（不限） | 全局令牌桶，上下行独立 |
-| `DownloadOptions.rateLimits(dl, ul)`（每任务） | 0（不限） | 任务级令牌桶，与全局桶串联（两级都需放行，取更慢者） |
-| `seedAfterComplete` | false | 完成后转 SEEDING 持续上传，否则转 COMPLETED |
-| `connectTimeout` | 10s | Peer TCP 连接/握手超时 |
 | `listenerExecutor` | 内置单线程事件线程 | 监听器回调投递线程，可注入 |
-| 阶段 2：`dht` / `pex` / `useUdpTracker` | true | 正交开关；`private` 种子强制关闭 |
+| `peerDiscovery` | 无（仅 tracker） | 去中心化发现源注入（如 `DhtPeerDiscovery`）；生命周期归 client；`private` 种子强制禁用 |
+| `transport` | NIO | NIO 事件循环 / BLOCKING 阻塞参照实现（差分调试） |
 
 `DownloadOptions`（每任务）：`targetDir`、`resumeEnabled`（默认 true）、
-`verifyOnRestart`（默认 true）、`seedAfterComplete`、`rateLimits(dl, ul)`（0 = 不限，
-wither 风格，见上表）。
+`restartVerify(RestartVerifyMode)`（FULL 全量 / SAMPLED ~10% 抽样+首末件 / NONE 信任位图）、
+`seedAfterComplete`、`rateLimits(dl, ul)`（0 = 不限，wither 风格，任务桶与全局桶串联）。
 
 ### 3.3 `DownloadTask` 状态机
 
@@ -149,7 +154,7 @@ QUEUED ──▶ VERIFYING ──▶ DOWNLOADING ──▶ SEEDING（seedAfterCo
                  └── 任意态可进 FAILED（出错，终态）；CANCELLED（删除，终态）
 ```
 
-操作：`pause()` / `resume()` / `cancel(KEEP_DATA | DELETE_DATA)` / `future()` /
+操作：`pause()` / `resume()` / `cancel(deleteData)` / `future()` /
 `addListener()` / `snapshot()`（当前 `ProgressSnapshot`）。所有阻塞操作可中断（响应
 `Thread.interrupt()`）。
 
@@ -333,9 +338,9 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 ### 5.11 tools/tracker 与 CLI（阶段收尾）
 
 - `javathunder-tracker`（0.3.0 自 testkit 拆出）：`EmbeddedTracker`（基于
-  `com.sun.net.httpserver`，实现 announce 协议、内存 Peer 表；生产化：固定端口重载、
-  Peer 过期清理、stopped 摘除、stats 统计，响应复用 core 的 bencode 编码器）、
-  `TrackerServer`（生产外观：0.0.0.0 / 默认 6881 / 1800s）、`TrackerMain`（可执行 jar）；
+  `com.sun.net.httpserver`，实现 announce 协议、内存 Peer 表；生产化：通配地址/固定端口
+  重载、Peer 过期清理、stopped 摘除、stats 统计，响应复用 core 的 bencode 编码器），
+  生产形态 = `start(通配地址, 6881, 1800s)`，`TrackerMain` 为可执行 jar 入口；
 - `javathunder-tools`（原 testkit，Java 包名保留 `...thunder.testkit`）：
   `TorrentGenerator`（生成随机文件 + 对应 .torrent）、`FakeSeeder`（TCP 服务：应答握手
   与 request，按文件提供 piece）、`NioSeeder`/`MetadataSeeder`/`Transports`；

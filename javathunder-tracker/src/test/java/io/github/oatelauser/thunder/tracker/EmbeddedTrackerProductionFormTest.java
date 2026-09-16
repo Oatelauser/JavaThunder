@@ -6,6 +6,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,19 +17,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * TrackerServer 生产外观：0.0.0.0 绑定（回环可达）、固定端口、可配置 announce
- * 间隔透传到响应、stats 委托、close 释放端口。
+ * EmbeddedTracker 生产形态直测：通配地址绑定（0.0.0.0，回环可达）、固定端口、
+ * 可配置 announce 间隔透传到响应、stats 可观测、close 释放端口（同端口可重启）。
+ * 原 TrackerServer 转发壳（0.4.0 移除）的覆盖由此承接。
  */
-class TrackerServerTest {
+class EmbeddedTrackerProductionFormTest {
 
     @Test
     void servesOnFixedPortWithConfiguredInterval() throws Exception {
         int port;
-        try (TrackerServer server = TrackerServer.start(0, 7)) {
+        try (EmbeddedTracker server = EmbeddedTracker.start(wildcardAddress(), 0, 7)) {
             port = server.port();
             assertTrue(port > 0);
 
-            // 0.0.0.0 绑定：announceUrl（回环形态）必须可达
+            // 通配绑定：announceUrl（回环形态）必须可达
             HttpClient http = HttpClient.newHttpClient();
             byte[] infoHash = new byte[20];
             new Random(42).nextBytes(infoHash);
@@ -51,8 +53,16 @@ class TrackerServerTest {
             assertEquals(1, server.stats().values().iterator().next().seeders());
         }
         // close 后同端口可重启（固定端口语义）
-        try (TrackerServer restarted = TrackerServer.start(port, 1800)) {
+        try (EmbeddedTracker restarted = EmbeddedTracker.start(wildcardAddress(), port, 1800)) {
             assertEquals(port, restarted.port());
+        }
+    }
+
+    private static InetAddress wildcardAddress() {
+        try {
+            return InetAddress.getByAddress(new byte[]{0, 0, 0, 0});
+        } catch (Exception e) {
+            throw new AssertionError("unreachable: literal 0.0.0.0", e);
         }
     }
 }

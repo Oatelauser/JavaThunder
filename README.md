@@ -5,7 +5,7 @@
 *An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
 
 ![CI](https://github.com/Oatelauser/JavaThunder/actions/workflows/ci.yml/badge.svg)
-![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.3.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
+![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.4.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
 
 ## 为什么是它
 
@@ -55,7 +55,7 @@ try (TorrentClient client = TorrentClient.create()) {
 | `javathunder-api` | 纯接口与值类型（稳定契约） | 总是（随 core 传递引入） |
 | `javathunder-core` | 引擎实现 | 总是 |
 | `javathunder-dht` | BEP 5 DHT（去 tracker 节点发现） | 磁力无 tracker / 去 tracker 分发时 |
-| `javathunder-tracker` | 生产级 HTTP tracker：`TrackerServer`（固定端口/Peer 过期清理/统计）、内嵌 `EmbeddedTracker`、可执行 jar | 内网分发自建 tracker 时 |
+| `javathunder-tracker` | 生产级 HTTP tracker：`EmbeddedTracker`（内嵌/生产双形态，通配绑定、Peer 过期清理、统计）、可执行 jar | 内网分发自建 tracker 时 |
 | `javathunder-tools` | 种子生成器、测试对端（原 testkit，Java 包名不变） | 造种子 / 写集成测试时 |
 | `javathunder-cli` | 可执行示例 | 参考/体验 |
 
@@ -74,7 +74,7 @@ cd JavaThunder && mvn clean install
 <dependency>
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder-core</artifactId>
-  <version>0.3.0</version>
+  <version>0.4.0</version>
 </dependency>
 <!-- 运行时请自带 slf4j 后端（如 slf4j-simple / logback），否则日志静默 -->
 ```
@@ -104,7 +104,7 @@ BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）�
 
 - 设计量级：≤1000 并发连接、单任务 ≤200 Peer（DHT 爬虫级非目标）
 - PEX 仅 IPv4；Windows 做种期间文件保持 `.part` 名（句柄占用，完成即改名）
-- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.3.0 vs 0.2.0 = PATCH：api 零变更；tracker 与 tools 自 0.3.0 发布起同样受护栏保护，基线 v0.3.0）
+- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.4.0 vs 0.3.0：api 纯新增判 MINOR；有意移除项在 CHANGELOG 列明并经护栏 excludes 豁免；tracker/tools 基线 v0.3.0）
 
 ## 文档
 

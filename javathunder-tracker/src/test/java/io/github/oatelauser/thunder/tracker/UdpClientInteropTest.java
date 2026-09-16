@@ -6,6 +6,7 @@ import io.github.oatelauser.thunder.core.internal.tracker.TrackerEvent;
 import io.github.oatelauser.thunder.core.internal.tracker.UdpTrackerClient;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Random;
@@ -16,8 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 真互通端到端：core 的 {@link UdpTrackerClient}（connect 60s 缓存 + 指数退避）
- * 对本地 {@link TrackerServer}（UDP 开启）announce，拿到直接注册的 peer——
- * 服务端报文布局与客户端解析的每一处偏移都被真实代码对拍覆盖。
+ * 对本地 {@link EmbeddedTracker}（生产形态通配绑定 + UDP 开启）announce，拿到直接
+ * 注册的 peer——服务端报文布局与客户端解析的每一处偏移都被真实代码对拍覆盖。
  */
 class UdpClientInteropTest {
 
@@ -25,7 +26,7 @@ class UdpClientInteropTest {
     void coreUdpClientReceivesRegisteredPeerFromLocalServer() throws Exception {
         byte[] infoHash = new byte[20];
         new Random(7).nextBytes(infoHash);
-        try (TrackerServer server = TrackerServer.start(0, 7)) {
+        try (EmbeddedTracker server = EmbeddedTracker.start(wildcardAddress(), 0, 7)) {
             int udpPort = server.enableUdp(0);
             assertEquals(server.port(), udpPort);
             server.register(infoHash, 15123); // 直接注册的做种方（FakeSeeder 形态）
@@ -54,6 +55,14 @@ class UdpClientInteropTest {
                         "udp://127.0.0.1:" + udpPort + "/announce", request);
                 assertTrue(again.peers().contains(peer));
             }
+        }
+    }
+
+    private static InetAddress wildcardAddress() {
+        try {
+            return InetAddress.getByAddress(new byte[]{0, 0, 0, 0});
+        } catch (Exception e) {
+            throw new AssertionError("unreachable: literal 0.0.0.0", e);
         }
     }
 }

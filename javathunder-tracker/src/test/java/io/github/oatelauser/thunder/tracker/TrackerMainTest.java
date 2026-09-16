@@ -25,8 +25,8 @@ class TrackerMainTest {
     @Test
     void defaultsMatchProductionForm() {
         TrackerMain.Options options = TrackerMain.parse(new String[0]);
-        assertEquals(TrackerServer.DEFAULT_PORT, options.port());
-        assertEquals(TrackerServer.DEFAULT_ANNOUNCE_INTERVAL_SECONDS, options.announceIntervalSeconds());
+        assertEquals(6881, options.port(), "BitTorrent 默认端口段起点");
+        assertEquals(1800, options.announceIntervalSeconds(), "BEP 3 常规 30 分钟间隔");
         assertNull(options.udpPort(), "缺省 = 与 HTTP 同端口");
         assertNull(options.whitelist(), "缺省 = 关闭白名单");
     }

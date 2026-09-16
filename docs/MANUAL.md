@@ -1,6 +1,6 @@
 # JavaThunder 使用手册
 
-版本：v0.3.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
+版本：v0.4.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
 
 **怎么读这本手册**：第 1 章建立正确的心智模型（角色、上传下载的真实关系、"机器越多越快"的原理）；第 2 章是完整可运行的快速入门；第 3 章回答"什么时候引哪个包"；**第 4 章下载场景 / 第 5 章上传与分发场景**按你的意图二选一进入；第 6 章两类共用；第 7–11 章是速查与排错。
 
@@ -107,7 +107,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
     <dependency>
         <groupId>io.github.oatelauser</groupId>
         <artifactId>javathunder-core</artifactId>
-        <version>0.3.0</version>
+        <version>0.4.0</version>
     </dependency>
     <!-- 日志后端：本库只依赖 slf4j-api，不带后端会静默无日志。示例用 simple，生产换 logback -->
     <dependency>
@@ -118,9 +118,9 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 </dependencies>
 ```
 
-> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.3.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.4.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
 > ```bash
-> java -cp javathunder-core-0.3.0-with-dependencies.jar QuickStart.java
+> java -cp javathunder-core-0.4.0-with-dependencies.jar QuickStart.java
 > ```
 > 不带分类器的主 jar 保持瘦 jar 供构建工具做依赖解析——不要把 fat jar 当依赖引入。
 
@@ -134,7 +134,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-tools</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 
@@ -327,7 +327,7 @@ public class Magnet {
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-dht</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 
@@ -453,7 +453,7 @@ var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of
 
 ### 5.3 别人怎么找到你：发现渠道的选择
 
-**依赖**：tracker/内嵌 tracker → 仅 core（自建 tracker 用 `javathunder-tracker` 模块：生产级 `TrackerServer` 或内嵌 `EmbeddedTracker`）；去 tracker → + dht。
+**依赖**：tracker/内嵌 tracker → 仅 core（自建 tracker 用 `javathunder-tracker` 模块，`java -jar` 直跑或内嵌 `EmbeddedTracker`）；去 tracker → + dht。
 
 回顾 §1.3：发现面只交换地址。三条渠道可混用，引擎自动叠加：
 
@@ -655,7 +655,8 @@ snapshot 轮询 + 事件推送、关闭时收尾这四件事完全相同（SSE �
 **dht 模块**：`DhtPeerDiscovery.create()` / `create(List<String> 内网自举)`
 
 **tracker 模块**：`EmbeddedTracker.start()/start(port)/start(port, interval)`（内嵌，回环）
-`TrackerServer.start(port, interval)`（生产，0.0.0.0，默认 6881/1800s）`stats()`（每
+`EmbeddedTracker.start(InetAddress, port, interval)`（生产形态，通配地址 0.0.0.0 +
+默认 6881/1800s）`stats()`（每
 info-hash seeders/leechers）；可执行 jar 入口 `TrackerMain`（`--port` `--announce-interval`）
 
 **tools**：`TorrentGenerator.generate/generateMultiFile` `FakeSeeder/NioSeeder.start` `MetadataSeeder.start`（BEP 9 对端）
@@ -700,3 +701,18 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 | Windows 做种时文件叫 `.part` | 已知限制（句柄占用），完成/停止后改名 |
 | IDEA/JUnit 里运行完全没打印 | 进度 printf 用了 `\r` 不换行——缓冲流不刷新就一行都看不到；行尾改用 `%n`（§2.2 示例已修正） |
 | 看似"卡住不动"其实在慢速下载 | 公网种子可能只连到 1 个 Peer、速率 KB/s 级（6GB 需数小时），`join()` 会一直阻塞。先用 §2.1 离线版验证集成，再给 future 加超时观察真实速率 |
+
+---
+
+## 第 12 章 从 0.3 迁移到 0.4
+
+| 变更 | 0.3 用法 | 0.4 迁移 |
+|---|---|---|
+| 默认传输翻转 NIO | 默认 BLOCKING | 无需动作（对外行为边界不变）；保持旧行为显式 `.transport(TorrentClient.Transport.BLOCKING)` 或 `-Djavathunder.transport=blocking`（§6.3） |
+| 客户端入口走 api | 少数代码直接 import `core.internal.client.DefaultTorrentClient` | 改 `TorrentClient.create()` / `builder()`（ServiceLoader 自动发现实现）；编译期不再依赖实现包 |
+| `TrackerServer` 移除 | `TrackerServer.start(port, interval)` | `EmbeddedTracker.start(InetAddress.getByAddress(new byte[4]), port, interval)`——生产形态同一实现（通配绑定 + 默认 6881/1800s） |
+| `Transports.fromSystemProperty()` 移除 | `.transportFactory(Transports.fromSystemProperty())` | `.transport(Transports.select())`（api 枚举，不再暴露 core 内部类型） |
+| `DhtPeerSource` 移除 | `DhtPeerSource.start()` / `bootstrap()` / `knownNodes()` | `DhtPeerDiscovery.create()` / `create(nodes)`（构造即异步自举）；健康度观测用 `DhtPeerDiscovery.knownNodes()` |
+| 磁力 announce 对齐 | tracker 全挂时单轮平铺后沉默 | 自动周期重试 + 指数退避（60s 总窗口，§4.2.1），无需改动 |
+
+版本坐标：依赖片段中的 `0.3.0` 全部替换为 `0.4.0`（本文档示例已是 0.4.0）。
