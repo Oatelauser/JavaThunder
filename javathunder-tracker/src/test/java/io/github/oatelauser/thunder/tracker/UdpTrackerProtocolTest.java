@@ -118,6 +118,31 @@ class UdpTrackerProtocolTest {
         }
     }
 
+    /** 白名单拒绝走 UDP error 包（action=3）：事务 ID 回带 + "torrent not registered"。 */
+    @Test
+    void nonWhitelistedTorrentGetsErrorPacket() throws Exception {
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
+            InetSocketAddress target = new InetSocketAddress("127.0.0.1", tracker.enableUdp(0));
+            tracker.enableWhitelist(Arrays.asList(infoHash(3)));
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setSoTimeout(2_000);
+                long connectionId = connect(socket, target);
+
+                ByteBuffer denied = announce(socket, target, connectionId, infoHash(4),
+                        15800, 0, 2, 10);
+                assertEquals(3, denied.getInt(0), "action=error");
+                assertEquals(TID, denied.getInt(4));
+                byte[] message = new byte[denied.remaining() - 8];
+                denied.position(8).get(message);
+                assertEquals("torrent not registered", new String(message, java.nio.charset.StandardCharsets.UTF_8));
+                assertNull(tracker.stats().get(hex(4)), "被拒 swarm 不得残留");
+
+                announce(socket, target, connectionId, infoHash(3), 15801, 0, 2, 10);
+                assertEquals(1, tracker.stats().get(hex(3)).total(), "白名单内正常放行");
+            }
+        }
+    }
+
     // ---- 脚本化 UDP 客户端（布局镜像 core UdpTrackerClient：port 为 int、numwant 在其后） ----
 
     private static final int TID = 0x5A5A5A5A;

@@ -7,6 +7,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.BInteger;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import org.jspecify.annotations.Nullable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -18,12 +19,15 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
@@ -31,16 +35,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.jspecify.annotations.Nullable;
-
 /**
  * 内嵌 Tracker：HTTP announce（BEP 3/23）+ UDP announce（BEP 15）+ scrape
- * （BEP 48）。内存 Peer 表，compact 响应。
+ * （BEP 48）+ 白名单 + /stats、/metrics 可观测端点。内存 Peer 表，compact 响应。
  *
  * <p>生产化能力：固定端口（{@link #start(int)}）、Peer 过期清理（后台虚拟线程，
  * {@code now - lastSeen > announceInterval × 2} 摘除）、{@code event=stopped}
- * 立即摘除、按 info-hash 的 seeders/leechers 统计（{@link #stats()}）。
- * announce 响应用 core 的 bencode 编码（字典键规范形排序）。
+ * 立即摘除、按 info-hash 的 seeders/leechers 统计（{@link #stats()}）与
+ * completed 累计（scrape 的 downloaded）。announce 响应用 core 的 bencode 编码
+ * （字典键规范形排序）。
  *
  * <p><b>UDP（BEP 15 服务端）</b>：默认关闭，{@link #enableUdp(int)} 开启
  * （port=0 与 HTTP 同端口）。connect 无状态——每次 connect 发回新生成的
@@ -55,8 +58,12 @@ import org.jspecify.annotations.Nullable;
  * 缺省返回全部 swarm）；未知 hash 返回全零条目。downloaded 在 completed 事件
  * 或 Peer 首次以 left=0 出现时累计。
  *
+ * <p><b>白名单</b>：默认关闭（全放行）；{@link #enableWhitelist(Collection)}
+ * 后非白名单 announce 收到 failure reason "torrent not registered"
+ * （HTTP 为 bencode failure，UDP 为 action=3 error 包）。
+ *
  * <p>testkit 兼容默认：{@link #start()} 绑定回环、随机端口、interval=2s、
- * 无 UDP；{@link #register(byte[], int)} 直接注册的 Peer 无 announce
+ * 无 UDP 无白名单；{@link #register(byte[], int)} 直接注册的 Peer 无 announce
  * 生命周期，不过期。{@link TrackerServer} 是生产外观（0.0.0.0 绑定、长间隔），
  * 两者共用本实现。
  */
@@ -90,6 +97,7 @@ public final class EmbeddedTracker implements AutoCloseable {
     static final long CONNECT_PROTOCOL_ID = 0x41727101980AL;
     static final int ACTION_CONNECT = 0;
     static final int ACTION_ANNOUNCE = 1;
+    static final int ACTION_ERROR = 3;
     /** BEP 15 event 数值：1=completed，3=stopped。 */
     static final int UDP_EVENT_COMPLETED = 1;
     static final int UDP_EVENT_STOPPED = 3;
@@ -105,6 +113,11 @@ public final class EmbeddedTracker implements AutoCloseable {
             new ConcurrentHashMap<>();
     /** info-hash(hex) → completed 累计；独立于 swarms 存活（swarm 清空后仍保留）。 */
     private final ConcurrentMap<String, AtomicLong> downloads = new ConcurrentHashMap<>();
+    private final AtomicLong httpAnnounces = new AtomicLong();
+    private final AtomicLong udpAnnounces = new AtomicLong();
+    private final AtomicLong scrapes = new AtomicLong();
+    /** null = 白名单关闭（默认全放行）；元素为 info-hash hex。 */
+    private volatile @Nullable Set<String> whitelist;
     private volatile @Nullable DatagramSocket udpSocket;
     private volatile boolean closed;
 
@@ -157,6 +170,8 @@ public final class EmbeddedTracker implements AutoCloseable {
         EmbeddedTracker tracker = new EmbeddedTracker(server, executor, announceIntervalSeconds);
         server.createContext("/announce", tracker::handleAnnounce);
         server.createContext("/scrape", tracker::handleScrape);
+        server.createContext("/stats", tracker::handleStats);
+        server.createContext("/metrics", tracker::handleMetrics);
         server.start();
         tracker.expirySweeper.start();
         return tracker;
@@ -205,6 +220,31 @@ public final class EmbeddedTracker implements AutoCloseable {
     }
 
     /**
+     * 启用白名单：仅列出的 info-hash 可 announce（scrape/统计不受限）。
+     * 重复调用替换旧表；元素须为 20 字节。
+     */
+    public void enableWhitelist(Collection<byte[]> infoHashes) {
+        Set<String> hexes = ConcurrentHashMap.newKeySet();
+        for (byte[] infoHash : infoHashes) {
+            if (infoHash == null || infoHash.length != 20) {
+                throw new IllegalArgumentException("info-hash must be 20 bytes");
+            }
+            hexes.add(HexFormat.of().formatHex(infoHash));
+        }
+        this.whitelist = hexes;
+    }
+
+    /** 关闭白名单（默认：全放行）。 */
+    public void disableWhitelist() {
+        this.whitelist = null;
+    }
+
+    /** 白名单是否启用。 */
+    public boolean whitelistEnabled() {
+        return whitelist != null;
+    }
+
+    /**
      * 种子方直接注册（FakeSeeder 用，绕过 HTTP announce）：无 announce 生命周期，
      * 不参与过期清理。
      */
@@ -225,7 +265,7 @@ public final class EmbeddedTracker implements AutoCloseable {
         Map<String, SwarmStats> snapshot = new LinkedHashMap<>();
         for (Map.Entry<String, ConcurrentMap<InetSocketAddress, Peer>> entry : swarms.entrySet()) {
             if (!entry.getValue().isEmpty()) {
-                SwarmSnapshot counted = snapshot(entry.getValue(), null, -1);
+                SwarmSnapshot counted = snapshot(entry.getValue());
                 snapshot.put(entry.getKey(), new SwarmStats(
                         counted.seeders(), counted.leechers(),
                         counted.seeders() + counted.leechers()));
@@ -261,6 +301,15 @@ public final class EmbeddedTracker implements AutoCloseable {
     }
 
     // ---- announce 核心（HTTP 与 UDP 共享） ----
+
+    /** 白名单拒绝文案；放行返回 null。 */
+    private @Nullable String whitelistFailure(byte[] infoHash) {
+        Set<String> allowed = whitelist;
+        if (allowed == null) {
+            return null;
+        }
+        return allowed.contains(HexFormat.of().formatHex(infoHash)) ? null : "torrent not registered";
+    }
 
     /**
      * announce 侧共享副作用：stopped 摘除；否则登记/续期（left=0 → seeder）。
@@ -336,14 +385,20 @@ public final class EmbeddedTracker implements AutoCloseable {
             byte[] infoHash = Query.first(params, "info_hash");
             byte[] portBytes = Query.first(params, "port");
             if (infoHash == null || infoHash.length != 20 || portBytes == null) {
-                respond(exchange, Bencode.encode(failure("invalid announce")));
+                respond(exchange, Bencode.encode(failure("invalid announce")), null);
                 return;
             }
             int port;
             try {
                 port = Integer.parseInt(new String(portBytes, StandardCharsets.US_ASCII));
             } catch (NumberFormatException e) {
-                respond(exchange, Bencode.encode(failure("invalid announce")));
+                respond(exchange, Bencode.encode(failure("invalid announce")), null);
+                return;
+            }
+            httpAnnounces.incrementAndGet();
+            String denied = whitelistFailure(infoHash);
+            if (denied != null) {
+                respond(exchange, Bencode.encode(failure(denied)), null);
                 return;
             }
             String remoteIp = exchange.getRemoteAddress().getAddress().getHostAddress();
@@ -351,9 +406,9 @@ public final class EmbeddedTracker implements AutoCloseable {
             String event = Query.textOf(Query.first(params, "event"));
             SwarmSnapshot snapshot = applyAnnounce(infoHash, self, seederByLeft(Query.first(params, "left")),
                     "stopped".equals(event), "completed".equals(event), -1);
-            respond(exchange, Bencode.encode(response(snapshot)));
+            respond(exchange, Bencode.encode(response(snapshot)), null);
         } catch (RuntimeException e) {
-            respond(exchange, Bencode.encode(failure("tracker error: " + e)));
+            respond(exchange, Bencode.encode(failure("tracker error: " + e)), null);
         }
     }
 
@@ -361,6 +416,7 @@ public final class EmbeddedTracker implements AutoCloseable {
     private void handleScrape(HttpExchange exchange) throws IOException {
         try {
             Map<String, List<byte[]>> params = Query.parse(exchange.getRequestURI().getRawQuery());
+            scrapes.incrementAndGet();
             List<byte[]> requested = params.get("info_hash");
             Map<BString, BencodeValue> files = new HashMap<>();
             if (requested == null || requested.isEmpty()) {
@@ -376,9 +432,9 @@ public final class EmbeddedTracker implements AutoCloseable {
                 }
             }
             BDict body = BDict.of(Map.of(BString.of("files"), BDict.of(files)));
-            respond(exchange, Bencode.encode(body));
+            respond(exchange, Bencode.encode(body), null);
         } catch (RuntimeException e) {
-            respond(exchange, Bencode.encode(failure("tracker error: " + e)));
+            respond(exchange, Bencode.encode(failure("tracker error: " + e)), null);
         }
     }
 
@@ -393,6 +449,103 @@ public final class EmbeddedTracker implements AutoCloseable {
                 BString.of("complete"), new BInteger(counted.seeders()),
                 BString.of("downloaded"), new BInteger(downloaded == null ? 0 : downloaded.get()),
                 BString.of("incomplete"), new BInteger(counted.leechers())));
+    }
+
+    /** 人类可读统计页：全局汇总 + 每 info-hash 表。 */
+    private void handleStats(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, SwarmStats> perSwarm = stats();
+            Set<String> hexes = new LinkedHashSet<>(perSwarm.keySet());
+            hexes.addAll(downloads.keySet());
+            long totalSeeders = 0;
+            long totalLeechers = 0;
+            long totalDownloads = 0;
+            for (SwarmStats swarm : perSwarm.values()) {
+                totalSeeders += swarm.seeders();
+                totalLeechers += swarm.leechers();
+            }
+            for (AtomicLong counter : downloads.values()) {
+                totalDownloads += counter.get();
+            }
+            StringBuilder html = new StringBuilder(2048);
+            html.append("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">")
+                    .append("<title>javathunder-tracker stats</title>\n")
+                    .append("<style>body{font-family:system-ui,sans-serif;margin:2rem}")
+                    .append("table{border-collapse:collapse;margin-bottom:1.5rem}")
+                    .append("td,th{border:1px solid #ccc;padding:.25rem .9rem;text-align:left}")
+                    .append("th{background:#f4f4f4}code{font-size:.9em}</style>\n")
+                    .append("</head>\n<body>\n<h1>javathunder-tracker</h1>\n");
+            html.append("<table>\n");
+            row(html, "active swarms", perSwarm.size());
+            row(html, "peers (seed / leech)", totalSeeders + " / " + totalLeechers);
+            row(html, "downloads (completed)", totalDownloads);
+            row(html, "announces (http / udp)", httpAnnounces.get() + " / " + udpAnnounces.get());
+            row(html, "scrapes", scrapes.get());
+            row(html, "udp", udpPort() < 0 ? "disabled" : "port " + udpPort());
+            row(html, "whitelist", whitelistEnabled() ? "enabled" : "disabled");
+            html.append("</table>\n");
+            html.append("<table>\n<tr><th>info-hash</th><th>seeders</th><th>leechers</th>")
+                    .append("<th>peers</th><th>downloads</th></tr>\n");
+            for (String hex : hexes) {
+                SwarmStats swarm = perSwarm.get(hex);
+                AtomicLong downloaded = downloads.get(hex);
+                html.append("<tr><td><code>").append(hex).append("</code></td><td>")
+                        .append(swarm == null ? 0 : swarm.seeders()).append("</td><td>")
+                        .append(swarm == null ? 0 : swarm.leechers()).append("</td><td>")
+                        .append(swarm == null ? 0 : swarm.total()).append("</td><td>")
+                        .append(downloaded == null ? 0 : downloaded.get()).append("</td></tr>\n");
+            }
+            html.append("</table>\n</body>\n</html>\n");
+            respond(exchange, html.toString().getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8");
+        } catch (RuntimeException e) {
+            respond(exchange, Bencode.encode(failure("tracker error: " + e)), null);
+        }
+    }
+
+    private static void row(StringBuilder html, String key, Object value) {
+        html.append("<tr><th>").append(key).append("</th><td>").append(value).append("</td></tr>\n");
+    }
+
+    /** Prometheus 文本格式（0.0.4）暴露：swarm peers/downloads、announce/scrape 计数、活跃 swarm。 */
+    private void handleMetrics(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, SwarmStats> perSwarm = stats();
+            StringBuilder text = new StringBuilder(2048);
+            text.append("# HELP javathunder_tracker_swarm_peers Peers currently registered per swarm.\n")
+                    .append("# TYPE javathunder_tracker_swarm_peers gauge\n");
+            for (Map.Entry<String, SwarmStats> entry : perSwarm.entrySet()) {
+                text.append("javathunder_tracker_swarm_peers{role=\"seed\",info_hash=\"")
+                        .append(entry.getKey()).append("\"} ").append(entry.getValue().seeders()).append('\n');
+                text.append("javathunder_tracker_swarm_peers{role=\"leech\",info_hash=\"")
+                        .append(entry.getKey()).append("\"} ").append(entry.getValue().leechers()).append('\n');
+            }
+            text.append("# HELP javathunder_tracker_swarm_downloads_total Completed downloads per swarm.\n")
+                    .append("# TYPE javathunder_tracker_swarm_downloads_total counter\n");
+            Set<String> hexes = new LinkedHashSet<>(perSwarm.keySet());
+            hexes.addAll(downloads.keySet());
+            for (String hex : hexes) {
+                AtomicLong downloaded = downloads.get(hex);
+                text.append("javathunder_tracker_swarm_downloads_total{info_hash=\"")
+                        .append(hex).append("\"} ")
+                        .append(downloaded == null ? 0 : downloaded.get()).append('\n');
+            }
+            text.append("# HELP javathunder_tracker_announces_total Announce requests processed, by transport.\n")
+                    .append("# TYPE javathunder_tracker_announces_total counter\n")
+                    .append("javathunder_tracker_announces_total{transport=\"http\"} ")
+                    .append(httpAnnounces.get()).append('\n')
+                    .append("javathunder_tracker_announces_total{transport=\"udp\"} ")
+                    .append(udpAnnounces.get()).append('\n')
+                    .append("# HELP javathunder_tracker_scrapes_total Scrape requests processed.\n")
+                    .append("# TYPE javathunder_tracker_scrapes_total counter\n")
+                    .append("javathunder_tracker_scrapes_total ").append(scrapes.get()).append('\n')
+                    .append("# HELP javathunder_tracker_active_swarms Swarms with at least one registered peer.\n")
+                    .append("# TYPE javathunder_tracker_active_swarms gauge\n")
+                    .append("javathunder_tracker_active_swarms ").append(perSwarm.size()).append('\n');
+            respond(exchange, text.toString().getBytes(StandardCharsets.UTF_8),
+                    "text/plain; version=0.0.4; charset=utf-8");
+        } catch (RuntimeException e) {
+            respond(exchange, Bencode.encode(failure("tracker error: " + e)), null);
+        }
     }
 
     // ---- UDP（BEP 15 服务端） ----
@@ -447,6 +600,12 @@ public final class EmbeddedTracker implements AutoCloseable {
         int event = in.getInt(80);
         int port = in.getInt(84) & 0xFFFF; // core UdpTrackerClient 布局：port 为 int
         int numwant = in.getInt(88);
+        String denied = whitelistFailure(infoHash);
+        if (denied != null) {
+            udpError(socket, packet, transactionId, denied);
+            return;
+        }
+        udpAnnounces.incrementAndGet();
         InetSocketAddress self = new InetSocketAddress(packet.getAddress().getHostAddress(), port);
         SwarmSnapshot snapshot = applyAnnounce(infoHash, self, left == 0,
                 event == UDP_EVENT_STOPPED, event == UDP_EVENT_COMPLETED, numwant > 0 ? numwant : -1);
@@ -460,6 +619,15 @@ public final class EmbeddedTracker implements AutoCloseable {
                 .putInt(snapshot.leechers())
                 .putInt(snapshot.seeders())
                 .put(snapshot.peersCompact());
+        reply(socket, packet, out.array());
+    }
+
+    private void udpError(DatagramSocket socket, DatagramPacket packet, int transactionId, String message) {
+        byte[] text = message.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer out = ByteBuffer.allocate(8 + text.length).order(ByteOrder.BIG_ENDIAN)
+                .putInt(ACTION_ERROR)
+                .putInt(transactionId)
+                .put(text);
         reply(socket, packet, out.array());
     }
 
@@ -502,7 +670,11 @@ public final class EmbeddedTracker implements AutoCloseable {
         return BDict.of(Map.of(BString.of("failure reason"), BString.of(reason)));
     }
 
-    private static void respond(HttpExchange exchange, byte[] body) throws IOException {
+    private static void respond(HttpExchange exchange, byte[] body, @Nullable String contentType)
+            throws IOException {
+        if (contentType != null) {
+            exchange.getResponseHeaders().set("Content-Type", contentType);
+        }
         exchange.sendResponseHeaders(200, body.length);
         try (var out = exchange.getResponseBody()) {
             out.write(body);
@@ -526,7 +698,7 @@ public final class EmbeddedTracker implements AutoCloseable {
     }
 
     /**
-     * raw query 解析（%XX → 原始字节）；同名键聚合为列表。
+     * raw query 解析（%XX → 原始字节）；同名键（如多次 info_hash）聚合为列表。
      */
     private static final class Query {
         static Map<String, List<byte[]>> parse(@Nullable String rawQuery) {

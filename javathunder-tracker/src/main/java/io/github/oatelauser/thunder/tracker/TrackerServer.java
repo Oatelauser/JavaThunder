@@ -2,18 +2,21 @@ package io.github.oatelauser.thunder.tracker;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.util.Collection;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * 生产级 Tracker 外观：HTTP（BEP 3/23）+ 可选 UDP（BEP 15）。绑定 0.0.0.0
- * （内网分发可用）、默认端口 {@link #DEFAULT_PORT}、announce 间隔
- * {@link #DEFAULT_ANNOUNCE_INTERVAL_SECONDS}。与 {@link EmbeddedTracker}
- * （回环、interval=2s 的测试形态）共用同一实现，差异仅在绑定面与默认间隔。
+ * 生产级 Tracker 外观：HTTP（BEP 3/23）+ 可选 UDP（BEP 15）+ scrape（BEP 48）
+ * + 可选白名单 + /stats、/metrics。绑定 0.0.0.0（内网分发可用）、默认端口
+ * {@link #DEFAULT_PORT}、announce 间隔 {@link #DEFAULT_ANNOUNCE_INTERVAL_SECONDS}。
+ * 与 {@link EmbeddedTracker}（回环、interval=2s 的测试形态）共用同一实现，
+ * 差异仅在绑定面与默认间隔。
  *
  * <p>能力：固定端口、Peer 过期清理（announceInterval × 2 无 announce 即摘除）、
- * {@code event=stopped} 立即摘除、多 swarm 并发、{@link #stats()} 可观测统计。
- * UDP 默认关闭（库用户零迁移），经 {@link #enableUdp(int)} 开启。
+ * {@code event=stopped} 立即摘除、多 swarm 并发、completed 累计、
+ * {@link #stats()} 可观测统计。UDP 与白名单默认关闭（库用户零迁移），
+ * 分别经 {@link #enableUdp(int)} / {@link #enableWhitelist(Collection)} 开启。
  * 可执行 jar 入口见 {@link TrackerMain}（CLI 默认开启 UDP，与 HTTP 同端口）。
  */
 public final class TrackerServer implements AutoCloseable {
@@ -29,7 +32,7 @@ public final class TrackerServer implements AutoCloseable {
         this.delegate = delegate;
     }
 
-    /** 默认形态：0.0.0.0:6881，interval=1800s，无 UDP。 */
+    /** 默认形态：0.0.0.0:6881，interval=1800s，无 UDP 无白名单。 */
     public static TrackerServer start() throws IOException {
         return start(DEFAULT_PORT, DEFAULT_ANNOUNCE_INTERVAL_SECONDS);
     }
@@ -82,6 +85,21 @@ public final class TrackerServer implements AutoCloseable {
     /** 回环形态的 UDP announce URL；未开启返回 null。 */
     public @Nullable String udpAnnounceUrl() {
         return delegate.udpAnnounceUrl();
+    }
+
+    /** 启用白名单：仅列出的 info-hash 可 announce（重复调用替换旧表）。 */
+    public void enableWhitelist(Collection<byte[]> infoHashes) {
+        delegate.enableWhitelist(infoHashes);
+    }
+
+    /** 关闭白名单（默认：全放行）。 */
+    public void disableWhitelist() {
+        delegate.disableWhitelist();
+    }
+
+    /** 白名单是否启用。 */
+    public boolean whitelistEnabled() {
+        return delegate.whitelistEnabled();
     }
 
     /** 种子方直接注册（FakeSeeder 形态）：无 announce 生命周期，不过期。 */

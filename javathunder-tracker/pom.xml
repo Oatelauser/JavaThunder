@@ -12,7 +12,7 @@
 
   <artifactId>javathunder-tracker</artifactId>
   <name>JavaThunder :: Tracker</name>
-  <description>Production HTTP tracker (BEP 3/23): fixed port, peer expiry, stopped removal, stats; runnable jar.</description>
+  <description>Production tracker: HTTP announce (BEP 3/23), UDP announce (BEP 15), scrape (BEP 48), whitelist, stats/metrics endpoints; runnable jar.</description>
 
   <dependencies>
     <dependency>
