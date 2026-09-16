@@ -68,7 +68,8 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 
 ## 第三阶段（按需/远期）
 
-- BEP 6 快速扩展
+- BEP 6 快速扩展——**已实现（0.5.0）**：握手协商 + HaveAll/HaveNone/Reject 主动发送
+  （未协商对端自动回退 BEP 3 语义）；Suggest/AllowedFast 容忍解码不采纳
 - BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）——**已实现（v1，0.5.0）**：单文件
   `url-list` 自动启用、按件 Range 拉取、源级退避熔断、与 Peer 通道在途互斥；
   多文件 WebSeed（BEP 53 草案）未实现

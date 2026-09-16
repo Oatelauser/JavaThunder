@@ -269,6 +269,13 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 
 异常帧（长度前缀越界、piece 越界、未知 ID）→ 断开该 Peer。
 
+**快速扩展消息（BEP 6，握手保留位 reserved[5] & 0x04 双方声明后启用）**：
+ID 13 SuggestPiece（对端选件建议，解码容忍、不采纳——本引擎自有稀缺度策略）；
+ID 14 HaveAll（替代全 1 位图——做种/全量持有侧首帧，大种子省数十 KB）；
+ID 15 HaveNone（显式空持有）；ID 16 RejectRequest（拒绝供给时显式回绝，对端立即
+回收在途槽位，替代 BEP 3 的沉默）；ID 17 AllowedFast（choke 豁免清单，解码容忍、
+不使用）。未协商的对端一律走 BEP 3 位图/沉默语义。
+
 ### 5.5 存储层（core.internal.storage）
 
 - **暂存与落位**：下载期数据写 `.part`（单文件）或编号暂存目录（多文件），全部 Piece
@@ -325,7 +332,8 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
 - 每 30 秒轮换 1 个**乐观槽**：随机 unchoke 一个对我 interested 且当前被 choke 的 Peer——
   给新加入者公平机会，否则冷启动死锁；
 - 做种期（SEEDING）：改为 unchoke "从我下载最多的 4 个" + 1 随机新 Peer；
-- interested 状态独立维护：对方有我缺的 Piece 即声明 interested，避免无意义请求。
+- interested 状态独立维护：对方有我缺的 Piece 即声明 interested，避免无意义请求；
+- 拒绝供给（choke 中/未持有）时对 BEP 6 协商对端回 RejectRequest，对端零等待回收在途槽位。
 
 ### 5.10 限速器（令牌桶）
 

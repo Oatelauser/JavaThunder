@@ -29,6 +29,14 @@ public interface PeerChannel extends AutoCloseable {
     }
 
     /**
+     * 对端握手保留位是否声明支持 BEP 6 快速扩展（未握手完成前 false；
+     * HaveAll/HaveNone/Reject 只对双方都声明的连接使用）。
+     */
+    default boolean remoteSupportsFast() {
+        return false;
+    }
+
+    /**
      * 发送一条消息（可能排队，由实现决定何时刷出）。
      */
     void write(PeerWireMessage message);

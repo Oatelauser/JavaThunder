@@ -268,6 +268,7 @@ public final class NioTransport implements PeerTransport {
         };
         volatile boolean closed;
         volatile boolean remoteSupportsExtensions;
+        volatile boolean remoteSupportsFast;
 
         NioChannel(SocketChannel socket, long deadline) {
             this.socket = socket;
@@ -277,6 +278,11 @@ public final class NioTransport implements PeerTransport {
         @Override
         public boolean remoteSupportsExtensions() {
             return remoteSupportsExtensions;
+        }
+
+        @Override
+        public boolean remoteSupportsFast() {
+            return remoteSupportsFast;
         }
 
         void finishConnect() throws IOException {
@@ -307,13 +313,14 @@ public final class NioTransport implements PeerTransport {
                 readBuffer.get(wire);
                 Handshake handshake = Handshake.decode(wire);
                 boolean remoteExt = Handshake.supportsExtensions(wire);
+                boolean remoteFast = Handshake.supportsFastExtension(wire);
                 if (pendingHandler != null) {
                     // 出站：校验 info-hash，通道就绪
                     if (!Arrays.equals(handshake.infoHash(), pendingInfoHash)) {
                         closeWith(new IOException("peer answered with a different info-hash"));
                         return;
                     }
-                    established(handshake, pendingHandler, remoteExt);
+                    established(handshake, pendingHandler, remoteExt, remoteFast);
                 } else {
                     // 入站：先路由，再回握
                     TransportHandler handler = inboundRouter.route(handshake.infoHash());
@@ -323,16 +330,17 @@ public final class NioTransport implements PeerTransport {
                     }
                     writeQueue.add(ByteBuffer.wrap(Handshake.encode(handshake.infoHash(), peerId)));
                     scheduleFlush();
-                    established(handshake, handler, remoteExt);
+                    established(handshake, handler, remoteExt, remoteFast);
                 }
             }
             deliverFrames();
         }
 
         private void established(Handshake handshake, TransportHandler handler,
-                boolean remoteSupportsExtensions) {
+                boolean remoteSupportsExtensions, boolean remoteSupportsFast) {
             remotePeerIdValue = handshake.peerId();
             this.remoteSupportsExtensions = remoteSupportsExtensions;
+            this.remoteSupportsFast = remoteSupportsFast;
             if (remoteAddressValue == null) {
                 try {
                     remoteAddressValue = (InetSocketAddress) socket.getRemoteAddress();

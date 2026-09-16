@@ -43,12 +43,14 @@ class PeerWireCodecTest {
                 new String(wire, 1, 19, StandardCharsets.US_ASCII));
             for (int i = 20; i < 28; i++) {
                 if (i != Handshake.EXTENSION_BIT_OFFSET) {
-                    assertEquals(0, wire[i], "reserved bytes other than the BEP 10 byte must stay zero");
+                    assertEquals(0, wire[i], "reserved bytes other than the capability byte must stay zero");
                 }
             }
-            assertEquals(Handshake.EXTENSION_BIT_MASK, wire[Handshake.EXTENSION_BIT_OFFSET],
-                "reserved[5] must declare BEP 10 extension support (reserved[5] & 0x10)");
+            assertEquals(Handshake.EXTENSION_BIT_MASK | Handshake.FAST_EXTENSION_BIT_MASK,
+                wire[Handshake.EXTENSION_BIT_OFFSET],
+                "reserved[5] must declare BEP 10 (0x10) + BEP 6 (0x04)");
             assertTrue(Handshake.supportsExtensions(wire), "our own handshake must declare BEP 10");
+            assertTrue(Handshake.supportsFastExtension(wire), "our own handshake must declare BEP 6");
             assertEquals(infoHash[0], wire[28]);
             assertEquals('-', wire[48]);
             assertEquals('J', wire[49]);
@@ -204,14 +206,27 @@ class PeerWireCodecTest {
 
         @Test
         void unknownIdsAreToleratedNotFatal() {
-            // 真实客户端会发未实现的 ID（BEP5 PORT=9、BEP6 Suggest=13、未知名=21）：
+            // 真实客户端会发未实现的 ID（BEP5 PORT=9、未知名=21/250）：
             // 容忍解码为 UnsupportedMessage，由引擎忽略——绝不断连
             assertEquals(new UnsupportedMessage(21),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 21, 1, 2, 3, 4, 5)));
             assertEquals(new UnsupportedMessage(9),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 3, 9, 0x1F, (byte) 0x90)));
-            assertEquals(new UnsupportedMessage(13),
+            assertEquals(new UnsupportedMessage(250),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 2, (byte) 250, 0, 0)));
+        }
+
+        @Test
+        void bep6SuggestAndAllowedFastRoundTrip() {
+            // Suggest（ID 13）与 AllowedFast（ID 17）：载荷 = piece 序号 u32
+            assertEquals(new SuggestPiece(7),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 13, 0, 0, 0, 7)));
+            assertArrayEquals(new byte[]{0, 0, 0, 5, 13, 0, 0, 0, 7},
+                PeerWireCodec.encode(new SuggestPiece(7)));
+            assertEquals(new AllowedFast(3),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 17, 0, 0, 0, 3)));
+            assertArrayEquals(new byte[]{0, 0, 0, 5, 17, 0, 0, 0, 3},
+                PeerWireCodec.encode(new AllowedFast(3)));
         }
 
         @Test

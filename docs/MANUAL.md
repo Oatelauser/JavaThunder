@@ -715,8 +715,9 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 
 ## 第 9 章 协议兼容（BEP）速查
 
-实现：BEP 3(v1+多文件)/9/10/11/12/15/19/20/23/27 完整，BEP 5 查询模式（可选模块）；
-容忍解码：BEP 6；未实现：BEP 52(v2)、BEP 53(多文件 WebSeed)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
+实现：BEP 3(v1+多文件)/5(查询模式，可选模块)/6(快速扩展)/9/10/11/12/15/19/20/23/27；
+BEP 6 范围 = 协商 + HaveAll/HaveNone/Reject（Suggest/AllowedFast 容忍解码，不采纳）。
+未实现：BEP 52(v2)、BEP 53(多文件 WebSeed)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
 
 ## 第 10 章 部署要点
 

@@ -4,10 +4,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * Peer 握手（BEP 3 + BEP 10）：
+ * Peer 握手（BEP 3 + BEP 6 + BEP 10）：
  * {@code <pstrlen=19>"BitTorrent protocol"<8 字节保留位><20 info-hash><20 peer-id>}。
- * 保留位 reserved[5] 的 0x10 位（从右数第 20 bit）置位声明扩展协议支持（BEP 10）；
- * 阶段 2 内其余位保持为零（末字节 0x01 是 DHT/BEP 5，未启用）。
+ * 保留位 reserved[5]：0x10 位声明扩展协议（BEP 10），0x04 位声明快速扩展（BEP 6）；
+ * 我们侧两位置位，对端位经 {@link #supportsExtensions}/{@link #supportsFastExtension}
+ * 读取，快速扩展消息的使用以"双方都声明"为前提。其余位保持为零（末字节 0x01 是
+ * DHT/BEP 5，未启用）。
  */
 public record Handshake(byte[] infoHash, byte[] peerId) {
 
@@ -17,6 +19,10 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
      * BEP 10 扩展协议位掩码（规范原文：bit 20 counting from 0, {@code reserved[5] & 0x10}）。
      */
     public static final int EXTENSION_BIT_MASK = 0x10;
+    /**
+     * BEP 6 快速扩展位掩码（bit 21 counting from 0, {@code reserved[5] & 0x04}）。
+     */
+    public static final int FAST_EXTENSION_BIT_MASK = 0x04;
     /**
      * 线格式偏移：保留区 [20,28) 的第 5 字节 = wire[25]。
      */
@@ -37,7 +43,8 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         byte[] wire = new byte[WIRE_LENGTH];
         wire[0] = (byte) PROTOCOL.length;
         System.arraycopy(PROTOCOL, 0, wire, 1, PROTOCOL.length);
-        wire[EXTENSION_BIT_OFFSET] = EXTENSION_BIT_MASK; // reserved[5] & 0x10：声明扩展能力（BEP 10）
+        // reserved[5]：0x10 扩展协议（BEP 10）+ 0x04 快速扩展（BEP 6）
+        wire[EXTENSION_BIT_OFFSET] = EXTENSION_BIT_MASK | FAST_EXTENSION_BIT_MASK;
         System.arraycopy(infoHash, 0, wire, 28, 20);
         System.arraycopy(peerId, 0, wire, 48, 20);
         return wire;
@@ -64,5 +71,13 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
     public static boolean supportsExtensions(byte[] wire) {
         return wire.length > EXTENSION_BIT_OFFSET
                 && (wire[EXTENSION_BIT_OFFSET] & EXTENSION_BIT_MASK) != 0;
+    }
+
+    /**
+     * 对端是否声明支持快速扩展（BEP 6：reserved[5] & 0x04）。
+     */
+    public static boolean supportsFastExtension(byte[] wire) {
+        return wire.length > EXTENSION_BIT_OFFSET
+                && (wire[EXTENSION_BIT_OFFSET] & FAST_EXTENSION_BIT_MASK) != 0;
     }
 }

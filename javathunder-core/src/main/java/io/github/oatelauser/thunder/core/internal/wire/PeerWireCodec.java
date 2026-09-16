@@ -31,10 +31,12 @@ public final class PeerWireCodec {
                     buf.putInt(p.pieceIndex()).putInt(p.begin()).put(p.block()));
             case Cancel c -> frame(8, 12, buf ->
                     buf.putInt(c.pieceIndex()).putInt(c.begin()).putInt(c.length()));
+            case SuggestPiece s -> frame(13, 4, buf -> buf.putInt(s.pieceIndex()));
             case HaveAll h -> single(14);
             case HaveNone h -> single(15);
             case RejectRequest r -> frame(16, 12, buf ->
                     buf.putInt(r.pieceIndex()).putInt(r.begin()).putInt(r.length()));
+            case AllowedFast a -> frame(17, 4, buf -> buf.putInt(a.pieceIndex()));
             case ExtendedMessage e -> frame(20, 1 + e.payload().length, buf ->
                     buf.put((byte) e.extendedId()).put(e.payload()));
             case UnsupportedMessage u -> throw new PeerWireException(
@@ -83,11 +85,19 @@ public final class PeerWireCodec {
                 requireExact(payloadLength, 12, "cancel");
                 yield new Cancel(buf.getInt(), buf.getInt(), buf.getInt());
             }
+            case 13 -> {
+                requireExact(payloadLength, 4, "suggest");
+                yield new SuggestPiece(buf.getInt());
+            }
             case 14 -> requireLength(payloadLength, 0, HaveAll.INSTANCE);
             case 15 -> requireLength(payloadLength, 0, HaveNone.INSTANCE);
             case 16 -> {
                 requireExact(payloadLength, 12, "reject");
                 yield new RejectRequest(buf.getInt(), buf.getInt(), buf.getInt());
+            }
+            case 17 -> {
+                requireExact(payloadLength, 4, "allowed fast");
+                yield new AllowedFast(buf.getInt());
             }
             case 20 -> decodeExtended(payloadLength, buf);
             default -> {

@@ -36,6 +36,8 @@ import io.github.oatelauser.thunder.core.internal.wire.PeerWireMessage;
 import io.github.oatelauser.thunder.core.internal.wire.PieceMessage;
 import io.github.oatelauser.thunder.core.internal.wire.RejectRequest;
 import io.github.oatelauser.thunder.core.internal.wire.Request;
+import io.github.oatelauser.thunder.core.internal.wire.SuggestPiece;
+import io.github.oatelauser.thunder.core.internal.wire.AllowedFast;
 import io.github.oatelauser.thunder.core.internal.wire.Unchoke;
 import io.github.oatelauser.thunder.core.internal.wire.UnsupportedMessage;
 import org.jspecify.annotations.Nullable;
@@ -518,10 +520,19 @@ public final class DownloadSession {
     }
 
     /**
-     * 初始通告：本地位图（有数据才发）+ interested + BEP 10 PEX 协商。
+     * 初始通告：本地位图 + interested + BEP 10 PEX 协商。BEP 6 快速扩展协商成功时
+     * 用 HaveAll/HaveNone 替代整幅位图（大种子的位图可达数十 KB，单帧 5 字节替代）。
      */
     private void sendInitialHandshake(PeerSession session, PeerChannel channel) {
-        if (localCardinality() > 0) {
+        if (channel.remoteSupportsFast()) {
+            if (localAllSet()) {
+                channel.write(HaveAll.INSTANCE);
+            } else if (localCardinality() == 0) {
+                channel.write(HaveNone.INSTANCE);
+            } else {
+                channel.write(new BitfieldMessage(localBytes()));
+            }
+        } else if (localCardinality() > 0) {
             channel.write(new BitfieldMessage(localBytes()));
         }
         channel.write(Interested.INSTANCE);
@@ -571,6 +582,9 @@ public final class DownloadSession {
                     Bitfield.fromBytes(b.bits(), meta.pieceCount()));
             case Request r -> serveUpload(session, r);
             case PieceMessage p -> blockWorkers.execute(() -> processBlock(session, p));
+            case SuggestPiece s -> {
+                // BEP 6：对端的选件建议不采纳——本引擎有自己的稀缺度调度策略
+            }
             case HaveAll h -> scheduler.peerConnected(session.key, Bitfield.allSet(meta.pieceCount()));
             case HaveNone h -> {
             }
@@ -579,20 +593,25 @@ public final class DownloadSession {
                 session.issued.remove(rejected);
                 scheduler.clearInFlight(rejected); // 允许重新请求
             }
-            case ExtendedMessage e -> {
-                if (e.extendedId() == 0) {
-                    pex.onRemoteHandshake(session, e.payload());
-                } else if (e.extendedId() == PexManager.UT_PEX_ID) {
-                    pex.onPex(session, e.payload(), peers, this::offerCandidate);
-                }
-                // 其余扩展消息本会话不消费
+            case AllowedFast a -> {
+                // BEP 6：choke 豁免清单不使用——我们不向被 choke 的对端请求
             }
+            case ExtendedMessage e -> handleExtendedMessage(session, e);
             case UnsupportedMessage u -> {
             }
             case Cancel c -> {
             }
             case KeepAlive k -> {
             }
+        }
+    }
+
+    /** BEP 10 扩展消息分发：子 ID 0 = 扩展握手、UT_PEX_ID = ut_pex；其余不消费。 */
+    private void handleExtendedMessage(PeerSession session, ExtendedMessage message) {
+        if (message.extendedId() == 0) {
+            pex.onRemoteHandshake(session, message.payload());
+        } else if (message.extendedId() == PexManager.UT_PEX_ID) {
+            pex.onPex(session, message.payload(), peers, this::offerCandidate);
         }
     }
 
@@ -844,6 +863,11 @@ public final class DownloadSession {
 
     private void serveUpload(PeerSession session, Request request) {
         if (session.weChokingThem || !localHas(request.pieceIndex())) {
+            // BEP 6：对协商了快速扩展的对端显式拒绝（而非沉默），让对端立即回收在途槽位
+            if (session.channel.remoteSupportsFast()) {
+                session.channel.write(new RejectRequest(
+                        request.pieceIndex(), request.begin(), request.length()));
+            }
             return;
         }
         session.serveExecutor.execute(() -> {
