@@ -84,7 +84,7 @@ cd JavaThunder && mvn clean install
 - **协议**：BEP 3（v1 单/多文件）、BEP 9+10（磁力链接，元数据 SHA-1 自校验）、BEP 11（PEX）、BEP 12（多 tracker）、BEP 15（UDP tracker，`udp://` 自动分派）、BEP 23/20/27；BEP 5 DHT 为可选模块；对未知/BEP 6 消息容忍解码不断连
 - **引擎**：rarest-first 调度、tit-for-tat choking + 乐观槽、endgame、逐件 SHA-1、`.part` 预分配 + gather 直写、断点续传（重启校验 FULL/SAMPLED/NONE 三档）、两级双向令牌桶限速
 - **安全**：多文件路径穿越防护；磁力元数据哈希强校验；帧/长度/深度多级解析防护
-- **传输**：阻塞（默认，简单稳健）与 NIO 事件循环（`-Djavathunder.transport=nio`）双实现，同一套验收差分回归
+- **传输**：NIO 事件循环（默认，ADR-0003 生产路径）与阻塞参照实现（`-Djavathunder.transport=blocking`）双实现，同一套验收差分回归
 - **观测**：进度/速率(EMA)/ETA/健康度快照 + 7 类事件回调（独立事件线程，可注入自定义 Executor）
 
 ## 性能（回环实测，JDK 21 / Windows）

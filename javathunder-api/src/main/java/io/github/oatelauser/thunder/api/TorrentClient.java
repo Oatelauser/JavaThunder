@@ -54,8 +54,8 @@ public interface TorrentClient extends AutoCloseable {
     }
 
     /**
-     * Peer 传输实现选择（ADR-0003 的双实现差分验收）：NIO 为事件循环生产路径；
-     * BLOCKING 为阻塞参照实现（可执行规格，调试与差分对拍用）。缺省 BLOCKING。
+     * Peer 传输实现选择（ADR-0003 的双实现差分验收）：NIO 为事件循环生产路径
+     * （缺省）；BLOCKING 为阻塞参照实现（可执行规格，调试与差分对拍用）。
      */
     enum Transport {
         NIO, BLOCKING
@@ -88,7 +88,7 @@ public interface TorrentClient extends AutoCloseable {
          */
         Builder peerDiscovery(PeerDiscoverySource source);
 
-        /** 传输实现选择；缺省 BLOCKING（历史默认，保持行为不变）。 */
+        /** 传输实现选择；缺省 NIO（ADR-0003 生产路径），BLOCKING 为阻塞参照实现。 */
         Builder transport(Transport transport);
 
         /** 创建客户端（绑定监听端口、启动事件线程）。 */

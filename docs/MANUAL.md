@@ -514,20 +514,21 @@ task.cancel(true);         // 任务+本地数据+状态文件全删
 client.close();            // 停一切（AutoCloseable，幂等）
 ```
 
-### 6.3 传输引擎：默认与 NIO（什么时候需要关心）
+### 6.3 传输引擎：默认 NIO 与阻塞参照（什么时候需要关心）
 
-**依赖**：仅 core。默认使用**阻塞传输**（简单稳健）；高吞吐场景切换 **NIO 事件循环**（回环实测 110MB/s vs 35MB/s）：
+**依赖**：仅 core。默认使用 **NIO 事件循环**（ADR-0003 生产路径，回环实测 110MB/s vs 阻塞 35MB/s）；
+**阻塞传输**是保留的可执行规格（参照实现），供差分对拍与调试：
 
 ```java
-// 方式一：系统属性（不改代码）
-//   java -Djavathunder.transport=nio YourApp
+// 方式一：系统属性（不改代码）——切到阻塞参照臂
+//   java -Djavathunder.transport=blocking YourApp
 // 方式二：显式（api Builder）
 TorrentClient.builder()
-    .transport(TorrentClient.Transport.NIO)
+    .transport(TorrentClient.Transport.BLOCKING)
     .build();
 ```
 
-不确定就用默认；确认带宽瓶颈在引擎侧再切 NIO。
+不确定就用默认（NIO）；排查传输层问题时切 BLOCKING 对照。
 
 ### 6.4 回调跑在你自己的线程上（如 UI 线程）
 
@@ -625,7 +626,7 @@ snapshot 轮询 + 事件推送、关闭时收尾这四件事完全相同（SSE �
 | `RestartVerifyMode` | FULL/SAMPLED/NONE | 重启校验档 |
 | `PeerDiscoverySource` | `getPeers(infoHash)` | 去 tracker 发现 SPI |
 
-**Builder（TorrentClient.builder()）**：`listenPort(6881)` `maxConcurrentTasks(3)` `maxPeersPerTask(50)` `download/uploadLimitBytesPerSecond(0)` `listenerExecutor(...)` `peerDiscovery(...)` `transport(Transport)`——NIO=事件循环生产路径，BLOCKING=阻塞参照实现（差分/调试），缺省 BLOCKING
+**Builder（TorrentClient.builder()）**：`listenPort(6881)` `maxConcurrentTasks(3)` `maxPeersPerTask(50)` `download/uploadLimitBytesPerSecond(0)` `listenerExecutor(...)` `peerDiscovery(...)` `transport(Transport)`——NIO=事件循环生产路径（缺省），BLOCKING=阻塞参照实现（差分/调试）
 
 **dht 模块**：`DhtPeerDiscovery.create()` / `create(List<String> 内网自举)`
 

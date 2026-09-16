@@ -61,7 +61,7 @@ public final class DefaultTorrentClient implements TorrentClient {
         private long downloadLimitBytesPerSecond;
         private long uploadLimitBytesPerSecond;
         private Executor listenerExecutor;
-        private Function<byte[], PeerTransport> transportFactory = BlockingTransport::new;
+        private Function<byte[], PeerTransport> transportFactory = NioTransport::new;
         private PeerDiscoverySource peerDiscovery;
 
         @Override
@@ -104,7 +104,8 @@ public final class DefaultTorrentClient implements TorrentClient {
         }
 
         /**
-         * 传输实现选择（api 级选项）；缺省 BLOCKING（历史默认，保持行为不变）。
+         * 传输实现选择（api 级选项）；缺省 NIO（ADR-0003 生产路径），
+         * BLOCKING 为阻塞参照实现（差分/调试）。
          */
         @Override
         public Builder transport(TorrentClient.Transport transport) {
@@ -116,7 +117,7 @@ public final class DefaultTorrentClient implements TorrentClient {
 
         /**
          * 注入传输工厂（差分验收/调试用，绕过 api 级 {@link #transport} 枚举直接
-         * 指定实现）；缺省为阻塞参照实现。
+         * 指定实现）；缺省为 NIO 事件循环。
          */
         public Builder transportFactory(Function<byte[], PeerTransport> factory) {
             this.transportFactory = factory;

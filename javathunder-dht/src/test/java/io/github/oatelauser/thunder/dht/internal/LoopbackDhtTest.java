@@ -81,23 +81,8 @@ class LoopbackDhtTest {
                 switch (query.method() == null ? "" : query.method()) {
                     case "ping" -> {
                     }
-                    case "find_node", "get_peers" -> {
-                        // 紧凑节点：serverId + 127.0.0.1 + serverPort（自我指回，迭代收敛）
-                        byte[] compact = new byte[26];
-                        System.arraycopy(serverId.bytes(), 0, compact, 0, 20);
-                        compact[20] = 127;
-                        compact[21] = 0;
-                        compact[22] = 0;
-                        compact[23] = 1;
-                        compact[24] = (byte) (server.getLocalPort() >> 8);
-                        compact[25] = (byte) (server.getLocalPort() & 0xFF);
-                        response.result("nodes", new BString(compact));
-                        if ("get_peers".equals(query.method())) {
-                            response.result("token", new BString(new byte[]{1, 2, 3}));
-                            response.result("values", new BList(List.of(
-                                new BString(new byte[]{127, 0, 0, 1, (byte) 0xC9, 0x35}))));
-                        }
-                    }
+                    case "find_node", "get_peers" ->
+                        serveLookup(query, response, server, serverId);
                     case "announce_peer" -> {
                         // 已宣告（断言由 get_peers 流程隐含——token 校验通过才会被接受）
                     }
@@ -113,6 +98,26 @@ class LoopbackDhtTest {
             } catch (Exception e) {
                 return;
             }
+        }
+    }
+
+    /** find_node/get_peers 共用应答：紧凑节点自我指回以收敛迭代，get_peers 再附 token 与 peer。 */
+    private static void serveLookup(KrpcMessage.Parsed query, Builder response,
+                                    DatagramSocket server, NodeId serverId) {
+        // 紧凑节点：serverId + 127.0.0.1 + serverPort（自我指回，迭代收敛）
+        byte[] compact = new byte[26];
+        System.arraycopy(serverId.bytes(), 0, compact, 0, 20);
+        compact[20] = 127;
+        compact[21] = 0;
+        compact[22] = 0;
+        compact[23] = 1;
+        compact[24] = (byte) (server.getLocalPort() >> 8);
+        compact[25] = (byte) (server.getLocalPort() & 0xFF);
+        response.result("nodes", new BString(compact));
+        if ("get_peers".equals(query.method())) {
+            response.result("token", new BString(new byte[]{1, 2, 3}));
+            response.result("values", new BList(List.of(
+                new BString(new byte[]{127, 0, 0, 1, (byte) 0xC9, 0x35}))));
         }
     }
 

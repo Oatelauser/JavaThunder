@@ -36,12 +36,19 @@ jobs:
           mvn -B -ntp -f /tmp/baseline03 -pl javathunder-tracker,javathunder-tools -am install -DskipTests -DskipJapicmp=true
           git worktree remove --force /tmp/baseline03
       - name: Build and test
+        # 默认传输 = NIO（生产路径）；下面两条差分腿显式跑双臂验收
         run: mvn -B -ntp verify
-      - name: Differential acceptance (NIO transport)
+      - name: Differential acceptance (NIO transport, explicit)
         run: >
           mvn -B -ntp -pl javathunder-tools -am test
           -Dtest='LoopbackAcceptanceTest,MultiPeerAcceptanceTest,RateLimitAcceptanceTest,TrackerBackoffTest'
           -Djavathunder.transport=nio
+          -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Differential acceptance (blocking reference transport)
+        run: >
+          mvn -B -ntp -pl javathunder-tools -am test
+          -Dtest='LoopbackAcceptanceTest,MultiPeerAcceptanceTest,RateLimitAcceptanceTest,TrackerBackoffTest'
+          -Djavathunder.transport=blocking
           -Dsurefire.failIfNoSpecifiedTests=false
 
   interop:

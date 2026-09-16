@@ -14,14 +14,4 @@
        core 的 TrackerClient 简单类名冲突经核实不存在，无需其他豁免。期限: 存续至 ttorrent
        依赖探测方式重构（暂无计划）。 -->
   <suppress files="TtorrentInteropTest\.java" checks="RegexpSinglelineJava"/>
-  <!-- 理由: LoopbackDhtTest.serve（66-120 行，55 行）为伪 DHT 服务器主循环（单方法顺序
-       receive/dispatch/encode/send 编排），拆分只增加间接层。期限: 测试基建重构批次。 -->
-  <suppress files="LoopbackDhtTest\.java" checks="MethodLength"/>
-  <!-- 理由: RestartVerifyModeTest.sampledModeSkipsUnsampledPieces（36 行起，82 行）为顺序
-       场景步骤编排（造种子→断点→抽样恢复→逐件断言）。注：原整改清单写作 SeedAcceptanceTest，
-       核实该文件最长方法仅 38 行，82 行方法实际在本文件。期限: 测试拆分批次。 -->
-  <suppress files="RestartVerifyModeTest\.java" checks="MethodLength"/>
-  <!-- 理由: StatsMetricsEndpointTest.metricsExposeValidPrometheusTextWithCorrectValues
-       （51 行，仅超 1 行）为单场景顺序断言编排。期限: 测试拆分批次。 -->
-  <suppress files="StatsMetricsEndpointTest\.java" checks="MethodLength"/>
 </suppressions>

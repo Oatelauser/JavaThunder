@@ -8,8 +8,9 @@ import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
 import java.util.function.Function;
 
 /**
- * 差分验收开关：系统属性 {@code javathunder.transport}=nio|blocking（默认 blocking）。
- * 例：{@code mvn test -Djavathunder.transport=nio}
+ * 差分验收开关：系统属性 {@code javathunder.transport}=nio|blocking（默认 nio，
+ * 与生产缺省一致；显式传 blocking 跑参照实现臂）。
+ * 例：{@code mvn test -Djavathunder.transport=blocking}
  */
 public final class Transports {
 
@@ -18,9 +19,9 @@ public final class Transports {
 
     /** 差分选择结果（api 级枚举，供 {@code TorrentClient.builder().transport(...)} 使用）。 */
     public static TorrentClient.Transport select() {
-        String name = System.getProperty("javathunder.transport", "blocking");
-        return "nio".equalsIgnoreCase(name) ? TorrentClient.Transport.NIO
-                : TorrentClient.Transport.BLOCKING;
+        String name = System.getProperty("javathunder.transport", "nio");
+        return "blocking".equalsIgnoreCase(name) ? TorrentClient.Transport.BLOCKING
+                : TorrentClient.Transport.NIO;
     }
 
     /**

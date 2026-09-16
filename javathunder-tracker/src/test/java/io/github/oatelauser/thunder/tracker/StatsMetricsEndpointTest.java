@@ -73,34 +73,8 @@ class StatsMetricsEndpointTest {
             assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("text/plain"));
             String body = response.body();
 
-            // 格式合法性：每个 HELP/TYPE 后跟至少一条样例行，样例行全部匹配 Prometheus 语法
-            for (String family : new String[]{
-                    "javathunder_tracker_swarm_peers",
-                    "javathunder_tracker_swarm_downloads_total",
-                    "javathunder_tracker_announces_total",
-                    "javathunder_tracker_scrapes_total",
-                    "javathunder_tracker_active_swarms"}) {
-                assertTrue(body.contains("# HELP " + family + " "), "missing HELP for " + family);
-                assertTrue(body.contains("# TYPE " + family + " "), "missing TYPE for " + family);
-            }
-            for (String line : body.split("\n")) {
-                if (!line.isEmpty() && !line.startsWith("#")) {
-                    assertTrue(SAMPLE_LINE.matcher(line).matches(), "非法样例行: " + line);
-                }
-            }
-
-            // 数值：swarm_peers 按 role 标注；announces/scrapes 计数；活跃 swarm 数
-            assertEquals("1", sampleValue(body, Pattern.compile(
-                    "^javathunder_tracker_swarm_peers\\{role=\"seed\",info_hash=\"" + hex(1) + "\"} (\\d+)$")));
-            assertEquals("1", sampleValue(body, Pattern.compile(
-                    "^javathunder_tracker_swarm_peers\\{role=\"leech\",info_hash=\"" + hex(2) + "\"} (\\d+)$")));
-            assertEquals("1", sampleValue(body, Pattern.compile(
-                    "^javathunder_tracker_announces_total\\{transport=\"http\"} (\\d+)$")));
-            assertEquals("1", sampleValue(body, Pattern.compile(
-                    "^javathunder_tracker_scrapes_total (\\d+)$")));
-            assertEquals(2, gaugeOf(body, "javathunder_tracker_active_swarms"));
-            assertEquals("0", sampleValue(body, Pattern.compile(
-                    "^javathunder_tracker_announces_total\\{transport=\"udp\"} (\\d+)$")));
+            assertPrometheusFormat(body);
+            assertMetricValues(body);
         }
     }
 
@@ -111,6 +85,39 @@ class StatsMetricsEndpointTest {
                 HttpRequest.newBuilder(URI.create(tracker.announceUrl()
                         .replace("/announce", "/metrics"))).build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** 格式合法性断言：五个指标族 HELP/TYPE 齐备，非注释样例行全部匹配 Prometheus 语法。 */
+    private static void assertPrometheusFormat(String body) {
+        for (String family : new String[]{
+                "javathunder_tracker_swarm_peers",
+                "javathunder_tracker_swarm_downloads_total",
+                "javathunder_tracker_announces_total",
+                "javathunder_tracker_scrapes_total",
+                "javathunder_tracker_active_swarms"}) {
+            assertTrue(body.contains("# HELP " + family + " "), "missing HELP for " + family);
+            assertTrue(body.contains("# TYPE " + family + " "), "missing TYPE for " + family);
+        }
+        for (String line : body.split("\n")) {
+            if (!line.isEmpty() && !line.startsWith("#")) {
+                assertTrue(SAMPLE_LINE.matcher(line).matches(), "非法样例行: " + line);
+            }
+        }
+    }
+
+    /** 数值断言：swarm_peers 按 role 标注，announces/scrapes 计数与活跃 swarm 数。 */
+    private static void assertMetricValues(String body) {
+        assertEquals("1", sampleValue(body, Pattern.compile(
+                "^javathunder_tracker_swarm_peers\\{role=\"seed\",info_hash=\"" + hex(1) + "\"} (\\d+)$")));
+        assertEquals("1", sampleValue(body, Pattern.compile(
+                "^javathunder_tracker_swarm_peers\\{role=\"leech\",info_hash=\"" + hex(2) + "\"} (\\d+)$")));
+        assertEquals("1", sampleValue(body, Pattern.compile(
+                "^javathunder_tracker_announces_total\\{transport=\"http\"} (\\d+)$")));
+        assertEquals("1", sampleValue(body, Pattern.compile(
+                "^javathunder_tracker_scrapes_total (\\d+)$")));
+        assertEquals(2, gaugeOf(body, "javathunder_tracker_active_swarms"));
+        assertEquals("0", sampleValue(body, Pattern.compile(
+                "^javathunder_tracker_announces_total\\{transport=\"udp\"} (\\d+)$")));
     }
 
     /** 无标签 gauge 的数值。 */
