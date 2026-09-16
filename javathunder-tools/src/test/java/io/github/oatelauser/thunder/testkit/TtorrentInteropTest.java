@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 互操作验收（A1）：以 ttorrent（独立的第三方 BitTorrent 实现）为裁判，双向验证协议兼容。
  * 回环测试只证明我们和自己能对话；这里证明我们和别人的实现能对话。
  * 默认 CI 跳过（@Tag("interop")），显式运行：
- * {@code mvn -pl javathunder-testkit -am test -Dtest=TtorrentInteropTest -Dsurefire.excludedGroups=}
+ * {@code mvn -pl javathunder-tools -am test -Dtest=TtorrentInteropTest -Dsurefire.excludedGroups=}
  */
 @Tag("interop")
 class TtorrentInteropTest {

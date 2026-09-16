@@ -31,7 +31,7 @@ JavaThunder 是一个**供第三方项目依赖的 BitTorrent 下载库**，不�
 
 ### 1.3 一版验收标准
 
-1. **回环实验室**：testkit 内嵌 Tracker + 种子生成器 + seeder，完整下载 100MB 随机数据，SHA-256 与源文件一致；
+1. **回环实验室**：内嵌 Tracker（tracker 模块）+ 种子生成器 + seeder（tools 模块），完整下载 100MB 随机数据，SHA-256 与源文件一致；
 2. **互操作**：aria2c 做种 → JavaThunder 下载完整；JavaThunder 做种 → aria2c 下载完整；
 3. **断点续传**：下载中途强杀进程，重启后续传，最终哈希一致；
 4. **公网**：从 Ubuntu 官方 .torrent 下载 ISO 成功且校验通过；
@@ -55,7 +55,8 @@ javathunder-cli ──────▶ javathunder-core ──────▶ jav
                          （实现：bencode、        （纯接口，仅依赖
                            tracker、peer、         JSpecify 注解）
                            存储、调度、限速）
-javathunder-testkit ──▶ core（内嵌 Tracker / 种子生成器 / 假 Peer）
+javathunder-tracker ─▶ core（生产/内嵌 HTTP Tracker：TrackerServer、EmbeddedTracker）
+javathunder-tools ──▶ core（种子生成器 / 假 Peer）+ tracker（EmbeddedTracker 引用）
 
 阶段 2 新增：javathunder-dht ──▶ core（可选依赖，轻量用户不引入）
 ```
@@ -319,18 +320,22 @@ BEP 12 分层策略：`announce-list` 按 tier 逐层尝试，tier 内随机起�
   拿不到令牌→虚拟线程 sleep 等待（虚拟线程使阻塞等待零成本）；
 - 默认 0 = 不限速（直通桶）。
 
-### 5.11 testkit 与 CLI（阶段收尾）
+### 5.11 tools/tracker 与 CLI（阶段收尾）
 
-- `javathunder-testkit`：`EmbeddedTracker`（基于 `com.sun.net.httpserver`，实现 announce
-  协议、内存 Peer 表）、`TorrentGenerator`（生成随机文件 + 对应 .torrent，内部复用 core
-  的 bencode 编码器）、`FakeSeeder`（TCP 服务：应答握手与 request，按文件提供 piece）；
+- `javathunder-tracker`（0.2.0 自 testkit 拆出）：`EmbeddedTracker`（基于
+  `com.sun.net.httpserver`，实现 announce 协议、内存 Peer 表；生产化：固定端口重载、
+  Peer 过期清理、stopped 摘除、stats 统计，响应复用 core 的 bencode 编码器）、
+  `TrackerServer`（生产外观：0.0.0.0 / 默认 6881 / 1800s）、`TrackerMain`（可执行 jar）；
+- `javathunder-tools`（原 testkit，Java 包名保留 `...thunder.testkit`）：
+  `TorrentGenerator`（生成随机文件 + 对应 .torrent）、`FakeSeeder`（TCP 服务：应答握手
+  与 request，按文件提供 piece）、`NioSeeder`/`MetadataSeeder`/`Transports`；
 - `javathunder-cli`：`javathunder <torrent> [--dir D] [--port N] [--limit-x MB/s]`，
   ASCII 进度条 + 速度 + ETA + Peer 数 + 健康度，作为库用法的活示例。
 
 ### 5.12 阶段一验收
 
 见 1.3；另加：限速实测（设 1MB/s，稳态偏差 ≤ ±20%）、500 Peer 模拟连接下 RSS ≤ 256MB、
-CPU 单核可服务（testkit 压测脚本验证）。
+CPU 单核可服务（tools 压测脚本验证）。
 
 ---
 
@@ -429,12 +434,12 @@ PEX 在无 Tracker 场景下维持 Peer 补充；`private` 种子验证 DHT/PEX 
 
 - **git**：每完成一个功能提交一次，conventional commits（`feat:` / `fix:` / `docs:` / `build:`），
   主干开发；
-- **测试策略**：单元（bencode/解析/位图/限速/调度纯逻辑）→ testkit 集成（回环实验室）→
+- **测试策略**：单元（bencode/解析/位图/限速/调度纯逻辑）→ tools 集成（回环实验室）→
   互操作（aria2c 脚本）→ 公网验收（Ubuntu ISO）；
 - **CI**（GitHub Actions）：JDK 21/25/26 × ubuntu/windows，`mvn verify` + 首个 tag 后
   japicmp 基线；
 - **开发序列**（即任务清单）：Bencode → 种子解析 → HTTP Tracker → Peer 线协议 →
-  分片下载/校验/落盘 → 断点续传 → 调度/choking → 限速 → testkit/CLI → 回环验收 → 互操作 → 公网验收。
+  分片下载/校验/落盘 → 断点续传 → 调度/choking → 限速 → tools/CLI → 回环验收 → 互操作 → 公网验收。
 
 ---
 

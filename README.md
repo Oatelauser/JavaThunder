@@ -51,7 +51,8 @@ try (TorrentClient client = DefaultTorrentClient.builder().build()) {
 | `javathunder-api` | 纯接口与值类型（稳定契约） | 总是（随 core 传递引入） |
 | `javathunder-core` | 引擎实现 | 总是 |
 | `javathunder-dht` | BEP 5 DHT（去 tracker 节点发现） | 磁力无 tracker / 去 tracker 分发时 |
-| `javathunder-testkit` | 内嵌 tracker、种子生成器、测试对端 | 造种子 / 写集成测试时 |
+| `javathunder-tracker` | 生产级 HTTP tracker：`TrackerServer`（固定端口/Peer 过期清理/统计）、内嵌 `EmbeddedTracker`、可执行 jar | 内网分发自建 tracker 时 |
+| `javathunder-tools` | 种子生成器、测试对端（原 testkit，Java 包名不变） | 造种子 / 写集成测试时 |
 | `javathunder-cli` | 可执行示例 | 参考/体验 |
 
 ## 安装

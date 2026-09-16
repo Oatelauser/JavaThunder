@@ -24,7 +24,7 @@ jobs:
         run: mvn -B -ntp verify
       - name: Differential acceptance (NIO transport)
         run: >
-          mvn -B -ntp -pl javathunder-testkit -am test
+          mvn -B -ntp -pl javathunder-tools -am test
           -Dtest='LoopbackAcceptanceTest,MultiPeerAcceptanceTest,RateLimitAcceptanceTest,TrackerBackoffTest'
           -Djavathunder.transport=nio
           -Dsurefire.failIfNoSpecifiedTests=false
@@ -41,7 +41,7 @@ jobs:
           cache: maven
       - name: Bidirectional interop
         run: >
-          mvn -B -ntp -pl javathunder-testkit -am test
+          mvn -B -ntp -pl javathunder-tools -am test
           -Dtest=TtorrentInteropTest
           -Dsurefire.excludedGroups=
 
@@ -58,11 +58,11 @@ jobs:
           cache: maven
       - name: Loopback throughput probe
         run: >
-          mvn -B -ntp -pl javathunder-testkit -am test
+          mvn -B -ntp -pl javathunder-tools -am test
           -Dtest=LoopbackThroughputProbeTest
           -Djavathunder.transport=nio
           -Dsurefire.excludedGroups=
           -Dsurefire.failIfNoSpecifiedTests=false
       - name: Extract datapoint
         if: always()
-        run: grep -h "PROBE" javathunder-testkit/target/surefire-reports/*.txt || true
+        run: grep -h "PROBE" javathunder-tools/target/surefire-reports/*.txt || true

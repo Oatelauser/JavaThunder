@@ -127,12 +127,13 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 ### 2.1 版本一（推荐第一跑）：零网络本地 Swarm——离线也能完整跑通
 
 **适用**：任何环境（无外网/公司隔离网络/CI）。全程在本机完成"下载→SHA-1 校验→完成"，约 1 秒。
-**需要额外引入 `javathunder-testkit`**（它不只是测试工具，也用于造种子、搭本地小 swarm）：
+**需要额外引入 `javathunder-tools`**（它不只是测试工具，也用于造种子、搭本地小 swarm；
+`EmbeddedTracker` 由传递依赖 `javathunder-tracker` 提供）：
 
 ```xml
 <dependency>
     <groupId>io.github.oatelauser</groupId>
-    <artifactId>javathunder-testkit</artifactId>
+    <artifactId>javathunder-tools</artifactId>
     <version>0.2.0</version>
 </dependency>
 ```
@@ -143,6 +144,7 @@ import io.github.oatelauser.thunder.core.internal.client.DefaultTorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import io.github.oatelauser.thunder.testkit.*;
+import io.github.oatelauser.thunder.tracker.EmbeddedTracker;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
@@ -178,7 +180,7 @@ public class OfflineQuickStart {
 ```
 
 **预期行为**：数秒内打印若干 `progress ...` 行，最后输出 `完成: sandbox\out\hello.bin (1000000 字节)`。
-离线 ≠ 模拟：①③ 是**协议级真实实现**（EmbeddedTracker 是真的 HTTP tracker，FakeSeeder 是真的说 BitTorrent 线协议的 TCP 服务），只是都跑在本机回环——跑通的代码和公网下载是**同一份**。可执行版本见 testkit 的 `OfflineQuickStartTest`（IDEA 直接运行）。
+离线 ≠ 模拟：①③ 是**协议级真实实现**（EmbeddedTracker 是真的 HTTP tracker，FakeSeeder 是真的说 BitTorrent 线协议的 TCP 服务），只是都跑在本机回环——跑通的代码和公网下载是**同一份**。可执行版本见 tools 模块的 `OfflineQuickStartTest`（IDEA 直接运行）。
 
 ### 2.2 版本二（可选）：下载公网真实种子（Ubuntu 官方 ISO）
 
@@ -235,10 +237,11 @@ public class QuickStart {
 |---|---|---|
 | 下载 .torrent / 磁力（种子里有 tracker）/ 做种 / 限速 / 事件 | `javathunder-core`（+slf4j 后端） | compile |
 | 磁力链接**且没有 tracker**，或完全去 tracker 分发 | **再加** `javathunder-dht` | compile（不需要时别引，轻量） |
-| 造种子 / 本地测试 swarm / 集成测试对端 | **再加** `javathunder-testkit` | test（运维脚本可用 compile） |
+| 造种子 / 本地测试 swarm / 集成测试对端 | **再加** `javathunder-tools` | test（运维脚本可用 compile） |
+| 内网自建 tracker（可执行 jar 直跑） | `javathunder-tracker` | 独立部署 |
 | 想要命令行工具演示 | `javathunder-cli` | 直接运行 jar |
 
-判断规则一句话：**默认只引 core；只有"去 tracker"才引 dht；只有"造种子/自测"才引 testkit。**
+判断规则一句话：**默认只引 core；只有"去 tracker"才引 dht；只有"造种子/自测"才引 tools；自建 tracker 用 tracker 模块。**
 
 ---
 
@@ -414,7 +417,7 @@ task.future().join();                      // future 完成 ≠ 做种结束
 
 ### 5.2 生成种子（分发的第一步）
 
-**依赖**：core **+ javathunder-testkit**（生成器在 testkit）。
+**依赖**：core **+ javathunder-tools**（生成器在 tools，Java 包名保留 `...thunder.testkit`）。
 
 ```java
 import io.github.oatelauser.thunder.testkit.TorrentGenerator;
@@ -435,20 +438,20 @@ var multi = TorrentGenerator.generateMultiFile(dir, "model-x", java.util.List.of
 
 ### 5.3 别人怎么找到你：发现渠道的选择
 
-**依赖**：tracker/内嵌 tracker → 仅 core（或 testkit 的 EmbeddedTracker 当轻量内网 tracker）；去 tracker → + dht。
+**依赖**：tracker/内嵌 tracker → 仅 core（自建 tracker 用 `javathunder-tracker` 模块：生产级 `TrackerServer` 或内嵌 `EmbeddedTracker`）；去 tracker → + dht。
 
 回顾 §1.3：发现面只交换地址。三条渠道可混用，引擎自动叠加：
 
 | 渠道 | 适用 | 你要做的 |
 |---|---|---|
-| **HTTP Tracker**（种子里写 announce） | 公网种子默认；内网可跑 opentracker（本项目生产级 tracker 模块规划中，见 ROADMAP）或 testkit 的 `EmbeddedTracker` | 种子生成时填 announce 地址 |
+| **HTTP Tracker**（种子里写 announce） | 公网种子默认；内网可跑本项目 `javathunder-tracker`（`java -jar javathunder-tracker-*-with-dependencies.jar --port 6881`，opentracker 替代）或 tools 的 `EmbeddedTracker`（进程内嵌） | 种子生成时填 announce 地址 |
 | **UDP Tracker**（BEP 15） | 同上，UDP 更省开销 | announce 填 `udp://...`，引擎自动分派 |
 | **DHT**（可选模块） | 完全去 tracker；内网自建自举 | 两端 `builder().peerDiscovery(DhtPeerDiscovery.create(...))` |
 | PEX | 已连接的节点互相介绍新节点 | 无需配置，自动 |
 
 ### 5.4 内网镜像分发完整拓扑（大模型场景）
 
-**依赖**：源/目标机器 core；（可选去 tracker）+ dht；（源机器造种子）+ testkit。
+**依赖**：源/目标机器 core；（可选去 tracker）+ dht；（源机器造种子）+ tools；tracker 机器（若有）javathunder-tracker 可执行 jar。
 
 ```text
           ┌──────────── ① 种子分发（任意途径：内网 HTTP/IM/配置中心）────────────┐
@@ -540,8 +543,9 @@ DefaultTorrentClient.builder()
 
 ### 6.5 给自己的项目写集成测试
 
-**依赖**：core（test）+ javathunder-testkit（test）。完整可抄模板见 testkit 的
-`LoopbackAcceptanceTest`；三件套 = EmbeddedTracker + TorrentGenerator + FakeSeeder，
+**依赖**：core（test）+ javathunder-tools（test）。完整可抄模板见 tools 模块的
+`LoopbackAcceptanceTest`；三件套 = EmbeddedTracker（传递依赖 tracker 模块提供）
++ TorrentGenerator + FakeSeeder，
 另可用 `-Djavathunder.transport=nio` 让同一测试双传输各跑一遍（差分）。
 
 ---
@@ -566,7 +570,11 @@ DefaultTorrentClient.builder()
 
 **dht 模块**：`DhtPeerDiscovery.create()` / `create(List<String> 内网自举)`
 
-**testkit**：`EmbeddedTracker.start()` `TorrentGenerator.generate/generateMultiFile` `FakeSeeder/NioSeeder.start` `MetadataSeeder.start`（BEP 9 对端）
+**tracker 模块**：`EmbeddedTracker.start()/start(port)/start(port, interval)`（内嵌，回环）
+`TrackerServer.start(port, interval)`（生产，0.0.0.0，默认 6881/1800s）`stats()`（每
+info-hash seeders/leechers）；可执行 jar 入口 `TrackerMain`（`--port` `--announce-interval`）
+
+**tools**：`TorrentGenerator.generate/generateMultiFile` `FakeSeeder/NioSeeder.start` `MetadataSeeder.start`（BEP 9 对端）
 
 ---
 
@@ -576,7 +584,7 @@ DefaultTorrentClient.builder()
 api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/线协议/
                   存储单+多文件/调度/choking/限速/事件 + 双传输实现）
                   ← dht（可选，经 PeerDiscoverySource SPI 注入）
-                  ← testkit（造种子/内嵌 tracker/测试对端）· cli（示例）
+                  ← tracker（内嵌/生产 HTTP tracker）· tools（造种子/测试对端）· cli（示例）
 ```
 
 线程模型：NIO 时一个 selector 平台线程管全部连接 I/O；磁盘与哈希在虚拟线程池；事件回调在独立事件线程。深入读 [DESIGN.md](DESIGN.md)（需求与详设）与 [ADR](adr/)（三份关键决策记录）。

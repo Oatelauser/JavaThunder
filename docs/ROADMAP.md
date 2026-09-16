@@ -32,12 +32,14 @@
 DHT 已落为独立可选模块（`javathunder-dht`，查询模式），轻量使用者无需引入该 jar；
 引擎通过 api 模块的 `PeerDiscoverySource` SPI 消费（core 不依赖 dht，方向为 dht → api）。
 
-### 2.x 生产级 Tracker 模块（已确认规划）
+### 2.x 生产级 Tracker 模块（已实现：javathunder-tracker）
 
 `javathunder-tracker`：现网可用的 HTTP tracker（内网分发的"opentracker 替代"，
-纯 Java 零依赖、可执行 jar 直跑）。范围：TrackerServer（固定端口 / announce
+纯 Java 零依赖、可执行 jar 直跑：`java -jar javathunder-tracker-*-with-dependencies.jar
+--port 6881 --announce-interval 1800`）。已交付：TrackerServer（固定端口 / announce
 间隔过期清理 / stopped 事件摘除 / 多 swarm 并发 / 可观测统计）+ 保留
-EmbeddedTracker（testkit 场景零迁移）；UDP tracker（BEP 15 服务端）远期。
+EmbeddedTracker（tools 场景零迁移，包 `io.github.oatelauser.thunder.tracker`）；
+UDP tracker（BEP 15 服务端）远期。
 选型依据见 MANUAL §1.3：内网分发自建 tracker 首选，DHT 是去中心化备选而非替代。
 
 ## 第三阶段（按需/远期）

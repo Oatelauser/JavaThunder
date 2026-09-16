@@ -19,7 +19,7 @@ supersedes: ADR-0001 的 Socket I/O 部分（虚拟线程保留给磁盘与校�
 - **缓冲策略**：16KiB 块缓冲池化 + 直接 ByteBuffer 复用（Kafka 招数中对本协议收益最大的一项）。
 - **迁移路径（C1→C5）**：`PeerTransport` 接口隔离 → `NioTransport` 实现 → 引擎迁移
   （含异步 Piece 校验、存储写通道分片、调度器锁拆分）→ 差分验收 → 回到收尾任务。
-  现有阻塞实现保留为 `BlockingTransport` 参照实现，全部 testkit 验收对两种实现参数化对拍；
+  现有阻塞实现保留为 `BlockingTransport` 参照实现，全部 tools 验收对两种实现参数化对拍；
   迁移完成后降级为内部调试工具（不对用户暴露、不做双实现承诺）。
 
 ## 内部验收红线（不对外承诺，达不到才重议 Netty）

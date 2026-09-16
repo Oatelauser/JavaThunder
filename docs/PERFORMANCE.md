@@ -1,8 +1,8 @@
 # 性能基线与 I/O 模型对比分析
 
 测量环境：Windows 11 / JDK 21.0.10 / 回环网络（RTT≈0，最大化暴露每消息成本）。
-探针：`javathunder-testkit` 的 `LoopbackThroughputProbeTest`（`@Tag("perf")`，CI 默认跳过，
-手动运行：`mvn -pl javathunder-testkit -am test -Dtest=LoopbackThroughputProbeTest -Dsurefire.excludedGroups=`）。
+探针：`javathunder-tools` 的 `LoopbackThroughputProbeTest`（`@Tag("perf")`，CI 默认跳过，
+手动运行：`mvn -pl javathunder-tools -am test -Dtest=LoopbackThroughputProbeTest -Dsurefire.excludedGroups=`）。
 
 ## 实测（2026-09-14）
 

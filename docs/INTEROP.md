@@ -10,7 +10,7 @@
 
 ## 双向结果
 
-测试类 `javathunder-testkit/src/test/java/.../TtorrentInteropTest.java`（`@Tag("interop")`，
+测试类 `javathunder-tools/src/test/java/.../TtorrentInteropTest.java`（`@Tag("interop")`，
 默认 CI 排除）。两种传输各跑两遍，全部通过（每遍两个用例，各约 14s）：
 
 | 方向 | 结果 |
@@ -22,10 +22,10 @@
 
 ```bash
 # 阻塞传输（默认）
-mvn -B -ntp -pl javathunder-testkit -am test -Dtest=TtorrentInteropTest \
+mvn -B -ntp -pl javathunder-tools -am test -Dtest=TtorrentInteropTest \
     -Dsurefire.excludedGroups= -Dsurefire.failIfNoSpecifiedTests=false
 # NIO 传输
-mvn -B -ntp -pl javathunder-testkit -am test -Dtest=TtorrentInteropTest \
+mvn -B -ntp -pl javathunder-tools -am test -Dtest=TtorrentInteropTest \
     -Dsurefire.excludedGroups= -Dsurefire.failIfNoSpecifiedTests=false \
     -Djavathunder.transport=nio
 ```
