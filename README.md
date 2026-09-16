@@ -4,6 +4,7 @@
 
 *An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
 
+![CI](https://github.com/Oatelauser/JavaThunder/actions/workflows/ci.yml/badge.svg)
 ![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.3.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
 
 ## 为什么是它
