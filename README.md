@@ -5,7 +5,7 @@
 *An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
 
 ![CI](https://github.com/Oatelauser/JavaThunder/actions/workflows/ci.yml/badge.svg)
-![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.4.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
+![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-0.5.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
 
 ## 为什么是它
 
@@ -13,7 +13,7 @@
 - **零框架税** —— 运行时仅依赖 `slf4j-api`；没有 Netty/Guava，Bencode/协议/存储全部手写
 - **轻量与完整是同一套 API** —— 默认配置即轻量（少量连接、下完即停）；注入 DHT、开做种、放开连接数即完整形态，无模式切换
 - **P2P 天然可扩展** —— 每个下载节点既是客户端又是服务端：下载到的分片即刻可供他人拉取，**分发的机器越多、总吞吐越大**（对照 C/S：百台机器拉镜像不会挤垮源机）
-- **可验证的工程质量** —— 与 ttorrent 双向互操作 + 公网 Ubuntu ISO 实测；双传输差分验收；176 个测试；japicmp 守护 API 兼容性
+- **可验证的工程质量** —— 与 ttorrent 双向互操作 + 公网 Ubuntu ISO 实测；双传输差分验收；195 个测试；japicmp 守护 API 兼容性
 
 ## 30 秒上手
 
@@ -74,15 +74,15 @@ cd JavaThunder && mvn clean install
 <dependency>
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder-core</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
 </dependency>
 <!-- 运行时请自带 slf4j 后端（如 slf4j-simple / logback），否则日志静默 -->
 ```
 
 ## 特性一览
 
-- **协议**：BEP 3（v1 单/多文件）、BEP 9+10（磁力链接，元数据 SHA-1 自校验）、BEP 11（PEX）、BEP 12（多 tracker）、BEP 15（UDP tracker，`udp://` 自动分派）、BEP 23/20/27；BEP 5 DHT 为可选模块；对未知/BEP 6 消息容忍解码不断连
-- **引擎**：rarest-first 调度、tit-for-tat choking + 乐观槽、endgame、逐件 SHA-1、`.part` 预分配 + gather 直写、断点续传（重启校验 FULL/SAMPLED/NONE 三档）、两级双向令牌桶限速
+- **协议**：BEP 3（v1 单/多文件）、BEP 6（快速扩展：HaveAll/HaveNone/Reject，协商自动启用）、BEP 9+10（磁力链接，元数据 SHA-1 自校验）、BEP 11（PEX）、BEP 12（多 tracker）、BEP 15（UDP tracker，`udp://` 自动分派）、BEP 19（WebSeed：`url-list` HTTP 兜底源，自动启用）、BEP 23/20/27；BEP 5 DHT 为可选模块；未知消息容忍解码不断连
+- **引擎**：rarest-first 调度、tit-for-tat choking + 乐观槽、逐件 SHA-1（块网格组装 + gather 落位）、断点续传（重启校验 FULL/SAMPLED/NONE 三档）、两级双向令牌桶限速
 - **安全**：多文件路径穿越防护；磁力元数据哈希强校验；帧/长度/深度多级解析防护
 - **传输**：NIO 事件循环（默认，ADR-0003 生产路径）与阻塞参照实现（`-Djavathunder.transport=blocking`）双实现，同一套验收差分回归
 - **观测**：进度/速率(EMA)/ETA/健康度快照 + 7 类事件回调（独立事件线程，可注入自定义 Executor）
@@ -104,7 +104,7 @@ BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）�
 
 - 设计量级：≤1000 并发连接、单任务 ≤200 Peer（DHT 爬虫级非目标）
 - PEX 仅 IPv4；Windows 做种期间文件保持 `.part` 名（句柄占用，完成即改名）
-- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.4.0 vs 0.3.0：api 纯新增判 MINOR；有意移除项在 CHANGELOG 列明并经护栏 excludes 豁免；tracker/tools 基线 v0.3.0）
+- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.5.0 vs 0.4.0：api 零变更 PATCH 级、tools 纯新增 MINOR；tracker/tools 基线 v0.4.0）
 
 ## 文档
 

@@ -1,6 +1,6 @@
 # JavaThunder 使用手册
 
-版本：v0.4.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
+版本：v0.5.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
 
 **怎么读这本手册**：第 1 章建立正确的心智模型（角色、上传下载的真实关系、"机器越多越快"的原理）；第 2 章是完整可运行的快速入门；第 3 章回答"什么时候引哪个包"；**第 4 章下载场景 / 第 5 章上传与分发场景**按你的意图二选一进入；第 6 章两类共用；第 7–11 章是速查与排错。
 
@@ -107,7 +107,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
     <dependency>
         <groupId>io.github.oatelauser</groupId>
         <artifactId>javathunder-core</artifactId>
-        <version>0.4.0</version>
+        <version>0.5.0</version>
     </dependency>
     <!-- 日志后端：本库只依赖 slf4j-api，不带后端会静默无日志。示例用 simple，生产换 logback -->
     <dependency>
@@ -118,9 +118,9 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 </dependencies>
 ```
 
-> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.4.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.5.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
 > ```bash
-> java -cp javathunder-core-0.4.0-with-dependencies.jar QuickStart.java
+> java -cp javathunder-core-0.5.0-with-dependencies.jar QuickStart.java
 > ```
 > 不带分类器的主 jar 保持瘦 jar 供构建工具做依赖解析——不要把 fat jar 当依赖引入。
 
@@ -134,7 +134,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-tools</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
 </dependency>
 ```
 
@@ -336,7 +336,7 @@ public class Magnet {
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-dht</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
 </dependency>
 ```
 
