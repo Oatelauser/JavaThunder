@@ -20,14 +20,21 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
-      - name: Install japicmp baseline (previous release api jar)
-        # 0.3.0 起 api 的 japicmp 对 v0.2.0 基线比对；基线 jar 未发布到中央仓库，
-        # 从 tag 构建安装（跳过它自身也挂着的旧 japicmp——它的 0.1.0 基线同样不在）
+      - name: Install japicmp baselines (api@v0.2.0, tracker/tools@v0.3.0)
+        # 基线 jar 未发布到中央仓库，从 tag 构建安装：
+        # - api 对 v0.2.0 基线比对（跳过 v0.2.0 自身挂着的旧 japicmp——它的 0.1.0 基线同样不在）
+        # - tracker/tools 首发于 v0.3.0 并挂护栏，基线 v0.3.0；其护栏用 file 直指仓库 jar
+        #   （同版本下 dependency 坐标会被 reactor 解析成模块自身），故必须先 install。
+        #   -am 连带安装 core/api 0.3.0 依赖，同样跳过它们各自的旧护栏
         run: |
           git fetch --depth=1 origin tag v0.2.0
-          git worktree add --detach /tmp/baseline v0.2.0
-          mvn -B -ntp -f /tmp/baseline -pl javathunder-api install -DskipTests -DskipJapicmp=true
-          git worktree remove --force /tmp/baseline
+          git worktree add --detach /tmp/baseline02 v0.2.0
+          mvn -B -ntp -f /tmp/baseline02 -pl javathunder-api install -DskipTests -DskipJapicmp=true
+          git worktree remove --force /tmp/baseline02
+          git fetch --depth=1 origin tag v0.3.0
+          git worktree add --detach /tmp/baseline03 v0.3.0
+          mvn -B -ntp -f /tmp/baseline03 -pl javathunder-tracker,javathunder-tools -am install -DskipTests -DskipJapicmp=true
+          git worktree remove --force /tmp/baseline03
       - name: Build and test
         run: mvn -B -ntp verify
       - name: Differential acceptance (NIO transport)

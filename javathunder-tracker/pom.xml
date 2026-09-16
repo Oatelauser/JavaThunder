@@ -43,6 +43,58 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
       </plugin>
+      <!-- 公共 API 守门员：任何破坏性 API 变更令构建失败（参数对齐 javathunder-api）。
+           tracker 自 v0.3.0 才发布，基线即 v0.3.0，随每版发布上移。
+           oldVersion 用 file 指向本地仓库基线 jar 而非 dependency 坐标：当前项目版本
+           与基线同为 0.3.0 时，dependency 会被 reactor 解析成本模块刚构建的 jar，
+           old==new 恒零差异，护栏失效（file 方式始终取仓库里安装的基线）。 -->
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <version>0.23.1</version>
+        <configuration>
+          <oldVersion>
+            <file>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tracker/0.3.0/javathunder-tracker-0.3.0.jar</path>
+            </file>
+          </oldVersion>
+          <oldClassPathDependencies>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-core</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+          </oldClassPathDependencies>
+          <newClassPathDependencies>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-core</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+          </newClassPathDependencies>
+          <newVersion>
+            <file>
+              <path>${project.build.directory}/${project.build.finalName}.jar</path>
+            </file>
+          </newVersion>
+          <parameter>
+            <onlyModified>true</onlyModified>
+            <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+            <includes>
+              <include>io.github.oatelauser.thunder.tracker</include>
+            </includes>
+          </parameter>
+          <skip>${skipJapicmp}</skip>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals>
+              <goal>cmp</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
       <!-- 附加 *-with-dependencies.jar：可执行（Main-Class=TrackerMain），主产物保持瘦 jar。
            配置继承根 pom，仅追加 Main-Class 清单。 -->
       <plugin>

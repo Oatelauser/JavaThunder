@@ -101,7 +101,7 @@ BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）�
 
 - 设计量级：≤1000 并发连接、单任务 ≤200 Peer（DHT 爬虫级非目标）
 - PEX 仅 IPv4；Windows 做种期间文件保持 `.part` 名（句柄占用，完成即改名）
-- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.3.0 vs 0.2.0 = PATCH：api 零变更；新公共 API 在 tracker 模块，自 0.3.0 起发布）
+- 0.x 阶段：API 可能演进，但 CI 用 japicmp 守护二进制兼容（0.3.0 vs 0.2.0 = PATCH：api 零变更；tracker 与 tools 自 0.3.0 发布起同样受护栏保护，基线 v0.3.0）
 
 ## 文档
 

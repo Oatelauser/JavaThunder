@@ -64,6 +64,75 @@
           </systemPropertyVariables>
         </configuration>
       </plugin>
+      <!-- 公共 API 守门员（宽松版）：仅拦二进制不兼容变更。testkit 是测试工具，
+           消费方是与库同步重编译的用户测试代码，源码级不兼容可接受；
+           但已编译测试字节码的可链接性必须保证，故 binary 门槛不可省。
+           包名沿用历史 io.github.oatelauser.thunder.testkit（原 testkit 模块坐标）。
+           tools 自 v0.3.0 才以本坐标发布，基线即 v0.3.0。
+           oldVersion 用 file 指向本地仓库基线 jar：dependency 方式在同版本（0.3.0）下
+           会被 reactor 解析成本模块自身，护栏失效（见 tracker pom 同注）。 -->
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <version>0.23.1</version>
+        <configuration>
+          <oldVersion>
+            <file>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tools/0.3.0/javathunder-tools-0.3.0.jar</path>
+            </file>
+          </oldVersion>
+          <oldClassPathDependencies>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-core</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-tracker</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+          </oldClassPathDependencies>
+          <!-- 显式 old/new 类路径成对出现：只配 old 会让 new 侧类路径为空，
+               testkit 触达 core internal 类型时分析直接崩（ClassNotFound）。 -->
+          <newClassPathDependencies>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-core</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+            <dependency>
+              <groupId>io.github.oatelauser</groupId>
+              <artifactId>javathunder-tracker</artifactId>
+              <version>0.3.0</version>
+            </dependency>
+          </newClassPathDependencies>
+          <newVersion>
+            <file>
+              <path>${project.build.directory}/${project.build.finalName}.jar</path>
+            </file>
+          </newVersion>
+          <parameter>
+            <onlyModified>true</onlyModified>
+            <breakBuildOnBinaryIncompatibleModifications>true</breakBuildOnBinaryIncompatibleModifications>
+            <!-- 宽松点：testkit 刻意触达 core 的 internal 类型，core 内部类重构
+                 不应让本护栏崩掉；判定仍只看 testkit 包自身的二进制兼容。 -->
+            <ignoreMissingClasses>true</ignoreMissingClasses>
+            <includes>
+              <include>io.github.oatelauser.thunder.testkit</include>
+            </includes>
+          </parameter>
+          <skip>${skipJapicmp}</skip>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals>
+              <goal>cmp</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
       <!-- 附加 *-with-dependencies.jar：配置继承根 pom（test 作用域的 junit/ttorrent 不打入） -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
