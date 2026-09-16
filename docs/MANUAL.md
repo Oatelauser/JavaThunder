@@ -227,6 +227,15 @@ public class QuickStart {
 
 **预期行为**：数秒内 `progress` 行开始刷新（`peers=0` 只是还没连上对端，帧照常到达）。命令行等价物：`java -jar javathunder-cli.jar download ubuntu.torrent --dir downloads`。
 
+**同款冒烟的测试形态**（种子路径可注入，本机无种子自动跳过）：
+
+```bash
+mvn -pl javathunder-core -am test -Dtest=QuickStartTest \
+    -Djavathunder.quickstart.torrent=/path/to/ubuntu.torrent   # 可选：-Djavathunder.quickstart.targetDir=/path/to/data
+```
+
+CI 侧对应 **Actions → CI → Run workflow** 的 `Public quickstart (manual)` 腿（手动触发，种子 URL 可输入覆盖，缺省 Ubuntu 24.04.4）。
+
 ---
 
 ## 第 3 章 依赖引入指南：什么时候引哪个包
