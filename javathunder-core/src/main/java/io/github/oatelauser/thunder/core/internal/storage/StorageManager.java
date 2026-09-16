@@ -28,20 +28,38 @@ public final class StorageManager implements TorrentStorage {
     private final Path finalFile;
     private final FileChannel[] channels;
 
+    /** 实际工作文件：seed-only 导入时数据已在最终名（无 .part），直接以它为对象。 */
+    private final Path workFile;
+
     public StorageManager(TorrentMetadata meta, Path targetDir) throws IOException {
+        this(meta, targetDir, false);
+    }
+
+    /**
+     * @param adoptExistingData seed-only（G2 导入）为 true：数据已在最终名且无 .part、
+     *                          长度相符时以最终文件为工作对象（跳过预分配，finish 不改名）。
+     *                          下载会话必须 false——保持既有 .part 语义（断点伪造、
+     *                          重下覆盖都以其为工作文件）。
+     */
+    public StorageManager(TorrentMetadata meta, Path targetDir, boolean adoptExistingData)
+            throws IOException {
         this.meta = meta;
         Files.createDirectories(targetDir);
         this.finalFile = targetDir.resolve(meta.name());
         this.partFile = targetDir.resolve(meta.name() + ".part");
+        this.workFile = adoptExistingData && !Files.exists(partFile) && Files.exists(finalFile)
+                && Files.size(finalFile) == meta.length() ? finalFile : partFile;
         this.channels = new FileChannel[WRITE_CHANNELS];
         for (int i = 0; i < WRITE_CHANNELS; i++) {
-            channels[i] = FileChannel.open(partFile,
+            channels[i] = FileChannel.open(workFile,
                 StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         }
-        // 预分配：截长防上次异常残留，再在末位写一字节撑出全尺寸（稀疏）
-        channels[0].truncate(meta.length());
-        if (meta.length() > 0) {
-            channels[0].write(ByteBuffer.wrap(new byte[1]), meta.length() - 1);
+        if (workFile == partFile) {
+            // 预分配（仅全新下载）：截长防残留，末位写一字节撑出全尺寸（稀疏）
+            channels[0].truncate(meta.length());
+            if (meta.length() > 0) {
+                channels[0].write(ByteBuffer.wrap(new byte[1]), meta.length() - 1);
+            }
         }
     }
 
@@ -135,7 +153,9 @@ public final class StorageManager implements TorrentStorage {
             channel.force(true);
             channel.close();
         }
-        Files.move(partFile, finalFile, StandardCopyOption.REPLACE_EXISTING);
+        if (!workFile.equals(finalFile)) {
+            Files.move(partFile, finalFile, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     public Path partFile() {

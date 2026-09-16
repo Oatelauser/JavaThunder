@@ -106,6 +106,8 @@ public final class DownloadSession {
     private final AtomicBoolean resumeDirty = new AtomicBoolean(false);
 
     private volatile TaskState state = TaskState.QUEUED;
+    /** pause() 前的活跃态（DOWNLOADING/SEEDING）：resume() 回原态——做种暂停后恢复仍是做种。 */
+    private TaskState pausedFrom;
     private volatile int announceIntervalSeconds = 5;
     /**
      * 全部 tracker 失败后的指数退避基数（秒）；成功 announce 复位为 0。
@@ -114,9 +116,19 @@ public final class DownloadSession {
     private volatile long downloadRate;
     private volatile long uploadRate;
 
-    public DownloadSession(TorrentMetadata meta, DownloadOptions options, SessionConfig config,
-            PeerTransport transport, TrackerClient trackerClient,
+    public DownloadSession(TorrentMetadata meta, DownloadOptions options,
+            SessionConfig config, PeerTransport transport, TrackerClient trackerClient,
             Executor eventExecutor, byte[] peerId) throws IOException {
+        this(meta, options, config, transport, trackerClient, eventExecutor, peerId, false);
+    }
+
+    /**
+     * @param seedOnly G2 纯做种会话：存储以"导入已有数据"模式打开（数据在最终名即工作对象），
+     *                 启动走 {@link #startSeedOnly()} 而非 {@link #start()}。
+     */
+    public DownloadSession(TorrentMetadata meta, DownloadOptions options,
+            SessionConfig config, PeerTransport transport, TrackerClient trackerClient,
+            Executor eventExecutor, byte[] peerId, boolean seedOnly) throws IOException {
         this.meta = meta;
         this.options = options;
         this.config = config;
@@ -125,8 +137,8 @@ public final class DownloadSession {
         this.eventExecutor = eventExecutor;
         this.peerId = peerId.clone();
         this.storage = meta.multiFile()
-                ? new MultiFileStorage(meta, options.targetDir())
-                : new StorageManager(meta, options.targetDir());
+                ? new MultiFileStorage(meta, options.targetDir(), seedOnly)
+                : new StorageManager(meta, options.targetDir(), seedOnly);
         this.resumeFile = storage.partFile().resolveSibling(meta.name() + ".jt-resume");
         this.local = new Bitfield(meta.pieceCount());
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length(), random);
@@ -151,6 +163,41 @@ public final class DownloadSession {
         spawnLoops();
     }
 
+    /**
+     * 纯做种启动（G2）：对 targetDir 下已有数据全量校验，全部通过则直接进入
+     * SEEDING——不经历 DOWNLOADING，也不要求 .part/.jt-resume 存在（种子校验
+     * 通过即事实上的完成态）。任一件校验失败即 FAILED（数据不完整不该做种，
+     * 调用方应走 download 让引擎补缺）。
+     */
+    public synchronized void startSeedOnly() {
+        if (state != TaskState.QUEUED) {
+            throw new IllegalStateException("session already started");
+        }
+        setState(TaskState.VERIFYING);
+        for (int i = 0; i < meta.pieceCount(); i++) {
+            boolean verified;
+            try {
+                verified = storage.verifyPiece(i);
+            } catch (IOException e) {
+                fail(e);
+                return;
+            }
+            if (!verified) {
+                fail(new IllegalStateException("seed-only: piece " + i
+                    + " failed verification — data incomplete or corrupt, use download() instead"));
+                return;
+            }
+            localSet(i);
+        }
+        // 导入数据已在校验通过的位置（最终名/目录树），无需落位；也不能调
+        // storage.finish()——它会关闭全部通道，SEEDING 的上传服务将永久
+        // ClosedChannelException（complete() 的 seed 分支同样跳过 finish 以保住通道）。
+        running.set(true);
+        setState(TaskState.SEEDING);
+        announce(TrackerEvent.STARTED);
+        spawnLoops();
+    }
+
     private void spawnLoops() {
         Thread.ofVirtual().name("javathunder-tracker").start(wrap(this::trackerLoop));
         Thread.ofVirtual().name("javathunder-connect").start(wrap(this::connectLoop));
@@ -172,6 +219,7 @@ public final class DownloadSession {
         if (state != TaskState.DOWNLOADING && state != TaskState.SEEDING) {
             return;
         }
+        pausedFrom = state;
         running.set(false);
         closeAllPeers();
         announce(TrackerEvent.STOPPED);
@@ -184,7 +232,8 @@ public final class DownloadSession {
             return;
         }
         running.set(true);
-        setState(TaskState.DOWNLOADING);
+        // 回到暂停前的活跃态：SEEDING（seed-only / seedAfterComplete）与 DOWNLOADING 语义不同
+        setState(pausedFrom != null ? pausedFrom : TaskState.DOWNLOADING);
         spawnLoops();
     }
 

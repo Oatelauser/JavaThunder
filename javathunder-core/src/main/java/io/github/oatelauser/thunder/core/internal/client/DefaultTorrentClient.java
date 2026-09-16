@@ -172,6 +172,24 @@ public final class DefaultTorrentClient implements TorrentClient {
     }
 
     /**
+     * 导入已有文件直接做种（G2）：见 {@link io.github.oatelauser.thunder.api.TorrentClient#seed}。
+     * 实现要点：DownloadOptions 以 seedAfterComplete=true 构造（SEEDING 态的
+     * pause/announce 语义正确），DownloadSession.startSeedOnly() 做校验与落位。
+     */
+    @Override
+    public DownloadTask seed(Path torrentFile, io.github.oatelauser.thunder.api.SeedOptions seedOptions)
+            throws Exception {
+        if (closed.get()) {
+            throw new IllegalStateException("client is closed");
+        }
+        TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(torrentFile));
+        DownloadOptions options = new DownloadOptions(
+            seedOptions.dataDir(), true, true, /*seedAfterComplete=*/ true,
+            0, seedOptions.uploadLimitBytesPerSecond(), RestartVerifyMode.FULL);
+        return startSession(meta, options, /*seedOnly=*/ true);
+    }
+
+    /**
      * 磁力链接下载（B1）：先经 BEP 9 拉取 info 字典并自校验 info-hash，
      * 再交给正常下载会话。返回的 future 在元数据就绪前不完成——快照在此之前
      * 反映 metadata 状态（fraction=0）。
@@ -215,13 +233,18 @@ public final class DefaultTorrentClient implements TorrentClient {
     }
 
     private DownloadTask startSession(TorrentMetadata meta, DownloadOptions options) throws Exception {
+        return startSession(meta, options, false);
+    }
+
+    private DownloadTask startSession(TorrentMetadata meta, DownloadOptions options, boolean seedOnly)
+            throws Exception {
         slots.acquire();
         DownloadSession session;
         try {
             session = new DownloadSession(meta, options,
                     new DownloadSession.SessionConfig(maxPeersPerTask, transport.listeningPort(),
                             globalDownload, globalUpload, peerDiscovery, udpTracker),
-                    transport, trackerClient, eventExecutor, peerId);
+                    transport, trackerClient, eventExecutor, peerId, seedOnly);
         } catch (IOException | RuntimeException e) {
             slots.release();
             throw e;
@@ -232,7 +255,11 @@ public final class DefaultTorrentClient implements TorrentClient {
             sessions.remove(key, session);
             slots.release();
         });
-        session.start();
+        if (seedOnly) {
+            session.startSeedOnly();
+        } else {
+            session.start();
+        }
         return task;
     }
 

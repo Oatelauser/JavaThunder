@@ -16,6 +16,15 @@ public interface TorrentClient extends AutoCloseable {
      */
     DownloadTask download(MagnetUri magnet, DownloadOptions options) throws Exception;
 
+    /**
+     * 导入已有文件直接做种（G2）：对 {@code options.dataDir()} 下的数据全量校验，
+     * 全部通过即进入 SEEDING（不经历下载）；任何分片校验失败则任务 FAILED——
+     * 数据不完整时应改用 {@link #download(Path, DownloadOptions)} 让引擎补缺。
+     * 做种任务通过返回句柄的 {@code future()} 不会完成（SEEDING 持续），
+     * 用 {@code cancel(false)}/{@code close()} 停止。
+     */
+    DownloadTask seed(Path torrentFile, SeedOptions options) throws Exception;
+
     @Override
     void close();
 }

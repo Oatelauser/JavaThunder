@@ -27,10 +27,26 @@ public final class MultiFileStorage implements TorrentStorage {
     private final TorrentMetadata meta;
     private final Path rootDir;
     private final Path partRoot;
+    /** seed-only 导入模式：工作路径=最终路径，finish() 的 move 跳过。 */
+    private final boolean importMode;
     private final FileChannel[] channels;
     private final TorrentMetadata.TorrentFile[] files;
 
     public MultiFileStorage(TorrentMetadata meta, Path targetDir) throws IOException {
+        this(meta, targetDir, false);
+    }
+
+    /**
+     * @param adoptExistingData seed-only（G2 导入）为 true：目录树已在最终位置且无暂存目录
+     *                          时直接以最终路径为工作对象（跳过预分配，finish 不 move/清理）。
+     *                          下载会话必须 false——保持既有 .part 暂存语义。
+     */
+    public MultiFileStorage(TorrentMetadata meta, Path targetDir, boolean adoptExistingData)
+            throws IOException {
+        // seed-only 导入：目录树已在最终位置且无暂存目录——直接以最终路径为工作对象
+        this.importMode = adoptExistingData
+                && !Files.exists(targetDir.resolve(meta.name() + ".part"))
+                && Files.isDirectory(targetDir.resolve(meta.name()));
         this.meta = meta;
         Files.createDirectories(targetDir);
         this.rootDir = targetDir.resolve(meta.name());
@@ -46,7 +62,9 @@ public final class MultiFileStorage implements TorrentStorage {
                 Files.createDirectories(staged.getParent());
                 channels[i] = FileChannel.open(staged,
                     StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-                channels[i].write(ByteBuffer.wrap(new byte[1]), files[i].length() - 1); // 稀疏预分配
+                if (!importMode) {
+                    channels[i].write(ByteBuffer.wrap(new byte[1]), files[i].length() - 1); // 稀疏预分配
+                }
             }
         } catch (IOException | RuntimeException e) {
             closeQuietly();
@@ -161,9 +179,13 @@ public final class MultiFileStorage implements TorrentStorage {
             }
             channels[i].force(true);
             channels[i].close();
-            Files.move(stagedPath(i), finalPath, StandardCopyOption.REPLACE_EXISTING);
+            if (!importMode) {
+                Files.move(stagedPath(i), finalPath, StandardCopyOption.REPLACE_EXISTING);
+            }
         }
-        deleteRecursively(partRoot);
+        if (!importMode) {
+            deleteRecursively(partRoot);
+        }
     }
 
     @Override
@@ -214,6 +236,14 @@ public final class MultiFileStorage implements TorrentStorage {
     }
 
     private Path stagedPath(int index) {
+        if (importMode) {
+            TorrentMetadata.TorrentFile file = files[index];
+            Path finalPath = rootDir;
+            for (String component : file.path()) {
+                finalPath = finalPath.resolve(component);
+            }
+            return finalPath;
+        }
         return partRoot.resolve(String.format("%05d", index));
     }
 
