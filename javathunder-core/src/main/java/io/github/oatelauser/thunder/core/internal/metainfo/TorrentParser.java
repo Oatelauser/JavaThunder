@@ -177,7 +177,8 @@ public final class TorrentParser {
         TorrentMetadata meta = build(s);
         return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
                 meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
-                meta.pieces(), meta.privateFlag(), meta.files(), meta.webSeeds());
+                meta.pieces(), meta.privateFlag(), meta.files(), meta.webSeeds(),
+                meta.version(), meta.infoHashV2());
     }
 
     private static TorrentMetadata build(Scanned s) {
@@ -261,10 +262,14 @@ public final class TorrentParser {
             throw new IllegalArgumentException("file tree must contain at least one file");
         }
         List<TorrentMetadata.TorrentFile> files = assignOffsets(walked, pieceLength, s.pieceLayers());
-        validateLayers(files, pieceLength, s.pieceLayers());
+        boolean hybrid = s.info().value().containsKey(BString.of("pieces"));
+        // 磁力路径（buildFromInfoDict）无 piece layers：hybrid 可走 v1 面校验（pieces 在
+        // info 字典内），层带校验跳过；v2-only 必须有层带（唯一校验来源）
+        if (s.pieceLayers() != null || !hybrid) {
+            validateLayers(files, pieceLength, s.pieceLayers());
+        }
         long length = files.stream().mapToLong(TorrentMetadata.TorrentFile::length).sum();
 
-        boolean hybrid = s.info().value().containsKey(BString.of("pieces"));
         byte[] sha256 = sha256Raw(s.infoRawBytes());
         if (hybrid) {
             BString v1Pieces = requireStringRaw(s.info(), "pieces");
