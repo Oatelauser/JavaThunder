@@ -44,7 +44,7 @@
         <artifactId>maven-surefire-plugin</artifactId>
       </plugin>
       <!-- 公共 API 守门员：任何破坏性 API 变更令构建失败（参数对齐 javathunder-api）。
-           tracker 首发于 v0.3.0；基线随每版发布上移（当前 v0.5.0）。
+           tracker 首发于 v0.3.0；基线随每版发布上移（当前 v0.6.0）。
            oldVersion 用 file 指向本地仓库基线 jar 而非 dependency 坐标：当前项目版本
            与基线同版本时，dependency 会被 reactor 解析成本模块刚构建的 jar，
            old==new 恒零差异，护栏失效（file 方式始终取仓库里安装的基线）。 -->
@@ -55,14 +55,14 @@
         <configuration>
           <oldVersion>
             <file>
-              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tracker/0.5.0/javathunder-tracker-0.5.0.jar</path>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-tracker/0.6.0/javathunder-tracker-0.6.0.jar</path>
             </file>
           </oldVersion>
           <oldClassPathDependencies>
             <dependency>
               <groupId>io.github.oatelauser</groupId>
               <artifactId>javathunder-core</artifactId>
-              <version>0.5.0</version>
+              <version>0.6.0</version>
             </dependency>
           </oldClassPathDependencies>
           <newClassPathDependencies>

@@ -26,17 +26,17 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
-      - name: Install japicmp baselines (api/tracker/tools @v0.5.0)
+      - name: Install japicmp baselines (api/tracker/tools @v0.6.0)
         # 基线 jar 未发布到中央仓库，从 tag 构建安装：
-        # - api 对上一个发布 tag（v0.5.0）比对（tag 自身的旧护栏跳过）
+        # - api 对上一个发布 tag（v0.6.0）比对（tag 自身的旧护栏跳过）
         # - tracker/tools 护栏用 file 直指仓库 jar
         #   （同版本下 dependency 坐标会被 reactor 解析成模块自身），故必须先 install。
-        #   -am 连带安装 core/api 0.5.0 依赖（oldClassPath 用）
+        #   -am 连带安装 core/api 0.6.0 依赖（oldClassPath 用）
         run: |
-          git fetch --depth=1 origin tag v0.5.0
-          git worktree add --detach /tmp/baseline05 v0.5.0
-          mvn -B -ntp -f /tmp/baseline05 -pl javathunder-api,javathunder-tracker,javathunder-tools -am install -DskipTests -DskipJapicmp=true
-          git worktree remove --force /tmp/baseline05
+          git fetch --depth=1 origin tag v0.6.0
+          git worktree add --detach /tmp/baseline06 v0.6.0
+          mvn -B -ntp -f /tmp/baseline06 -pl javathunder-api,javathunder-tracker,javathunder-tools -am install -DskipTests -DskipJapicmp=true
+          git worktree remove --force /tmp/baseline06
       - name: Build and test
         # 默认传输 = NIO（生产路径）；下面两条差分腿显式跑双臂验收
         run: mvn -B -ntp verify
