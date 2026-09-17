@@ -73,7 +73,8 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 - BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）——**已实现（v1，0.5.0）**：单文件
   `url-list` 自动启用、按件 Range 拉取、源级退避熔断、与 Peer 通道在途互斥；
   多文件 WebSeed（BEP 53 草案）未实现
-- BEP 52 v2 / 混合种子（Merkle 树 + SHA-256）
+- BEP 52 v2 / 混合种子（Merkle 树 + SHA-256）——**已实现（0.6.0）**：v2-only/hybrid
+  解析下载 + SHA-256 Merkle 逐件校验 + btmh 磁力解析；v2 磁力完整闭环顺延 0.7+
 
 ## 明确不实现
 

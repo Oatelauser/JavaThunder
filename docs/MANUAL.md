@@ -1,6 +1,6 @@
 # JavaThunder 使用手册
 
-版本：v0.5.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
+版本：v0.6.0 · 坐标：`io.github.oatelauser` · 要求：JDK 21+
 
 **怎么读这本手册**：第 1 章建立正确的心智模型（角色、上传下载的真实关系、"机器越多越快"的原理）；第 2 章是完整可运行的快速入门；第 3 章回答"什么时候引哪个包"；**第 4 章下载场景 / 第 5 章上传与分发场景**按你的意图二选一进入；第 6 章两类共用；第 7–11 章是速查与排错。
 
@@ -107,7 +107,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
     <dependency>
         <groupId>io.github.oatelauser</groupId>
         <artifactId>javathunder-core</artifactId>
-        <version>0.5.0</version>
+        <version>0.6.0</version>
     </dependency>
     <!-- 日志后端：本库只依赖 slf4j-api，不带后端会静默无日志。示例用 simple，生产换 logback -->
     <dependency>
@@ -118,9 +118,9 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 </dependencies>
 ```
 
-> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.5.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
+> **非 Maven/Gradle 用户**：每个库模块都附带 `javathunder-<module>-0.6.0-with-dependencies.jar`（已含全部传递依赖；slf4j 后端按惯例仍由你的应用自选）。单 jar 即可编译运行：
 > ```bash
-> java -cp javathunder-core-0.5.0-with-dependencies.jar QuickStart.java
+> java -cp javathunder-core-0.6.0-with-dependencies.jar QuickStart.java
 > ```
 > 不带分类器的主 jar 保持瘦 jar 供构建工具做依赖解析——不要把 fat jar 当依赖引入。
 
@@ -134,7 +134,7 @@ BitTorrent **不是**"把文件切片分散存到多个服务器、下载时从�
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-tools</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
 </dependency>
 ```
 
@@ -336,7 +336,7 @@ public class Magnet {
 <dependency>
     <groupId>io.github.oatelauser</groupId>
     <artifactId>javathunder-dht</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
 </dependency>
 ```
 
@@ -423,6 +423,28 @@ DownloadTask task = client.download(seed.torrentFile(), options);   // HTTP 通�
 ```
 
 分发侧只要把完整文件放到任意支持 Range 的 HTTP 服务上（nginx / 对象存储签名 URL 均可），把该 URL 写进种子的 `url-list`。
+
+### 4.8 v2 / 混合种子（BEP 52）
+
+**依赖**：仅 core。**零配置零代码**——引擎自动识别种子的 `meta-version=2` / `file tree` / `piece layers` 并走 SHA-256 Merkle 校验路径。混合种子（同一种子内 v1 SHA-1 与 v2 SHA-256 并存）自动走 v1 面校验（兼容性最广），v2 哈希保留用于未来的 v2 Swarm 接入。
+
+支持范围：
+
+| 形态 | 解析 | 下载 | 校验 | 说明 |
+|---|---|---|---|---|
+| v1（传统） | ✓ | ✓ | SHA-1 逐件 | 既有行为零变化 |
+| v2-only | ✓ | ✓ | SHA-256 Merkle | file tree + piece layers |
+| hybrid（混合） | ✓ | ✓ | v1 面（SHA-1）优先 | 双 info-hash 并存，v2 副哈希保留 |
+| v2 磁力（btmh） | 解析 ✓ | .torrent 路径完成 | — | DHT 定位用截断哈希；磁力闭环待 v2 Swarm 接入（0.7+） |
+
+**为什么 v2 重要**：SHA-1 已被碰撞攻破（2017），主流客户端 2020 年起默认产出 v2/混合种子——不做 v2，能下载的内容面只会越来越窄。
+
+行为边界（自动处理，无需干预）：
+
+- v2 的 piece length 必须 2 的幂 ≥ 16KiB（解析期拒绝违反者）
+- 实文件按 piece 边界对齐（BEP 47 填充文件占位但不落盘）
+- 逐件 Merkle 校验（16KiB 块 → SHA-256 叶子 → 折叠到层带条目比对）
+- 损坏件被拒绝、重下、源拉黑（与 v1 行为一致）；篡改层带在解析期即拒绝
 
 ---
 
@@ -715,9 +737,10 @@ api（接口契约） ← core（引擎：bencode/种子解析/HTTP+UDP tracker/
 
 ## 第 9 章 协议兼容（BEP）速查
 
-实现：BEP 3(v1+多文件)/5(查询模式，可选模块)/6(快速扩展)/9/10/11/12/15/19/20/23/27；
+实现：BEP 3(v1+多文件)/5(查询模式，可选模块)/6(快速扩展)/9/10/11/12/15/19/20/23/27/52(v2+hybrid)；
 BEP 6 范围 = 协商 + HaveAll/HaveNone/Reject（Suggest/AllowedFast 容忍解码，不采纳）。
-未实现：BEP 52(v2)、BEP 53(多文件 WebSeed)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
+BEP 52 范围 = v2/hybrid 解析下载 + SHA-256 Merkle 校验（v2 磁力闭环顺延 0.7+）。
+未实现：BEP 53(多文件 WebSeed)。互操作实测：ttorrent 双向 + 公网 Ubuntu（[INTEROP.md](INTEROP.md)）。
 
 ## 第 10 章 部署要点
 

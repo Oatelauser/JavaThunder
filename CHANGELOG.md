@@ -2,10 +2,19 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
-## 0.5.0（2026-09-16）
+## 0.6.0（2026-09-17）
 
 ### 新增
 
+- **BitTorrent v2 / 混合种子（BEP 52）**：
+  - v2-only 种子（`meta-version=2` + `file tree` + `piece layers`）完整解析与下载，
+    SHA-256 Merkle 逐件校验（16KiB 块叶子哈希 → 补零折叠 → 层带条目常时比对）
+  - hybrid 种子（同一种子内 v1 SHA-1 与 v2 SHA-256 并存）自动走 v1 面校验
+    （兼容性最广），v2 副哈希保留
+  - `urn:btmh:1220<64hex>` 磁力解析（multihash 校验 + 截断 DHT target）；
+    v2 磁力完整下载闭环顺延至 v2 Swarm 接入（0.7+）
+  - BEP 47 填充文件占位但不落盘；v2 piece length 必须 2 的幂 ≥ 16KiB
+  - 篡改层带 / 实文件未对齐 / 非法 piece length / 非法 meta-version 在解析期即拒绝
 - **BEP 6 快速扩展**：握手协商（reserved[5] & 0x04）；做种/全量持有侧对协商对端以
   HaveAll 单帧替代整幅位图（大种子省数十 KB/连接）、空持有侧显式 HaveNone；拒绝供给
   （choke 中/未持有）回 RejectRequest 替代沉默，对端立即回收在途槽位；SuggestPiece/
