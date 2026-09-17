@@ -19,11 +19,17 @@ SHA-1 已被实际碰撞攻破，主流客户端（qBittorrent/Transmission/libt
    piece**"的那一层（piece=16KiB 时即叶子层；piece=1MiB 时是上方第 6 层）。
    加载时须以层哈希带重算 Merkle 根与 `pieces root` 比对（防篡改，规范要求）。
    小于一个 piece 的文件无 layer 条目（仅 root）。
-3. 混合种子：info 字典同时含 v1 `pieces` 与 v2 `file tree`；v2 info-hash =
-   SHA-256(去掉 v1 专有键的 info 字典)，v1 info-hash = SHA-1(去掉 v2 专有键)；
-   双哈希各自可入对应 Swarm。磁力可同时携带 `xt=urn:btih:` 与 `xt=urn:btmh:`。
+3. 混合种子：info 字典同时含 v1 `pieces`（+`files`/`length`，**含 BEP 47 填充文件**）
+   与 v2 `file tree`，两侧描述同一字节流（填充文件保证实文件按 piece 对齐——v1 视图
+   与 v2 视图共享同一条拼接流布局）。**双 info-hash 均对同一份原始 info 字节计算，
+   不做任何键剔除**（v1 客户端本就哈希全字典；键剔除会分裂 Swarm）：v1 = SHA-1(raw)，
+   v2 = SHA-256(raw)。〔2026-09-17 修正：初稿误写为剔除对方键后计算，经规范与
+   libtorrent 行为核实推翻〕磁力可同时携带 `xt=urn:btih:` 与 `xt=urn:btmh:`。
 4. v2 磁力：`urn:btmh:1220<64 hex>`（multihash：0x12=sha2-256、0x20=32 字节）；
    DHT get_peers 的 target 用 SHA-256 **截断前 20 字节**（v1 长度兼容）。
+   规范未定义磁力路径下 piece layers 的获取（ut_metadata 只传 info 字典，layers
+   在其外）——D4 降级预案据此触发：0.6.0 的 v2 磁力止于解析+DHT 定位，
+   闭环（v2-only 磁力完整下载）顺延，混合磁力经 v1 哈希路径完成。
 
 ## 决策
 
