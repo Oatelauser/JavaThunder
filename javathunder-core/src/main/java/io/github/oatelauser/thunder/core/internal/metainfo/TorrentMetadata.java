@@ -54,11 +54,18 @@ public record TorrentMetadata(
      * {@code padding} 为 BEP 47 填充文件（全零流段，finish 落位时跳过物化）。
      */
     public record TorrentFile(List<String> path, long offset, long length,
-            @Nullable byte[] piecesRoot, boolean padding) {
+            @Nullable byte[] piecesRoot, boolean padding,
+            @Nullable byte[] pieceLayer) {
 
         /** V1 形态兼容构造。 */
         public TorrentFile(List<String> path, long offset, long length) {
-            this(path, offset, length, null, false);
+            this(path, offset, length, null, false, null);
+        }
+
+        /** v2 无独立层带文件（单 piece 文件）的兼容构造。 */
+        public TorrentFile(List<String> path, long offset, long length,
+                @Nullable byte[] piecesRoot, boolean padding) {
+            this(path, offset, length, piecesRoot, padding, null);
         }
     }
 

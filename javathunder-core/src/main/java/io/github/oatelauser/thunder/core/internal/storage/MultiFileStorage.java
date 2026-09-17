@@ -170,6 +170,10 @@ public final class MultiFileStorage implements TorrentStorage {
     public void finish() throws IOException {
         for (int i = 0; i < files.length; i++) {
             TorrentMetadata.TorrentFile file = files[i];
+            if (file.padding()) {
+                // BEP 47 填充文件：只占流偏移不落盘（树中的对齐占位）
+                continue;
+            }
             Path finalPath = rootDir;
             for (String component : file.path()) {
                 finalPath = finalPath.resolve(component);

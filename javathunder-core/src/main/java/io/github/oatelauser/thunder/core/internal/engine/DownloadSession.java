@@ -778,7 +778,10 @@ public final class DownloadSession {
         // —— 监视器外：CPU/磁盘重活，可与该 Peer 的后续块并行 ——
         boolean verified;
         try {
-            verified = PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+            verified = switch (meta.version()) {
+                case V2 -> V2PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+                default -> PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+            };
         } catch (IOException e) {
             verifyingPieces.remove(piece);
             fail(e);
@@ -1086,7 +1089,10 @@ public final class DownloadSession {
             assembler.blocks[slot++] =
                     Arrays.copyOfRange(body, block.begin(), block.begin() + block.length());
         }
-        boolean verified = PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+        boolean verified = switch (meta.version()) {
+            case V2 -> V2PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+            default -> PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+        };
         if (verified) {
             completeVerifiedPiece(piece);
         }

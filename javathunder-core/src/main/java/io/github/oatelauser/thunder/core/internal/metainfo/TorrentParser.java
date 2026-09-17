@@ -260,7 +260,7 @@ public final class TorrentParser {
         if (walked.isEmpty()) {
             throw new IllegalArgumentException("file tree must contain at least one file");
         }
-        List<TorrentMetadata.TorrentFile> files = assignOffsets(walked, pieceLength);
+        List<TorrentMetadata.TorrentFile> files = assignOffsets(walked, pieceLength, s.pieceLayers());
         validateLayers(files, pieceLength, s.pieceLayers());
         long length = files.stream().mapToLong(TorrentMetadata.TorrentFile::length).sum();
 
@@ -313,9 +313,9 @@ public final class TorrentParser {
         }
     }
 
-    /** 偏移累计 + 实文件 piece 对齐校验（填充文件吸收间隙，实文件一律对齐）。 */
+    /** 偏移累计 + 实文件 piece 对齐校验 + 层带提取到文件记录（供 V2 逐件校验用）。 */
     private static List<TorrentMetadata.TorrentFile> assignOffsets(
-            List<TorrentMetadata.TorrentFile> walked, long pieceLength) {
+            List<TorrentMetadata.TorrentFile> walked, long pieceLength, @Nullable BDict layers) {
         List<TorrentMetadata.TorrentFile> placed = new ArrayList<>(walked.size());
         long offset = 0;
         for (TorrentMetadata.TorrentFile file : walked) {
@@ -324,10 +324,19 @@ public final class TorrentParser {
                         + String.join("/", file.path()));
             }
             placed.add(new TorrentMetadata.TorrentFile(file.path(), offset, file.length(),
-                    file.piecesRoot(), file.padding()));
+                    file.piecesRoot(), file.padding(), extractLayer(file, layers)));
             offset += file.length();
         }
         return placed;
+    }
+
+    /** 从顶层 piece layers 字典提取该文件的层带（多 piece 文件必须存在，validateLayers 校验）。 */
+    private static byte[] extractLayer(TorrentMetadata.TorrentFile file, @Nullable BDict layers) {
+        if (file.length() == 0 || layers == null) {
+            return null;
+        }
+        BencodeValue stripValue = layers.value().get(new BString(file.piecesRoot()));
+        return stripValue instanceof BString strip ? strip.value() : null;
     }
 
     /** 多 piece 文件必须有层带，且层带按 Merkle 归并与 pieces root 一致（防篡改）。 */
