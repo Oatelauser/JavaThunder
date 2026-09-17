@@ -35,12 +35,31 @@ public record TorrentMetadata(
         byte[] pieces,
         boolean privateFlag,
         List<TorrentFile> files,
-        List<String> webSeeds) {
+        List<String> webSeeds,
+        TorrentVersion version,
+        @Nullable byte[] infoHashV2) {
+
+    /** V1 形态兼容构造（v2 字段缺省）。 */
+    public TorrentMetadata(byte[] infoHash, @Nullable String announce,
+            List<List<String>> announceList, @Nullable String comment, @Nullable String createdBy,
+            @Nullable Long creationDateSec, String name, long length, long pieceLength,
+            byte[] pieces, boolean privateFlag, List<TorrentFile> files, List<String> webSeeds) {
+        this(infoHash, announce, announceList, comment, createdBy, creationDateSec, name,
+                length, pieceLength, pieces, privateFlag, files, webSeeds, TorrentVersion.V1, null);
+    }
 
     /**
      * 多文件种子中的一个文件：相对根目录的路径 + 在拼接字节流中的偏移。
+     * v2/hybrid：{@code piecesRoot} 为该文件 Merkle 根（V1 为 null）；
+     * {@code padding} 为 BEP 47 填充文件（全零流段，finish 落位时跳过物化）。
      */
-    public record TorrentFile(List<String> path, long offset, long length) {
+    public record TorrentFile(List<String> path, long offset, long length,
+            @Nullable byte[] piecesRoot, boolean padding) {
+
+        /** V1 形态兼容构造。 */
+        public TorrentFile(List<String> path, long offset, long length) {
+            this(path, offset, length, null, false);
+        }
     }
 
     /**
@@ -72,6 +91,7 @@ public record TorrentMetadata(
         pieces = pieces.clone();
         files = List.copyOf(files);
         webSeeds = List.copyOf(webSeeds);
+        infoHashV2 = infoHashV2 == null ? null : infoHashV2.clone();
     }
 
     public boolean multiFile() {
@@ -79,10 +99,17 @@ public record TorrentMetadata(
     }
 
     public int pieceCount() {
-        return pieces.length / 20;
+        // V2 无 pieces 数组，按布局推导；V1/HYBRID 以 v1 哈希数为准（混合侧两者必相等，构造期已校验）
+        return version == TorrentVersion.V2
+                ? (int) ((length + pieceLength - 1) / pieceLength)
+                : pieces.length / 20;
     }
 
+    /** v1 逐件 SHA-1（V2 形态无此概念——校验走 Merkle 层带，见 BEP 52 实施的 S3）。 */
     public byte[] pieceHash(int index) {
+        if (version == TorrentVersion.V2) {
+            throw new UnsupportedOperationException("v2 torrents verify via merkle piece layers");
+        }
         return Arrays.copyOfRange(pieces, index * 20, index * 20 + 20);
     }
 

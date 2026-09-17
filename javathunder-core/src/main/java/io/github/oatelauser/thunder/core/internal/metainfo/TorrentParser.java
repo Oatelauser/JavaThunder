@@ -13,7 +13,9 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * v1 .torrent 解析器（BEP 3 / 12 / 19 / 27）。
@@ -52,7 +54,8 @@ public final class TorrentParser {
             @Nullable Long creationDateSec,
             BDict info,
             byte[] infoRawBytes,
-            List<String> webSeeds) {
+            List<String> webSeeds,
+            @Nullable BDict pieceLayers) {
     }
 
     private static Scanned scan(byte[] bytes) {
@@ -68,7 +71,7 @@ public final class TorrentParser {
             throw new IllegalArgumentException("missing info dict");
         }
         return new Scanned(top.announce, top.announceList, top.comment, top.createdBy,
-                top.creationDateSec, top.info, sliceInfoRaw(buf, top), top.webSeeds);
+                top.creationDateSec, top.info, sliceInfoRaw(buf, top), top.webSeeds, top.pieceLayers);
     }
 
     /**
@@ -118,6 +121,7 @@ public final class TorrentParser {
             case "announce" -> top.announce = asString(value, "announce");
             case "announce-list" -> top.announceList = asTiers(value);
             case "url-list" -> top.webSeeds = asUrlList(value);
+            case "piece layers" -> top.pieceLayers = asPieceLayers(value);
             case "comment" -> top.comment = asString(value, "comment");
             case "created by" -> top.createdBy = asString(value, "created by");
             case "creation date" -> top.creationDateSec = asInteger(value, "creation date").value();
@@ -144,6 +148,8 @@ public final class TorrentParser {
         List<List<String>> announceList = List.of();
         /** WebSeed 兜底源（BEP 19 顶层 url-list，不参与 info-hash）。 */
         List<String> webSeeds = List.of();
+        /** v2 piece layers（BEP 52 顶层字段，info 字典之外；root → 层哈希带）。 */
+        @Nullable BDict pieceLayers;
         @Nullable String comment;
         @Nullable String createdBy;
         @Nullable Long creationDateSec;
@@ -162,7 +168,7 @@ public final class TorrentParser {
         Scanned scanned = new Scanned(
                 trackers.isEmpty() ? null : trackers.get(0),
                 tiers,
-                null, null, null, info, new byte[0], List.of());
+                null, null, null, info, new byte[0], List.of(), null);
         // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
         return buildWithHash(scanned, infoHash);
     }
@@ -175,6 +181,9 @@ public final class TorrentParser {
     }
 
     private static TorrentMetadata build(Scanned s) {
+        if (s.info().value().containsKey(BString.of("file tree"))) {
+            return buildV2(s);
+        }
         if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
             throw new IllegalArgumentException("no tracker and no url-list in torrent; "
                     + "trackerless download requires DHT (inject via peerDiscovery)");
@@ -219,6 +228,177 @@ public final class TorrentParser {
         return new TorrentMetadata(sha1(s.infoRawBytes()), s.announce(), s.announceList(),
                 s.comment(), s.createdBy(), s.creationDateSec(),
                 name, length, pieceLength, pieces.value(), privateFlag, files, s.webSeeds());
+    }
+
+    // ---------------------------------------------------------------- v2 / hybrid（BEP 52）
+
+    /**
+     * v2/hybrid 解析：file tree 为布局权威（含 BEP 47 填充文件的单一拼接流，v1 视图
+     * 与 v2 视图共享）；双 info-hash 对同一份原始 info 字节各算一次（SHA-1 / SHA-256），
+     * 主哈希恒 20 字节（v2-only 取 SHA-256 截断前 20 字节，满足 DHT/线协议的 v1 宽度）。
+     */
+    private static TorrentMetadata buildV2(Scanned s) {
+        if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
+            throw new IllegalArgumentException("no tracker and no url-list in torrent; "
+                    + "trackerless download requires DHT (inject via peerDiscovery)");
+        }
+        String name = requireString(s.info(), "name");
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("info.name must not be empty");
+        }
+        BencodeValue metaVersion = s.info().get("meta version");
+        if (!(metaVersion == null || metaVersion instanceof BInteger mv && mv.value() == 2)) {
+            throw new IllegalArgumentException("meta version must be 2 when present");
+        }
+        long pieceLength = requireInteger(s.info(), "piece length").value();
+        if (pieceLength < 16 * 1024 || Long.bitCount(pieceLength) != 1) {
+            throw new IllegalArgumentException("v2 piece length must be a power of two >= 16KiB");
+        }
+
+        List<TorrentMetadata.TorrentFile> walked = new ArrayList<>();
+        walkFileTree((BDict) require(s.info(), "file tree"), List.of(), walked);
+        if (walked.isEmpty()) {
+            throw new IllegalArgumentException("file tree must contain at least one file");
+        }
+        List<TorrentMetadata.TorrentFile> files = assignOffsets(walked, pieceLength);
+        validateLayers(files, pieceLength, s.pieceLayers());
+        long length = files.stream().mapToLong(TorrentMetadata.TorrentFile::length).sum();
+
+        boolean hybrid = s.info().value().containsKey(BString.of("pieces"));
+        byte[] sha256 = sha256Raw(s.infoRawBytes());
+        if (hybrid) {
+            BString v1Pieces = requireStringRaw(s.info(), "pieces");
+            long expectedPieces = (length + pieceLength - 1) / pieceLength;
+            if (v1Pieces.value().length / 20 != expectedPieces) {
+                throw new IllegalArgumentException("hybrid piece count mismatch: v1 pieces has "
+                        + (v1Pieces.value().length / 20) + " hashes, layout implies " + expectedPieces);
+            }
+            return new TorrentMetadata(sha1(s.infoRawBytes()), s.announce(), s.announceList(),
+                    s.comment(), s.createdBy(), s.creationDateSec(), name, length, pieceLength,
+                    v1Pieces.value(), privateFlagOf(s.info()), files, s.webSeeds(),
+                    TorrentVersion.HYBRID, sha256);
+        }
+        return new TorrentMetadata(truncate20(sha256), s.announce(), s.announceList(), s.comment(),
+                s.createdBy(), s.creationDateSec(), name, length, pieceLength,
+                new byte[0], privateFlagOf(s.info()), files, s.webSeeds(),
+                TorrentVersion.V2, sha256);
+    }
+
+    /** 深度优先展开 file tree（BDict 键序即路径序）；空串键的值 = 文件属性字典。 */
+    private static void walkFileTree(BDict node, List<String> prefix,
+            List<TorrentMetadata.TorrentFile> out) {
+        for (Map.Entry<BString, BencodeValue> entry : node.value().entrySet()) {
+            String key = entry.getKey().text();
+            BencodeValue child = entry.getValue();
+            if (child instanceof BDict childDict && childDict.get("") instanceof BDict attrs) {
+                long fileLength = asInteger(require(attrs, "length"), "file tree length").value();
+                if (fileLength < 0) {
+                    throw new IllegalArgumentException("file tree length must be >= 0");
+                }
+                BencodeValue rootValue = require(attrs, "pieces root");
+                if (!(rootValue instanceof BString root) || root.value().length != MerkleHashes.HASH_WIDTH) {
+                    throw new IllegalArgumentException("pieces root must be a 32-byte string");
+                }
+                List<String> path = concat(prefix, key);
+                boolean padding = !path.isEmpty() && path.get(0).startsWith(".pad");
+                if (!padding) {
+                    validatePathComponents(path);
+                }
+                out.add(new TorrentMetadata.TorrentFile(path, 0, fileLength, root.value(), padding));
+            } else if (child instanceof BDict dir) {
+                walkFileTree(dir, concat(prefix, key), out);
+            } else {
+                throw new IllegalArgumentException("file tree entry must be a dict: " + key);
+            }
+        }
+    }
+
+    /** 偏移累计 + 实文件 piece 对齐校验（填充文件吸收间隙，实文件一律对齐）。 */
+    private static List<TorrentMetadata.TorrentFile> assignOffsets(
+            List<TorrentMetadata.TorrentFile> walked, long pieceLength) {
+        List<TorrentMetadata.TorrentFile> placed = new ArrayList<>(walked.size());
+        long offset = 0;
+        for (TorrentMetadata.TorrentFile file : walked) {
+            if (!file.padding() && file.length() > 0 && offset % pieceLength != 0) {
+                throw new IllegalArgumentException("v2 real file not aligned to piece boundary: "
+                        + String.join("/", file.path()));
+            }
+            placed.add(new TorrentMetadata.TorrentFile(file.path(), offset, file.length(),
+                    file.piecesRoot(), file.padding()));
+            offset += file.length();
+        }
+        return placed;
+    }
+
+    /** 多 piece 文件必须有层带，且层带按 Merkle 归并与 pieces root 一致（防篡改）。 */
+    private static void validateLayers(List<TorrentMetadata.TorrentFile> files,
+            long pieceLength, @Nullable BDict layers) {
+        for (TorrentMetadata.TorrentFile file : files) {
+            if (file.length() <= pieceLength) {
+                continue; // 单 piece 文件：层带可选（根即其唯一子树根）
+            }
+            if (layers == null) {
+                throw new IllegalArgumentException("piece layers required for multi-piece file: "
+                        + String.join("/", file.path()));
+            }
+            BencodeValue stripValue = layers.value().get(new BString(file.piecesRoot()));
+            if (!(stripValue instanceof BString strip)) {
+                throw new IllegalArgumentException("missing piece layer for multi-piece file: "
+                        + String.join("/", file.path()));
+            }
+            int expectedPieces = (int) ((file.length() + pieceLength - 1) / pieceLength);
+            byte[] stripBytes = strip.value();
+            if (stripBytes.length != expectedPieces * MerkleHashes.HASH_WIDTH) {
+                throw new IllegalArgumentException("piece layer length mismatch for "
+                        + String.join("/", file.path()) + ": " + stripBytes.length
+                        + " bytes, expected " + expectedPieces * MerkleHashes.HASH_WIDTH);
+            }
+            List<byte[]> layer = new ArrayList<>(expectedPieces);
+            for (int i = 0; i < expectedPieces; i++) {
+                layer.add(Arrays.copyOfRange(stripBytes, i * MerkleHashes.HASH_WIDTH,
+                        (i + 1) * MerkleHashes.HASH_WIDTH));
+            }
+            if (!MessageDigest.isEqual(MerkleHashes.rootOfLayer(layer), file.piecesRoot())) {
+                throw new IllegalArgumentException("piece layer hashes do not fold to pieces root: "
+                        + String.join("/", file.path()));
+            }
+        }
+    }
+
+    private static boolean privateFlagOf(BDict info) {
+        return info.value().containsKey(BString.of("private"))
+                && asInteger(info.get("private"), "private").value() == 1;
+    }
+
+    /** 复用 v1 的路径穿越防护（仅实文件；填充文件由引擎内部消化）。 */
+    private static void validatePathComponents(List<String> path) {
+        for (String component : path) {
+            if (component.isEmpty() || "..".equals(component) || component.contains("\\")
+                    || component.contains("/") || component.contains(":")
+                    || component.chars().anyMatch(c -> c < 0x20)
+                    || isWindowsReserved(component)) {
+                throw new IllegalArgumentException("unsafe path component in torrent: " + component);
+            }
+        }
+    }
+
+    private static List<String> concat(List<String> prefix, String key) {
+        List<String> path = new ArrayList<>(prefix.size() + 1);
+        path.addAll(prefix);
+        path.add(key);
+        return List.copyOf(path);
+    }
+
+    private static byte[] sha256Raw(byte[] data) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(data);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM without SHA-256", e);
+        }
+    }
+
+    private static byte[] truncate20(byte[] hash) {
+        return Arrays.copyOf(hash, 20);
     }
 
     /**
@@ -342,6 +522,14 @@ public final class TorrentParser {
             urls.add(asString(url, "url-list entry"));
         }
         return List.copyOf(urls);
+    }
+
+    /** piece layers（BEP 52 顶层）：root（32B 二进制键）→ 层哈希带。 */
+    private static BDict asPieceLayers(BencodeValue value) {
+        if (!(value instanceof BDict dict)) {
+            throw new IllegalArgumentException("piece layers must be a dict");
+        }
+        return dict;
     }
 
     private static byte[] sha1(byte[] data) {
