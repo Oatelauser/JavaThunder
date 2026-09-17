@@ -108,7 +108,7 @@ BEP 52（v2 种子）未实现；MSE/PE 加密明确不做（非 BEP 标准）�
 
 ## 文档
 
-[**集成手册**](docs/MANUAL.md)（从这里开始） · [设计文档](docs/DESIGN.md) · [路线图](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md) · [互操作](docs/INTEROP.md) · [术语表](CONTEXT.md) · [ADR](docs/adr/)
+[**集成手册**](docs/MANUAL.md)（从这里开始） · [设计文档](docs/DESIGN.md) · [路线图](docs/ROADMAP.md) · [性能](docs/PERFORMANCE.md) · [互操作](docs/INTEROP.md) · [发布流程](docs/RELEASE.md) · [术语表](CONTEXT.md) · [ADR](docs/adr/)
 
 ## 参与贡献
 
