@@ -74,7 +74,8 @@ public final class BlockingTransport implements PeerTransport {
             out.write(Handshake.encode(handshake.infoHash(), peerId));
             out.flush();
             PeerConnection connection = PeerConnection.established(socket, handshake.peerId(),
-                    Handshake.supportsExtensions(wire), Handshake.supportsFastExtension(wire));
+                    Handshake.supportsExtensions(wire), Handshake.supportsFastExtension(wire),
+                    Handshake.supportsV2(wire));
             BlockingChannel channel = new BlockingChannel(connection);
             handler.onConnected(channel);
             channel.start();
@@ -183,6 +184,11 @@ public final class BlockingTransport implements PeerTransport {
         @Override
         public boolean remoteSupportsFast() {
             return connection.remoteSupportsFast();
+        }
+
+        @Override
+        public boolean remoteSupportsV2() {
+            return connection.remoteSupportsV2();
         }
 
         @Override

@@ -10,8 +10,10 @@ import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.engine.DownloadSession;
 import io.github.oatelauser.thunder.core.internal.engine.MagnetDownloadTask;
 import io.github.oatelauser.thunder.core.internal.engine.MetadataFetcher;
+import io.github.oatelauser.thunder.core.internal.engine.PieceLayerFetcher;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
+import io.github.oatelauser.thunder.core.internal.metainfo.TorrentVersion;
 import io.github.oatelauser.thunder.core.internal.peer.transport.BlockingTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.NioTransport;
 import io.github.oatelauser.thunder.core.internal.peer.transport.PeerTransport;
@@ -28,6 +30,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -243,17 +246,39 @@ public final class DefaultTorrentClient implements TorrentClient {
             MetadataFetcher fetcher = new MetadataFetcher(magnet.infoHash(), magnet.trackers(),
                     transport, trackerClient, transport.listeningPort(), peerDiscovery, udpTracker);
             return new MagnetDownloadTask(
-                    fetcher.fetch().thenApply(infoBytes -> {
-                        try {
-                            return TorrentMetadata.fromInfoDict(infoBytes, magnet.trackers());
-                        } catch (RuntimeException e) {
-                            throw new IllegalStateException("fetched metadata invalid", e);
-                        }
-                    }), magnet, options, this::startSessionFromMagnet, releaseOnce, eventExecutor);
+                    fetcher.fetch()
+                            .thenApply(infoBytes -> parseMagnetMetadata(infoBytes, magnet))
+                            .thenCompose(meta -> attachPieceLayers(meta, magnet)),
+                    magnet, options, this::startSessionFromMagnet, releaseOnce, eventExecutor);
         } catch (RuntimeException e) {
             releaseOnce.run();
             throw e;
         }
+    }
+
+    private TorrentMetadata parseMagnetMetadata(byte[] infoBytes, MagnetUri magnet) {
+        try {
+            return TorrentMetadata.fromInfoDict(infoBytes, magnet.trackers());
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("fetched metadata invalid", e);
+        }
+    }
+
+    /**
+     * v2-only 磁力第二段：info 字典无 piece layers（BEP 9 拿不到顶层字段），多 piece
+     * 文件经哈希交换补齐层带后才能逐件校验；v1/hybrid 直接透传（hybrid 走 v1 面）。
+     */
+    private CompletableFuture<TorrentMetadata> attachPieceLayers(TorrentMetadata meta,
+            MagnetUri magnet) {
+        boolean missingLayers = meta.version() == TorrentVersion.V2 && meta.files().stream()
+                .anyMatch(file -> !file.padding() && file.length() > meta.pieceLength()
+                        && file.pieceLayer() == null);
+        if (!missingLayers) {
+            return CompletableFuture.completedFuture(meta);
+        }
+        PieceLayerFetcher layerFetcher = new PieceLayerFetcher(meta, magnet.trackers(),
+                transport, trackerClient, transport.listeningPort(), peerDiscovery, udpTracker);
+        return layerFetcher.fetch();
     }
 
     private DownloadTask startSessionFromMagnet(TorrentMetadata meta, DownloadOptions options) {

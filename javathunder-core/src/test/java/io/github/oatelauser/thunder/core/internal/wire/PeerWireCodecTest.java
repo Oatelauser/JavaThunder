@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -42,15 +45,18 @@ class PeerWireCodecTest {
             assertEquals("BitTorrent protocol",
                 new String(wire, 1, 19, StandardCharsets.US_ASCII));
             for (int i = 20; i < 28; i++) {
-                if (i != Handshake.EXTENSION_BIT_OFFSET) {
-                    assertEquals(0, wire[i], "reserved bytes other than the capability byte must stay zero");
+                if (i != Handshake.EXTENSION_BIT_OFFSET && i != Handshake.V2_BIT_OFFSET) {
+                    assertEquals(0, wire[i], "reserved bytes other than the capability bytes must stay zero");
                 }
             }
             assertEquals(Handshake.EXTENSION_BIT_MASK | Handshake.FAST_EXTENSION_BIT_MASK,
                 wire[Handshake.EXTENSION_BIT_OFFSET],
                 "reserved[5] must declare BEP 10 (0x10) + BEP 6 (0x04)");
+            assertEquals(Handshake.V2_PROTOCOL_BIT_MASK, wire[Handshake.V2_BIT_OFFSET],
+                "reserved[7] must declare BEP 52 (0x10)");
             assertTrue(Handshake.supportsExtensions(wire), "our own handshake must declare BEP 10");
             assertTrue(Handshake.supportsFastExtension(wire), "our own handshake must declare BEP 6");
+            assertTrue(Handshake.supportsV2(wire), "our own handshake must declare BEP 52");
             assertEquals(infoHash[0], wire[28]);
             assertEquals('-', wire[48]);
             assertEquals('J', wire[49]);
@@ -206,10 +212,10 @@ class PeerWireCodecTest {
 
         @Test
         void unknownIdsAreToleratedNotFatal() {
-            // 真实客户端会发未实现的 ID（BEP5 PORT=9、未知名=21/250）：
-            // 容忍解码为 UnsupportedMessage，由引擎忽略——绝不断连
-            assertEquals(new UnsupportedMessage(21),
-                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 21, 1, 2, 3, 4, 5)));
+            // 真实客户端会发未实现的 ID（BEP5 PORT=9、未知名=61/250）：
+            // 容忍解码为 UnsupportedMessage，由引擎忽略——绝不断连（21-23 已是 BEP 52）
+            assertEquals(new UnsupportedMessage(61),
+                PeerWireCodec.decodeFrame(frame(0, 0, 0, 5, 61, 1, 2, 3, 4, 5)));
             assertEquals(new UnsupportedMessage(9),
                 PeerWireCodec.decodeFrame(frame(0, 0, 0, 3, 9, 0x1F, (byte) 0x90)));
             assertEquals(new UnsupportedMessage(250),
@@ -246,6 +252,71 @@ class PeerWireCodecTest {
             // 只有 id 无 sub-id 的 id-20 帧是协议违规，解码必须报错而非产脏值
             assertThrows(PeerWireException.class,
                 () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 1, 20)));
+        }
+
+        @Test
+        void bep52HashRequestEncodesExactWireLayout() {
+            // 载荷 = root(32B) + base/index/length/proof 各 int32 大端 = 48B（libtorrent 同形）
+            byte[] root = new byte[32];
+            root[31] = 0x2A;
+            byte[] wire = PeerWireCodec.encode(new HashRequest(root, 1, 512, 512, 9));
+            assertEquals(4 + 1 + 48, wire.length);
+            assertEquals(49, Byte.toUnsignedInt(wire[3]), "长度前缀 = id(1) + 载荷(48) = 49");
+            assertEquals(0, wire[0]);
+            assertEquals(0, wire[1]);
+            assertEquals(0, wire[2]);
+            assertEquals(21, wire[4]);
+            assertEquals(0x2A, wire[36], "root 末字节落在 wire[36]（载荷自 wire[5] 起）");
+            assertEquals(0, wire[37]); // base = 1 → 00 00 00 01
+            assertEquals(0, wire[38]);
+            assertEquals(0, wire[39]);
+            assertEquals(1, wire[40]);
+            assertEquals(0, wire[41]); // index = 512 → 00 00 02 00
+            assertEquals(0, wire[42]);
+            assertEquals(2, wire[43]);
+            assertEquals(0, wire[44]);
+            assertEquals(0, wire[45]); // length = 512 → 00 00 02 00
+            assertEquals(0, wire[46]);
+            assertEquals(2, wire[47]);
+            assertEquals(0, wire[48]);
+            assertEquals(0, wire[49]); // proofLayers = 9 → 00 00 00 09
+            assertEquals(0, wire[50]);
+            assertEquals(0, wire[51]);
+            assertEquals(9, wire[52]);
+            assertEquals(new HashRequest(root, 1, 512, 512, 9),
+                PeerWireCodec.decodeFrame(ByteBuffer.wrap(wire)));
+        }
+
+        @Test
+        void bep52HashRejectRoundTrips() {
+            byte[] root = new byte[32];
+            root[0] = 7;
+            HashReject reject = new HashReject(root, 3, 0, 8, 2);
+            assertEquals(reject, PeerWireCodec.decodeFrame(ByteBuffer.wrap(PeerWireCodec.encode(reject))));
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 4, 23, 1, 2, 3)),
+                "载荷不足 48B 必须报错");
+        }
+
+        @Test
+        void bep52HashesDerivesProofCountFromPayloadLength() {
+            byte[] root = new byte[32];
+            List<byte[]> hashes = new ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                byte[] hash = new byte[32];
+                Arrays.fill(hash, (byte) i);
+                hashes.add(hash);
+            }
+            List<byte[]> proof = List.of(new byte[32], new byte[32]);
+            Hashes message = new Hashes(root, 2, 4, 4, 3, hashes, proof);
+            Hashes decoded = (Hashes) PeerWireCodec.decodeFrame(
+                ByteBuffer.wrap(PeerWireCodec.encode(message)));
+            assertEquals(message, decoded);
+            assertEquals(4, decoded.hashes().size());
+            assertEquals(2, decoded.proof().size(), "证明个数由载荷长度反推");
+            assertThrows(PeerWireException.class,
+                () -> PeerWireCodec.decodeFrame(frame(0, 0, 0, 53, 22, 0, 0, 0, 0)),
+                "载荷非 32B 整倍数必须报错");
         }
 
         @Test

@@ -74,7 +74,14 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
   `url-list` 自动启用、按件 Range 拉取、源级退避熔断、与 Peer 通道在途互斥；
   多文件 WebSeed（BEP 53 草案）未实现
 - BEP 52 v2 / 混合种子（Merkle 树 + SHA-256）——**已实现（0.6.0）**：v2-only/hybrid
-  解析下载 + SHA-256 Merkle 逐件校验 + btmh 磁力解析；v2 磁力完整闭环顺延 0.7+
+  解析下载 + SHA-256 Merkle 逐件校验 + btmh 磁力解析
+- BEP 52 哈希交换（hash request/hashes/hash reject，ID 21-23）——**已实现（0.7.0）**：
+  v2-only 磁力完整闭环（两段式元数据 + 层带按证明拉取装配）、hybrid 磁力闭环、
+  做种侧层带对等服务；同批修正 Merkle 填充约定至 libtorrent 逐层 pad 链（互操作）
+- 选择性下载（文件级取舍）——**已实现（0.7.0）**：`DownloadOptions.fileFilter`
+  （FileFilter：paths/extensions/谓词），必需件投影驱动选件/完成/进度换算，
+  跨界件整件下载；API 面在 1.0 冻结前落定。顺序下载/优先级分层（qB 式 0-7 档）
+  为后续增量，投影机制可直接复用
 
 ## 明确不实现
 

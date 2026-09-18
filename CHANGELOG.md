@@ -2,6 +2,34 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
+## 0.7.0（未发布）
+
+### 新增
+
+- **选择性下载（多文件种子的文件级取舍）**：`DownloadOptions.fileFilter(FileFilter)`
+  ——只要部分文件时，其余文件不请求不校验，进度/ETA/tracker 剩余量/结果字节数全部按
+  必需件换算；`FileFilter.paths(...)` 精确路径 / `FileFilter.extensions(...)` 扩展名 /
+  任意 lambda 谓词三种表达。磁力路径同样适用（元数据就绪后求值）。跨界件整件下载
+  （v1 拼接流粒度所限，与主流客户端一致）；换过滤器重启安全；纯做种忽略过滤器。
+  该 API 在 1.0 冻结前落定。
+- **磁力链接的 v2 闭环（BEP 52 哈希交换 + hybrid 磁力）**：
+  - **v2-only 磁力（`urn:btmh`）完整下载**：元数据两段式——BEP 9 拉回 info 字典
+    （pieces root 齐备但无层带）后，新增第二段经 BEP 52 hash request/hashes
+    （消息 ID 21-23）向 Peer 按 512 对齐块拉取 piece layers，每块附带到
+    pieces root 的 Merkle 证明、验证通过才装配，整带收齐再折叠终检；之后走与
+    .torrent 完全相同的 v2 下载校验路径
+  - **hybrid 磁力（v1 btih）完整下载**：磁力路径拉回的 hybrid 元数据（info 字典
+    内含 v1 pieces）直接走 v1 面校验，无需层带
+  - **做种侧对等服务 hash request**：从自有层带供出哈希与证明（越尾段以零链
+    填充常数补齐）；形状不合法/不可服务回 hash reject
+  - 握手新增 BEP 52 协议位声明（reserved[7] & 0x10，与 libtorrent 一致），
+    哈希交换仅对双方都声明的连接使用
+- **修正 Merkle 填充约定（互操作）**：非 2 的幂哈希树折叠改用与 libtorrent 相同的
+  逐层 pad 链（pad₀ = 零哈希，padₖ = SHA-256(padₖ₋₁‖padₖ₋₁)）——piece 层折叠以
+  pad[log2(每件块数)] 起补。旧约定（逐层固定补零）在 piece length > 16KiB 且件数
+  非 2 的幂时会产生 libtorrent 不认的 pieces root；16KiB piece 下两约定等价
+  （既有行为不变）
+
 ## 0.6.0（2026-09-17）
 
 ### 新增

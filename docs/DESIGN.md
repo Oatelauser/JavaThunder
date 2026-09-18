@@ -384,10 +384,32 @@ handshake`（消息 ID 20，子 ID 0）：`m` 字典声明各扩展的消息子 
 周期重试至超时），DHT（`PeerDiscoverySource` 注入）与 tracker 候选统一过滤自连回声；
 扩展握手后按对端 `m` 子 ID + `metadata_size`
 分块请求；data 应答为 bencoded 头 + 原始字节，头部边界由解码器消费量决定（严格 decode 会
-因 trailing data 误拒）。SHA-1 不符丢弃换 Peer，60s 总超时。`MagnetDownloadTask` 两段式：
+因 trailing data 误拒）。哈希校验按磁力形态：btih 比 SHA-1、btmh 比截断 SHA-256（BEP 52），
+不符丢弃换 Peer，60s 总超时。`MagnetDownloadTask` 两段式：
 元数据期映射 QUEUED/空快照，就绪后经事件线程切换到普通会话（槽位只占元数据阶段，避免与
 会话槽双持有死锁）。Peer 发现为 tracker + DHT（`builder().peerDiscovery(...)` 注入，
 private 种子除外）。
+
+v2-only 磁力的第二段（0.7.0）：info 字典不含 piece layers（.torrent 顶层字段，BEP 9
+拿不到），`PieceLayerFetcher` 以 `MetadataFetcher` 同源骨架（announce 循环 + 连接循环）
+做哈希交换——按 512 对齐块发 hash request（base=pieceLayer、proofLayers=到根层数，
+libtorrent 同形请求），`Hashes` 应答经 `MerkleProofs.verifyChunk`（区间折叠 + uncle 链
+对 pieces root 验证）通过才装配，整带收齐再折叠终检；hash reject/验证失败换 Peer。
+线格式（libtorrent 参考实现证实）：48 字节头 = root(32B) + 4 个 int32 大端
+（base/index/count/proofLayers），证明个数 = proofLayers − log2(count) + 1，协商位
+reserved[7]&0x10。供种侧 `HashExchange` 从自有层带供出（越尾零链填充），引擎会话与
+testkit 种子方共用。Merkle 填充约定为 libtorrent 逐层 pad 链
+（pad₀=零哈希，padₖ=SHA-256(padₖ₋₁‖padₖ₋₁)），`MerkleHashes.rootOfLayer(list, 层高)`
+按输入层高度起补。
+
+选择性下载（0.7.0）：`FileFilter`（api，paths/extensions/谓词）在会话构造期经
+`WantedPieces` 投影成必需件位图 + 必需字节数——v1 拼接流按"件字节区间与文件区间
+重叠即必需"（跨界件整件），v2 对齐布局天然精确件集，单文件形态按根名一次判定，
+全排除构造期拒绝。投影是唯一事实源：Peer 选件（hasMissingBlock 门控）、WebSeed
+选件（wantedPiece 门控）、完成判定（completeAgainst，resume 残留位不干扰）、
+fraction/ETA/announce left 分母、`DownloadResult.bytes()` 全部读它；纯做种
+（seedOnly）恒全量。跨界件携带的非必需字节随件写入（稀疏占位物化被过滤文件），
+与主流客户端同粒度。
 
 ### 6.3 DHT（BEP 5，Kademlia）
 

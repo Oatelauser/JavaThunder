@@ -26,6 +26,9 @@ import io.github.oatelauser.thunder.core.internal.wire.BitfieldMessage;
 import io.github.oatelauser.thunder.core.internal.wire.Cancel;
 import io.github.oatelauser.thunder.core.internal.wire.Choke;
 import io.github.oatelauser.thunder.core.internal.wire.ExtendedMessage;
+import io.github.oatelauser.thunder.core.internal.wire.HashReject;
+import io.github.oatelauser.thunder.core.internal.wire.HashRequest;
+import io.github.oatelauser.thunder.core.internal.wire.Hashes;
 import io.github.oatelauser.thunder.core.internal.wire.Have;
 import io.github.oatelauser.thunder.core.internal.wire.HaveAll;
 import io.github.oatelauser.thunder.core.internal.wire.HaveNone;
@@ -110,6 +113,8 @@ public final class DownloadSession {
     private final ExecutorService blockWorkers = Executors.newVirtualThreadPerTaskExecutor();
 
     private final Bitfield local;
+    /** 选择性下载投影：必需件位图 + 进度/完成分母（无过滤器 = 全量，行为不变）。 */
+    private final WantedPieces wanted;
     private final CompletableFuture<DownloadResult> future = new CompletableFuture<>();
     private final TaskEventDispatcher dispatcher;
     private final SessionStats stats;
@@ -164,6 +169,9 @@ public final class DownloadSession {
                 : new StorageManager(meta, options.targetDir(), seedOnly);
         this.resumeFile = storage.partFile().resolveSibling(meta.name() + ".jt-resume");
         this.local = new Bitfield(meta.pieceCount());
+        // 选择性下载投影（seedOnly 恒全量：做种必须完整持有；过滤器只作用于下载）
+        this.wanted = new WantedPieces(meta,
+                seedOnly ? path -> true : options.fileFilter());
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length());
         this.choking = new ChokingManager(random);
         this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
@@ -178,7 +186,7 @@ public final class DownloadSession {
         this.gateway = new TrackerGateway(trackerClient, config.udpTracker());
         this.announcer = new TrackerAnnouncer(meta.infoHash(), peerId, config.listenPort(),
                 meta.trackerTiers(), gateway, dispatcher,
-                () -> Math.max(0, meta.length() - localCardinality() * meta.pieceLength()),
+                () -> Math.max(0, wanted.wantedBytes() - localCardinality() * meta.pieceLength()),
                 this::offerCandidate, stats::uploaded, stats::downloaded);
         this.pex = new PexManager(meta, config.maxPeers());
         this.webSeed = meta.webSeeds().isEmpty()
@@ -597,6 +605,11 @@ public final class DownloadSession {
                 // BEP 6：choke 豁免清单不使用——我们不向被 choke 的对端请求
             }
             case ExtendedMessage e -> handleExtendedMessage(session, e);
+            case HashRequest r -> session.channel.write(HashExchange.respond(meta, r));
+            case Hashes h -> { // 下载会话不发哈希请求（PieceLayerFetcher 负责）：迟到应答忽略
+            }
+            case HashReject h -> {
+            }
             case UnsupportedMessage u -> {
             }
             case Cancel c -> {
@@ -670,6 +683,9 @@ public final class DownloadSession {
     }
 
     private boolean hasMissingBlock(int piece) {
+        if (!wanted.requiredPiece(piece)) {
+            return false; // 选择性下载：不想要的件永远"无缺失块"，选件器跳过
+        }
         PieceAssembler assembler = assemblers.get(piece);
         if (assembler == null) {
             return true;
@@ -856,7 +872,7 @@ public final class DownloadSession {
         }
         setState(seed ? TaskState.SEEDING : TaskState.COMPLETED);
         Path file = seed ? storage.partFile() : storage.finalFile();
-        future.complete(new DownloadResult(meta.name(), file, meta.length(),
+        future.complete(new DownloadResult(meta.name(), file, wanted.wantedBytes(),
                 Duration.ofMillis(System.currentTimeMillis() - startedAtMillis)));
         if (!seed) {
             running.set(false);
@@ -966,10 +982,12 @@ public final class DownloadSession {
 
     public ProgressSnapshot snapshot() {
         // 字节级进度（已校验件 + 在途已收块）：块一到进度就动，不等整片校验——
-        // 大件种子按"完成片数"计会在首片完成前长时间显示 0%，观测上不可接受
-        double fraction = meta.length() == 0 ? 1.0
-                : Math.min(1.0, (double) downloadedRemainingBasis() / meta.length());
-        long remaining = Math.max(0, meta.length() - downloadedRemainingBasis());
+        // 大件种子按"完成片数"计会在首片完成前长时间显示 0%，观测上不可接受。
+        // 分母按选择性下载的必需字节（无过滤器时等于总长，行为不变）
+        long basis = wanted.wantedBytes();
+        double fraction = basis == 0 ? 1.0
+                : Math.min(1.0, (double) downloadedRemainingBasis() / basis);
+        long remaining = Math.max(0, basis - downloadedRemainingBasis());
         Long eta = stats.downloadRate() > 0 && remaining > 0
                 ? remaining * 1000 / stats.downloadRate() : null;
         return new ProgressSnapshot(fraction, stats.downloaded(), stats.uploaded(),
@@ -977,7 +995,8 @@ public final class DownloadSession {
     }
 
     /**
-     * 已完成字节数（ETA 基数）：已落件 + 在途组装块，末件按实际长度截断。
+     * 已完成字节数（ETA 基数）：已落件 + 在途组装块，末件按实际长度截断
+     * （上限钳到必需字节——resume 残留的非必需件不计入进度）。
      */
     private long downloadedRemainingBasis() {
         long verifiedBytes = 0;
@@ -993,7 +1012,7 @@ public final class DownloadSession {
         for (PieceAssembler assembler : assemblers.values()) {
             inFlightBytes += (long) assembler.received.size() * PieceScheduler.BLOCK_SIZE;
         }
-        return Math.min(verifiedBytes + inFlightBytes, meta.length());
+        return Math.min(verifiedBytes + inFlightBytes, wanted.wantedBytes());
     }
 
     public void addListener(TaskListener listener) {
@@ -1123,9 +1142,15 @@ public final class DownloadSession {
     }
 
     private boolean localAllSet() {
+        // 完成语义按必需件集（选择性下载）；resume 里残留的非必需位不干扰判定
         synchronized (local) {
-            return local.allSet();
+            return wanted.completeAgainst(local);
         }
+    }
+
+    /** 选择性下载门控（WebSeed 通道与 Peer 通道共用语义，见 WantedPieces）。 */
+    boolean wantedPiece(int piece) {
+        return wanted.requiredPiece(piece);
     }
 
     private byte[] localBytes() {

@@ -283,7 +283,7 @@ DownloadTask task = client.download(magnet,
     DownloadOptions.defaults().targetDir(Path.of("downloads")));
 ```
 
-机制（自动完成，无需干预）：连 Peer → 协商扩展协议（BEP 10）→ 从 Peer 拉取种子元数据（BEP 9）→ **SHA-1 与磁力里的哈希比对，不符换源** → 转入正常下载。元数据阶段 `state()==QUEUED`、进度 0，属正常。
+机制（自动完成，无需干预）：连 Peer → 协商扩展协议（BEP 10）→ 从 Peer 拉取种子元数据（BEP 9）→ **哈希与磁力比对（btih 比 SHA-1、btmh 比截断 SHA-256），不符换源** → 转入正常下载（v2 磁力在此之后多一段层带获取，见 §4.8）。元数据阶段 `state()==QUEUED`、进度 0，属正常。
 
 元数据获取的容错（同样自动）：tracker announce 按周期重试——单轮全部失败时指数退避（间隔 ×2 逐轮放大、任一 tracker 成功即复位），60 秒总窗口内持续补充 Peer；注入了 `peerDiscovery`（§4.2.3）时 DHT 与 tracker 同时供源、互为备份。窗口内仍拿不到元数据则任务转 FAILED，异常信息含已连接/待试 Peer 数便于定位。
 
@@ -435,7 +435,23 @@ DownloadTask task = client.download(seed.torrentFile(), options);   // HTTP 通�
 | v1（传统） | ✓ | ✓ | SHA-1 逐件 | 既有行为零变化 |
 | v2-only | ✓ | ✓ | SHA-256 Merkle | file tree + piece layers |
 | hybrid（混合） | ✓ | ✓ | v1 面（SHA-1）优先 | 双 info-hash 并存，v2 副哈希保留 |
-| v2 磁力（btmh） | 解析 ✓ | .torrent 路径完成 | — | DHT 定位用截断哈希；磁力闭环待 v2 Swarm 接入（0.7+） |
+| v2 磁力（btmh） | ✓ | ✓ | SHA-256 Merkle | 两段式元数据（见下）；定位用截断哈希 |
+
+**v2 磁力怎么闭上环（自动，无需配置）**：磁力（`urn:btmh:1220<64hex>`）的元数据
+获取分两段——第一段 BEP 9 只能带回 info 字典（含 file tree 与每文件 pieces root，
+但 `piece layers` 是 .torrent 顶层字段、不在 info 内）；第二段引擎用 BEP 52 的
+hash request/hashes 线消息向 Peer 按 512 对齐块拉取层带，**每块携带到 pieces root
+的 Merkle 证明、验证通过才装配**，整带收齐后再折叠终检一次。层带齐备后进入与
+.torrent 完全相同的 v2 下载路径。做种侧同时实现了对等方向：收到 hash request 时
+从自己的层带供出哈希与证明（块层请求拒绝——本引擎按整件校验、不存块哈希）。
+
+```java
+// v2 磁力与 v1 磁力同一入口，零差异：
+MagnetUri magnet = MagnetUri.parse(
+    "magnet:?xt=urn:btmh:1220<64位hex>&tr=http://tk/announce");
+DownloadTask task = client.download(magnet,
+    DownloadOptions.defaults().targetDir(Path.of("out")));
+```
 
 **为什么 v2 重要**：SHA-1 已被碰撞攻破（2017），主流客户端 2020 年起默认产出 v2/混合种子——不做 v2，能下载的内容面只会越来越窄。
 
@@ -445,6 +461,37 @@ DownloadTask task = client.download(seed.torrentFile(), options);   // HTTP 通�
 - 实文件按 piece 边界对齐（BEP 47 填充文件占位但不落盘）
 - 逐件 Merkle 校验（16KiB 块 → SHA-256 叶子 → 折叠到层带条目比对）
 - 损坏件被拒绝、重下、源拉黑（与 v1 行为一致）；篡改层带在解析期即拒绝
+
+### 4.9 选择性下载（多文件种子只取部分文件）
+
+**依赖**：仅 core。给 `DownloadOptions` 挂一个 `FileFilter` 谓词即可——返回 true 的文件参与下载与完成判定，其余文件不请求、不校验；进度百分比、ETA、tracker 上报的剩余量与 `DownloadResult.bytes()` 全部按"必需字节"换算。磁力路径同样适用（过滤器在元数据就绪后按文件路径求值）。
+
+```java
+// 只要 readme 和封面图（路径为种子内相对路径，不含根目录名）：
+DownloadOptions options = DownloadOptions.defaults()
+    .targetDir(Path.of("out"))
+    .fileFilter(FileFilter.paths("readme.txt", "img/cover.png"));
+
+// 或按扩展名（大小写不敏感）：
+DownloadOptions isoOnly = DownloadOptions.defaults()
+    .fileFilter(FileFilter.extensions("iso", "zip"));
+
+// 或任意谓词（函数式接口，直接 lambda）：
+DownloadOptions smallDocs = DownloadOptions.defaults()
+    .fileFilter(path -> path.size() == 1 && path.get(0).endsWith(".txt"));
+```
+
+行为边界（自动处理，无需干预）：
+
+- **跨界件整件下载**：v1 多文件的 Piece 覆盖拼接流，一件可能同时压住想要与不想要的
+  文件——这类件仍整件下载（含少量多余字节），与 qBittorrent 等主流客户端一致；
+  完全落在不想要文件上的件绝不请求
+- **被过滤文件以稀疏占位物化**：目录形状保持完整（跨界件携带的字节会写入对应文件）
+- **完成即全部必需件校验通过**：resume 里残留的非必需件位不干扰完成判定；换过滤器
+  重启同一任务安全（缺失的必需件自动补下）
+- 过滤器排除一切文件会在任务启动期即失败（ IllegalArgumentException，早失败早改）
+- 纯做种（`client.seed(...)`）忽略过滤器——做种必须完整持有
+- `seedAfterComplete(true)` + 过滤器：完成后按实际持有的部分集合继续供种
 
 ---
 

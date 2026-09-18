@@ -37,6 +37,14 @@ public interface PeerChannel extends AutoCloseable {
     }
 
     /**
+     * 对端握手保留位是否声明支持 BEP 52 v2 协议（reserved[7]&0x10，未握手完成前
+     * false；hash request/hashes/hash reject 只对双方都声明的连接使用）。
+     */
+    default boolean remoteSupportsV2() {
+        return false;
+    }
+
+    /**
      * 发送一条消息（可能排队，由实现决定何时刷出）。
      */
     void write(PeerWireMessage message);

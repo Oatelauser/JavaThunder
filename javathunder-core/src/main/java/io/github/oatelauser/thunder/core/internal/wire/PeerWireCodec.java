@@ -1,6 +1,8 @@
 package io.github.oatelauser.thunder.core.internal.wire;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 线协议帧编解码（BEP 3）：4 字节大端长度前缀 + 1 字节消息 ID + 载荷。
@@ -12,6 +14,9 @@ public final class PeerWireCodec {
 
     public static final int MAX_FRAME_BYTES = 128 * 1024;
     private static final int LENGTH_PREFIX = 4;
+    /** BEP 52 哈希交换消息的 48 字节公共头：pieces root(32B) + 4 个 int32 大端。 */
+    private static final int HASH_HEADER_BYTES = 32 + 4 * 4;
+    private static final int HASH_WIDTH = 32;
 
     private PeerWireCodec() {
     }
@@ -39,6 +44,22 @@ public final class PeerWireCodec {
             case AllowedFast a -> frame(17, 4, buf -> buf.putInt(a.pieceIndex()));
             case ExtendedMessage e -> frame(20, 1 + e.payload().length, buf ->
                     buf.put((byte) e.extendedId()).put(e.payload()));
+            case HashRequest h -> frame(21, HASH_HEADER_BYTES, buf -> writeHashHeader(buf,
+                    h.piecesRoot(), h.baseLayer(), h.index(), h.length(), h.proofLayers()));
+            case Hashes h -> frame(22, HASH_HEADER_BYTES
+                            + (h.hashes().size() + h.proof().size()) * HASH_WIDTH,
+                    buf -> {
+                        writeHashHeader(buf, h.piecesRoot(), h.baseLayer(), h.index(),
+                                h.length(), h.proofLayers());
+                        for (byte[] hash : h.hashes()) {
+                            buf.put(hash);
+                        }
+                        for (byte[] hash : h.proof()) {
+                            buf.put(hash);
+                        }
+                    });
+            case HashReject h -> frame(23, HASH_HEADER_BYTES, buf -> writeHashHeader(buf,
+                    h.piecesRoot(), h.baseLayer(), h.index(), h.length(), h.proofLayers()));
             case UnsupportedMessage u -> throw new PeerWireException(
                     "cannot encode unsupported message id " + u.id());
         };
@@ -100,6 +121,15 @@ public final class PeerWireCodec {
                 yield new AllowedFast(buf.getInt());
             }
             case 20 -> decodeExtended(payloadLength, buf);
+            case 21 -> {
+                requireExact(payloadLength, HASH_HEADER_BYTES, "hash request");
+                yield readHashHeader(buf, HashRequest::new);
+            }
+            case 22 -> decodeHashes(payloadLength, buf);
+            case 23 -> {
+                requireExact(payloadLength, HASH_HEADER_BYTES, "hash reject");
+                yield readHashHeader(buf, HashReject::new);
+            }
             default -> {
                 byte[] payload = new byte[payloadLength];
                 buf.get(payload); // 未实现的 ID：吞掉载荷，容忍解码
@@ -148,6 +178,55 @@ public final class PeerWireCodec {
         byte[] payload = new byte[payloadLength - 1]; // 其后是 bencoded 字典
         buf.get(payload);
         return new ExtendedMessage(extendedId, payload);
+    }
+
+    /**
+     * hashes（BEP 52）：48 字节头 + length 个层哈希 + 若干证明哈希。证明个数由
+     * 载荷长度反推（合法应答恒等于 proofLayers - log2(length) + 1，上层再校验）。
+     */
+    private static PeerWireMessage decodeHashes(int payloadLength, ByteBuffer buf) {
+        requireAtLeast(payloadLength, HASH_HEADER_BYTES, "hashes");
+        HashRequest header = readHashHeader(buf, HashRequest::new);
+        int hashCount = header.length();
+        if (hashCount <= 0 || (payloadLength - HASH_HEADER_BYTES) % HASH_WIDTH != 0) {
+            throw new PeerWireException("hashes payload not a multiple of 32 bytes");
+        }
+        int totalHashes = (payloadLength - HASH_HEADER_BYTES) / HASH_WIDTH;
+        if (totalHashes - hashCount < 0) {
+            throw new PeerWireException("hashes declares " + hashCount
+                    + " layer hashes but payload only fits " + totalHashes);
+        }
+        List<byte[]> hashes = new ArrayList<>(hashCount);
+        for (int i = 0; i < hashCount; i++) {
+            hashes.add(readHash(buf));
+        }
+        List<byte[]> proof = new ArrayList<>(totalHashes - hashCount);
+        for (int i = hashCount; i < totalHashes; i++) {
+            proof.add(readHash(buf));
+        }
+        return new Hashes(header.piecesRoot(), header.baseLayer(), header.index(),
+                header.length(), header.proofLayers(), hashes, proof);
+    }
+
+    private static byte[] readHash(ByteBuffer buf) {
+        byte[] hash = new byte[HASH_WIDTH];
+        buf.get(hash);
+        return hash;
+    }
+
+    /** 读 48 字节 BEP 52 公共头，交给构造器组装（request/reject 同形）。 */
+    private static <T> T readHashHeader(ByteBuffer buf, HashHeaderCtor<T> ctor) {
+        byte[] root = readHash(buf);
+        return ctor.create(root, buf.getInt(), buf.getInt(), buf.getInt(), buf.getInt());
+    }
+
+    private static void writeHashHeader(ByteBuffer buf, byte[] root,
+            int baseLayer, int index, int length, int proofLayers) {
+        buf.put(root).putInt(baseLayer).putInt(index).putInt(length).putInt(proofLayers);
+    }
+
+    private interface HashHeaderCtor<T> {
+        T create(byte[] root, int baseLayer, int index, int length, int proofLayers);
     }
 
     private static byte[] single(int id) {

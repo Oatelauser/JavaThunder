@@ -39,6 +39,10 @@ public final class PeerConnection implements AutoCloseable {
      * 对端握手保留位是否声明 BEP 6 快速扩展。
      */
     private volatile boolean remoteSupportsFast;
+    /**
+     * 对端握手保留位是否声明 BEP 52 v2 协议（reserved[7]&0x10）。
+     */
+    private volatile boolean remoteSupportsV2;
 
     private PeerConnection(Socket socket, byte[] remotePeerId) throws IOException {
         this.socket = socket;
@@ -70,6 +74,7 @@ public final class PeerConnection implements AutoCloseable {
             PeerConnection connection = new PeerConnection(socket, handshake.peerId());
             connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
             connection.remoteSupportsFast = Handshake.supportsFastExtension(remoteWire);
+            connection.remoteSupportsV2 = Handshake.supportsV2(remoteWire);
             return connection;
         } catch (IOException e) {
             try {
@@ -92,6 +97,7 @@ public final class PeerConnection implements AutoCloseable {
             PeerConnection connection = acceptWithHandshake(socket, handshake, infoHash, peerId);
             connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
             connection.remoteSupportsFast = Handshake.supportsFastExtension(remoteWire);
+            connection.remoteSupportsV2 = Handshake.supportsV2(remoteWire);
             return connection;
         } catch (IOException e) {
             try {
@@ -127,18 +133,21 @@ public final class PeerConnection implements AutoCloseable {
      * 用已完成握手的 socket 包装连接（入站路由路径用）。
      */
     public static PeerConnection established(Socket socket, byte[] remotePeerId) throws IOException {
-        return established(socket, remotePeerId, false, false);
+        return established(socket, remotePeerId, false, false, false);
     }
 
     /**
-     * 同上，但携带对端握手的保留位声明（调用方已读过对端握手线格式；BEP 10 与 BEP 6）。
+     * 同上，但携带对端握手的保留位声明（调用方已读过对端握手线格式；BEP 10、BEP 6
+     * 与 BEP 52）。
      */
     public static PeerConnection established(Socket socket, byte[] remotePeerId,
-            boolean remoteSupportsExtensions, boolean remoteSupportsFast) throws IOException {
+            boolean remoteSupportsExtensions, boolean remoteSupportsFast,
+            boolean remoteSupportsV2) throws IOException {
         socket.setSoTimeout(READ_TIMEOUT_MILLIS);
         PeerConnection connection = new PeerConnection(socket, remotePeerId);
         connection.remoteSupportsExtensions = remoteSupportsExtensions;
         connection.remoteSupportsFast = remoteSupportsFast;
+        connection.remoteSupportsV2 = remoteSupportsV2;
         return connection;
     }
 
@@ -182,6 +191,13 @@ public final class PeerConnection implements AutoCloseable {
      */
     public boolean remoteSupportsFast() {
         return remoteSupportsFast;
+    }
+
+    /**
+     * 对端握手保留位是否声明支持 BEP 52 v2 协议（哈希交换）。
+     */
+    public boolean remoteSupportsV2() {
+        return remoteSupportsV2;
     }
 
     public InetSocketAddress remoteAddress() {

@@ -307,19 +307,36 @@ public final class MetadataFetcher {
         }
     }
 
+    /**
+     * 整体交付前校验 info 字典哈希：v1/hybrid 磁力对 SHA-1；v2-only 磁力（btmh）的
+     * 20 字节身份是截断 SHA-256（BEP 52，与线协议握手一致）——任一匹配即通过，
+     * 由 info 字典实际形态决定哪一个成立。
+     */
     private void completeWith(byte[] metadata, int size) {
         byte[] info = Arrays.copyOf(metadata, size);
+        if (matchesV1(info) || matchesV2(info)) {
+            result.complete(info);
+            closeAll();
+        } else {
+            log.debug("metadata hash mismatch from peer, discarding");
+            // 换下一个 Peer 重来：关闭当前会话，连接循环仍在跑
+        }
+    }
+
+    private boolean matchesV1(byte[] info) {
         try {
-            byte[] hash = MessageDigest.getInstance("SHA-1").digest(info);
-            if (Arrays.equals(hash, infoHash)) {
-                result.complete(info);
-                closeAll();
-            } else {
-                log.debug("metadata hash mismatch from peer, discarding");
-                // 换下一个 Peer 重来：关闭当前会话，连接循环仍在跑
-            }
+            return Arrays.equals(MessageDigest.getInstance("SHA-1").digest(info), infoHash);
         } catch (NoSuchAlgorithmException e) {
-            result.completeExceptionally(e);
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private boolean matchesV2(byte[] info) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(info);
+            return Arrays.equals(Arrays.copyOf(digest, 20), infoHash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
         }
     }
 

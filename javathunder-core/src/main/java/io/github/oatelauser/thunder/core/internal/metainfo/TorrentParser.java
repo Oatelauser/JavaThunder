@@ -33,7 +33,7 @@ public final class TorrentParser {
             throw new IllegalArgumentException("torrent exceeds input limit: " + bytes.length);
         }
         Scanned scanned = scan(bytes);
-        return build(scanned);
+        return build(scanned, /*lazyLayers=*/ false);
     }
 
     /**
@@ -160,6 +160,9 @@ public final class TorrentParser {
 
     /**
      * 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。
+     * 层带宽容：磁力只拿得到 info 字典（BEP 9），piece layers 是 .torrent 顶层字段——
+     * 缺失时 v2-only 元数据以 pieceLayer=null 构造，由哈希交换阶段补齐（PieceLayerFetcher）；
+     * hybrid 走 v1 面校验本就不需要层带。
      */
     public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoHash, List<String> trackers) {
         List<List<String>> tiers = trackers.isEmpty()
@@ -170,20 +173,20 @@ public final class TorrentParser {
                 tiers,
                 null, null, null, info, new byte[0], List.of(), null);
         // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
-        return buildWithHash(scanned, infoHash);
+        return buildWithHash(scanned, infoHash, /*lazyLayers=*/ true);
     }
 
-    private static TorrentMetadata buildWithHash(Scanned s, byte[] infoHash) {
-        TorrentMetadata meta = build(s);
+    private static TorrentMetadata buildWithHash(Scanned s, byte[] infoHash, boolean lazyLayers) {
+        TorrentMetadata meta = build(s, lazyLayers);
         return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
                 meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
                 meta.pieces(), meta.privateFlag(), meta.files(), meta.webSeeds(),
                 meta.version(), meta.infoHashV2());
     }
 
-    private static TorrentMetadata build(Scanned s) {
+    private static TorrentMetadata build(Scanned s, boolean lazyLayers) {
         if (s.info().value().containsKey(BString.of("file tree"))) {
-            return buildV2(s);
+            return buildV2(s, lazyLayers);
         }
         if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
             throw new IllegalArgumentException("no tracker and no url-list in torrent; "
@@ -238,7 +241,7 @@ public final class TorrentParser {
      * 与 v2 视图共享）；双 info-hash 对同一份原始 info 字节各算一次（SHA-1 / SHA-256），
      * 主哈希恒 20 字节（v2-only 取 SHA-256 截断前 20 字节，满足 DHT/线协议的 v1 宽度）。
      */
-    private static TorrentMetadata buildV2(Scanned s) {
+    private static TorrentMetadata buildV2(Scanned s, boolean lazyLayers) {
         if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
             throw new IllegalArgumentException("no tracker and no url-list in torrent; "
                     + "trackerless download requires DHT (inject via peerDiscovery)");
@@ -263,9 +266,9 @@ public final class TorrentParser {
         }
         List<TorrentMetadata.TorrentFile> files = assignOffsets(walked, pieceLength, s.pieceLayers());
         boolean hybrid = s.info().value().containsKey(BString.of("pieces"));
-        // 磁力路径（buildFromInfoDict）无 piece layers：hybrid 可走 v1 面校验（pieces 在
-        // info 字典内），层带校验跳过；v2-only 必须有层带（唯一校验来源）
-        if (s.pieceLayers() != null || !hybrid) {
+        // 层带校验：.torrent 必须完整（有则验折叠到 root）；磁力路径（lazyLayers）无层带
+        // 时跳过——hybrid 走 v1 面校验（pieces 在 info 字典内），v2-only 由哈希交换补齐
+        if (s.pieceLayers() != null || !hybrid && !lazyLayers) {
             validateLayers(files, pieceLength, s.pieceLayers());
         }
         long length = files.stream().mapToLong(TorrentMetadata.TorrentFile::length).sum();
@@ -372,7 +375,10 @@ public final class TorrentParser {
                 layer.add(Arrays.copyOfRange(stripBytes, i * MerkleHashes.HASH_WIDTH,
                         (i + 1) * MerkleHashes.HASH_WIDTH));
             }
-            if (!MessageDigest.isEqual(MerkleHashes.rootOfLayer(layer), file.piecesRoot())) {
+            // 折叠 piece 层：pad 起自 pad[log2(每件块数)]（libtorrent 同约定），非零起链
+            int pieceLayer = MerkleProofs.log2((int) (pieceLength / (16 * 1024)));
+            if (!MessageDigest.isEqual(
+                    MerkleHashes.rootOfLayer(layer, pieceLayer), file.piecesRoot())) {
                 throw new IllegalArgumentException("piece layer hashes do not fold to pieces root: "
                         + String.join("/", file.path()));
             }
