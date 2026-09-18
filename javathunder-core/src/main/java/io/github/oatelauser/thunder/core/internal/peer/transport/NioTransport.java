@@ -45,6 +45,10 @@ public final class NioTransport implements PeerTransport {
     private static final int SELECT_TICK_MILLIS = 1000;
     private static final int READ_BUFFER_INITIAL = 16 * 1024;
     private static final int WRITE_BATCH_MAX = 64;
+    /** BEP 3 握手定长 68 = 1(pstrlen) + 19(协议串) + 8(保留位) + 20(info-hash) + 20(peer-id)。 */
+    private static final int HANDSHAKE_WIRE_BYTES = 68;
+    /** 最小带载荷帧 request 的字节数（4 长度 + 1 ID + 12 载荷），作批量编码初始容量估计。 */
+    private static final int REQUEST_FRAME_BYTES = 17;
 
     private final byte[] peerId;
     private final Selector selector;
@@ -311,36 +315,45 @@ public final class NioTransport implements PeerTransport {
                 return;
             }
             readBuffer.flip();
-            if (phase == Phase.HANDSHAKE) {
-                if (readBuffer.remaining() < 68) {
-                    return;
-                }
-                byte[] wire = new byte[68];
-                readBuffer.get(wire);
-                Handshake handshake = Handshake.decode(wire);
-                boolean remoteExt = Handshake.supportsExtensions(wire);
-                boolean remoteFast = Handshake.supportsFastExtension(wire);
-                boolean remoteV2 = Handshake.supportsV2(wire);
-                if (pendingHandler != null) {
-                    // 出站：校验 info-hash，通道就绪
-                    if (!Arrays.equals(handshake.infoHash(), pendingInfoHash)) {
-                        closeWith(new IOException("peer answered with a different info-hash"));
-                        return;
-                    }
-                    established(handshake, pendingHandler, remoteExt, remoteFast, remoteV2);
-                } else {
-                    // 入站：先路由，再回握
-                    TransportHandler handler = inboundRouter.route(handshake.infoHash());
-                    if (handler == null) {
-                        closeWith(null);
-                        return;
-                    }
-                    writeQueue.add(ByteBuffer.wrap(Handshake.encode(handshake.infoHash(), peerId)));
-                    scheduleFlush();
-                    established(handshake, handler, remoteExt, remoteFast, remoteV2);
-                }
+            if (phase == Phase.HANDSHAKE && !tryCompleteHandshake()) {
+                return;
             }
             deliverFrames();
+        }
+
+        /**
+         * 消费对端握手（出站校验 info-hash；入站先路由再回握）。返回 false 表示数据未齐
+         * 或连接已被关闭，调用方应停止本批处理。
+         */
+        private boolean tryCompleteHandshake() {
+            if (readBuffer.remaining() < HANDSHAKE_WIRE_BYTES) {
+                return false;
+            }
+            byte[] wire = new byte[HANDSHAKE_WIRE_BYTES];
+            readBuffer.get(wire);
+            Handshake handshake = Handshake.decode(wire);
+            boolean remoteExt = Handshake.supportsExtensions(wire);
+            boolean remoteFast = Handshake.supportsFastExtension(wire);
+            boolean remoteV2 = Handshake.supportsV2(wire);
+            if (pendingHandler != null) {
+                // 出站：校验 info-hash，通道就绪
+                if (!Arrays.equals(handshake.infoHash(), pendingInfoHash)) {
+                    closeWith(new IOException("peer answered with a different info-hash"));
+                    return false;
+                }
+                established(handshake, pendingHandler, remoteExt, remoteFast, remoteV2);
+                return true;
+            }
+            // 入站：先路由，再回握
+            TransportHandler handler = inboundRouter.route(handshake.infoHash());
+            if (handler == null) {
+                closeWith(null);
+                return false;
+            }
+            writeQueue.add(ByteBuffer.wrap(Handshake.encode(handshake.infoHash(), peerId)));
+            scheduleFlush();
+            established(handshake, handler, remoteExt, remoteFast, remoteV2);
+            return true;
         }
 
         private void established(Handshake handshake, TransportHandler handler,
@@ -367,8 +380,16 @@ public final class NioTransport implements PeerTransport {
         private void deliverFrames() {
             List<PeerWireMessage> batch = new ArrayList<>();
             while (readBuffer.remaining() >= 4) {
-                int length = peekLength(readBuffer);
-                int frameSize = 4 + length;
+                // 无符号解读再比对帧上限：解码期才检查会先按对端声明扩容（恶意声明
+                // 500MB 即触发巨额堆分配），且 ≥0x80000000 的长度使 int 为负、绕过
+                // 剩余量判断后在 limit() 处抛误导性 IAE——阻塞路径 PeerConnection 是
+                // 读前检查的，此处对齐
+                long declared = Integer.toUnsignedLong(peekLength(readBuffer));
+                if (declared > PeerWireCodec.MAX_FRAME_BYTES) {
+                    closeWith(new IOException("frame of " + declared + " bytes exceeds limit"));
+                    return;
+                }
+                int frameSize = 4 + (int) declared;
                 if (frameSize > readBuffer.capacity()) {
                     growReadBuffer(frameSize);
                 }
@@ -406,7 +427,8 @@ public final class NioTransport implements PeerTransport {
             if (closed || messages.isEmpty()) {
                 return;
             }
-            int capacity = messages.size() * 17; // request/keepalive 级小帧的保守上界
+            // 初始容量按最小帧 request 估计：批内含 piece 等大帧时会自动扩容
+            int capacity = messages.size() * REQUEST_FRAME_BYTES;
             ByteArrayOutputStream encoded = new ByteArrayOutputStream(capacity);
             for (PeerWireMessage message : messages) {
                 encoded.writeBytes(PeerWireCodec.encode(message));
@@ -510,6 +532,7 @@ public final class NioTransport implements PeerTransport {
 
         @Override
         public byte[] remotePeerId() {
+            // 握手未完成时无值：返回 BEP 3 定长的全零占位，避免调用方判空
             return remotePeerIdValue == null ? new byte[20] : remotePeerIdValue.clone();
         }
 

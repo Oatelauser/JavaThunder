@@ -2,10 +2,8 @@ package io.github.oatelauser.thunder.core.internal.engine;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,7 +19,6 @@ public final class ChokingManager {
     private static final int RECIPROCATION_SLOTS = 4;
 
     private final Random random;
-    private Object optimisticPeer;
     private final ConcurrentMap<Object, Long> sentToPeer = new ConcurrentHashMap<>();
     /**
      * 速率记账走并发容器（C5-2）：每块一次的 record* 不再进监视器。
@@ -48,25 +45,8 @@ public final class ChokingManager {
         receivedFromPeer.keySet().retainAll(connected);
         sentToPeer.keySet().retainAll(connected);
 
-        Map<Object, Long> rates = new HashMap<>();
-        receivedFromPeer.forEach((peer, bytes) -> rates.merge(peer, bytes, Long::sum));
-        // 做种互惠：把上传量也纳入排序依据（下载数据的一方同时记录两个方向）
-        Set<Object> unchoked = new HashSet<>();
-        List<Object> ranked = new ArrayList<>();
-        for (Object peer : interestedInUs) {
-            long rate = receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L);
-            if (rate > 0) {
-                ranked.add(peer);
-            }
-        }
-        ranked.sort(Comparator.comparingLong((Object peer) ->
-                receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
-        for (Object peer : ranked) {
-            if (unchoked.size() >= RECIPROCATION_SLOTS) {
-                break;
-            }
-            unchoked.add(peer);
-        }
+        // 做种互惠：排序依据同时计入两个方向的传输量（见 reciprocationOf）
+        Set<Object> unchoked = topReciprocators(interestedInUs);
         pickOptimistic(connected, interestedInUs, unchoked);
         receivedFromPeer.clear();
         sentToPeer.clear();
@@ -77,23 +57,23 @@ public final class ChokingManager {
      * 乐观槽轮换（引擎每 30s 调一次）。
      */
     public synchronized Set<Object> rotateOptimistic(Set<Object> connected, Set<Object> interestedInUs) {
-        Set<Object> unchoked = new HashSet<>(currentTopReciprocators(interestedInUs));
+        Set<Object> unchoked = topReciprocators(interestedInUs);
         pickOptimistic(connected, interestedInUs, unchoked);
         return unchoked;
     }
 
-    private Set<Object> currentTopReciprocators(Set<Object> interestedInUs) {
-        // 轮换只换乐观槽；互惠槽沿用轮内累计数据（零贡献者不占互惠槽）。
-        Set<Object> top = new HashSet<>();
-        List<Object> ranked = new ArrayList<>();
+    /**
+     * 互惠槽集合：轮换只换乐观槽；互惠槽沿用轮内累计数据（零贡献者不占互惠槽）。
+     */
+    private Set<Object> topReciprocators(Set<Object> interestedInUs) {
+        List<Object> ranked = new ArrayList<>(interestedInUs.size());
         for (Object peer : interestedInUs) {
-            long rate = receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L);
-            if (rate > 0) {
+            if (reciprocationOf(peer) > 0) {
                 ranked.add(peer);
             }
         }
-        ranked.sort(Comparator.comparingLong(peer ->
-                receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L)).reversed());
+        ranked.sort(Comparator.comparingLong(this::reciprocationOf).reversed());
+        Set<Object> top = new HashSet<>();
         for (Object peer : ranked) {
             if (top.size() >= RECIPROCATION_SLOTS) {
                 break;
@@ -101,6 +81,11 @@ public final class ChokingManager {
             top.add(peer);
         }
         return top;
+    }
+
+    /** 本窗口内与该 Peer 的双向传输量（下载数据计入收，做种数据计入发）。 */
+    private long reciprocationOf(Object peer) {
+        return receivedFromPeer.getOrDefault(peer, 0L) + sentToPeer.getOrDefault(peer, 0L);
     }
 
     private void pickOptimistic(Set<Object> connected, Set<Object> interestedInUs, Set<Object> unchoked) {
@@ -113,7 +98,6 @@ public final class ChokingManager {
         if (candidates.isEmpty()) {
             return;
         }
-        optimisticPeer = candidates.get(random.nextInt(candidates.size()));
-        unchoked.add(optimisticPeer);
+        unchoked.add(candidates.get(random.nextInt(candidates.size())));
     }
 }

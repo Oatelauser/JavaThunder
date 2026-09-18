@@ -25,6 +25,12 @@ public final class PeerConnection implements AutoCloseable {
 
     public static final int READ_TIMEOUT_MILLIS = 120_000;
     public static final int HANDSHAKE_TIMEOUT_MILLIS = 10_000;
+    /** BEP 3：帧长度前缀恒 4 字节大端。 */
+    private static final int LENGTH_PREFIX_BYTES = 4;
+    /** BEP 3 握手定长 68 = 1(pstrlen) + 19(协议串) + 8(保留位) + 20(info-hash) + 20(peer-id)。 */
+    private static final int HANDSHAKE_WIRE_BYTES = 68;
+    /** socket 读写缓冲：单块 16KiB，32KiB 可容纳一个完整块的多数读写。 */
+    private static final int IO_BUFFER_BYTES = 32 * 1024;
 
     private final Socket socket;
     private final InputStream in;
@@ -46,8 +52,8 @@ public final class PeerConnection implements AutoCloseable {
 
     private PeerConnection(Socket socket, byte[] remotePeerId) throws IOException {
         this.socket = socket;
-        this.in = new BufferedInputStream(socket.getInputStream(), 32 * 1024);
-        this.out = new BufferedOutputStream(socket.getOutputStream(), 32 * 1024);
+        this.in = new BufferedInputStream(socket.getInputStream(), IO_BUFFER_BYTES);
+        this.out = new BufferedOutputStream(socket.getOutputStream(), IO_BUFFER_BYTES);
         this.remotePeerId = remotePeerId;
         this.remoteAddress = new InetSocketAddress(
                 socket.getInetAddress().getHostAddress(), socket.getPort());
@@ -65,24 +71,17 @@ public final class PeerConnection implements AutoCloseable {
             OutputStream rawOut = socket.getOutputStream();
             rawOut.write(Handshake.encode(infoHash, peerId));
             rawOut.flush();
-            byte[] remoteWire = readFully(socket.getInputStream(), 68);
+            byte[] remoteWire = readFully(socket.getInputStream(), HANDSHAKE_WIRE_BYTES);
             Handshake handshake = Handshake.decode(remoteWire);
             if (!Arrays.equals(handshake.infoHash(), infoHash)) {
                 throw new IOException("peer " + address + " answered with a different info-hash");
             }
             socket.setSoTimeout(READ_TIMEOUT_MILLIS);
             PeerConnection connection = new PeerConnection(socket, handshake.peerId());
-            connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
-            connection.remoteSupportsFast = Handshake.supportsFastExtension(remoteWire);
-            connection.remoteSupportsV2 = Handshake.supportsV2(remoteWire);
+            captureRemoteCapabilities(connection, remoteWire);
             return connection;
         } catch (IOException e) {
-            try {
-                socket.close();
-            } catch (IOException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
+            throw closeSuppressed(socket, e);
         }
     }
 
@@ -92,20 +91,13 @@ public final class PeerConnection implements AutoCloseable {
     public static PeerConnection accept(Socket socket, byte[] infoHash, byte[] peerId) throws IOException {
         try {
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
-            byte[] remoteWire = readFully(socket.getInputStream(), 68);
+            byte[] remoteWire = readFully(socket.getInputStream(), HANDSHAKE_WIRE_BYTES);
             Handshake handshake = Handshake.decode(remoteWire);
             PeerConnection connection = acceptWithHandshake(socket, handshake, infoHash, peerId);
-            connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
-            connection.remoteSupportsFast = Handshake.supportsFastExtension(remoteWire);
-            connection.remoteSupportsV2 = Handshake.supportsV2(remoteWire);
+            captureRemoteCapabilities(connection, remoteWire);
             return connection;
         } catch (IOException e) {
-            try {
-                socket.close();
-            } catch (IOException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
+            throw closeSuppressed(socket, e);
         }
     }
 
@@ -120,12 +112,7 @@ public final class PeerConnection implements AutoCloseable {
             socket.setSoTimeout(READ_TIMEOUT_MILLIS);
             return new PeerConnection(socket, remote.peerId());
         } catch (IOException e) {
-            try {
-                socket.close();
-            } catch (IOException suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw e;
+            throw closeSuppressed(socket, e);
         }
     }
 
@@ -155,7 +142,7 @@ public final class PeerConnection implements AutoCloseable {
      * 阻塞读一帧；EOF 抛 IOException。
      */
     public PeerWireMessage read() throws IOException {
-        byte[] header = readFully(in, 4);
+        byte[] header = readFully(in, LENGTH_PREFIX_BYTES);
         long length = ((header[0] & 0xFFL) << 24) | ((header[1] & 0xFFL) << 16)
                 | ((header[2] & 0xFFL) << 8) | (header[3] & 0xFFL);
         if (length == 0) {
@@ -165,7 +152,7 @@ public final class PeerConnection implements AutoCloseable {
             throw new IOException("peer sent frame of " + length + " bytes, exceeds limit");
         }
         byte[] payload = readFully(in, (int) length);
-        ByteBuffer frame = ByteBuffer.allocate(4 + (int) length);
+        ByteBuffer frame = ByteBuffer.allocate(LENGTH_PREFIX_BYTES + (int) length);
         frame.put(header).put(payload).flip();
         return PeerWireCodec.decodeFrame(frame);
     }
@@ -207,6 +194,23 @@ public final class PeerConnection implements AutoCloseable {
     @Override
     public void close() throws IOException {
         socket.close();
+    }
+
+    /** 从对端握手线格式提取保留位声明（BEP 10/6/52），缓存到连接上供后续查询。 */
+    private static void captureRemoteCapabilities(PeerConnection connection, byte[] remoteWire) {
+        connection.remoteSupportsExtensions = Handshake.supportsExtensions(remoteWire);
+        connection.remoteSupportsFast = Handshake.supportsFastExtension(remoteWire);
+        connection.remoteSupportsV2 = Handshake.supportsV2(remoteWire);
+    }
+
+    /** 建连/握手失败即弃 socket：关闭时的新异常挂到 suppressed，原异常继续上抛。 */
+    private static IOException closeSuppressed(Socket socket, IOException cause) {
+        try {
+            socket.close();
+        } catch (IOException suppressed) {
+            cause.addSuppressed(suppressed);
+        }
+        return cause;
     }
 
     private static byte[] readFully(InputStream in, int length) throws IOException {

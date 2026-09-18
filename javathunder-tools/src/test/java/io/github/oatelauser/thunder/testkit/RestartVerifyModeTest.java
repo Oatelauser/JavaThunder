@@ -26,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * D2 重启校验三档：坏块注入（把一个已完成件在磁盘上改脏）后分别以
  * FULL / SAMPLED / NONE 恢复——FULL 必检出重下；SAMPLED 是抽样语义（本用例
- * 用多件种子让坏件高概率在样本内）；NONE 信任位图但完成前仍会逐件校验兜底。
+ * 用多件种子让坏件高概率在样本内）；NONE 信任位图不做启动校验，坏块留盘是
+ * 该档位的语义代价（见 noneMode 用例，仅断言文件形状）。
  */
 class RestartVerifyModeTest {
 
@@ -36,7 +37,7 @@ class RestartVerifyModeTest {
     @Test
     void sampledModeSkipsUnsampledPieces() throws Exception {
         // 32 件 × 256KiB = 8MiB：坏件 17；SAMPLED 10% ≈ 4 件 + 边界，不做必中断言（概率语义），
-        // 断言的是行为差异：SAMPLED 恢复耗时显著 < FULL（不逐件读盘）
+        // 断言的是宽松行为差异：SAMPLED 恢复不显著慢于 FULL（不逐件读盘，见下方 1.1× 宽容带）
         int pieces = 32;
         int pieceLength = 256 * 1024;
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {

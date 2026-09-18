@@ -100,6 +100,21 @@
             </filters>
           </configuration>
         </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-pmd-plugin</artifactId>
+          <!-- 锁 3.21.2：其 PMD 6.55 内核与 p3c-pmd 2.1.1 兼容；3.22+ 升 PMD 7 会加载失败。
+               注意：p3c-pmd 对 JDK 21 类型解析不兼容（class file major 65），暂未接入
+               verify 执行——见 docs/adr/0005-api-freeze.md 决策 7。 -->
+          <version>3.21.2</version>
+          <dependencies>
+            <dependency>
+              <groupId>com.alibaba.p3c</groupId>
+              <artifactId>p3c-pmd</artifactId>
+              <version>2.1.1</version>
+            </dependency>
+          </dependencies>
+        </plugin>
       </plugins>
     </pluginManagement>
     <!-- 代码规范门禁（checkstyle，verify 阶段执行，规则 config/checkstyle/checkstyle.xml）：

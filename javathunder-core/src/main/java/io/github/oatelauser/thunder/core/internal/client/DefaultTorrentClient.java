@@ -180,15 +180,28 @@ public final class DefaultTorrentClient implements TorrentClient {
             this.ownedExecutor = null;
             this.eventExecutor = builder.listenerExecutor;
         } else {
-            this.ownedExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "javathunder-events");
-                thread.setDaemon(true);
-                return thread;
-            });
-            this.eventExecutor = ownedExecutor;
+            this.ownedExecutor = newOwnedEventExecutor();
+            this.eventExecutor = this.ownedExecutor;
         }
         this.transport = builder.transportFactory.apply(peerId);
         this.transport.listen(builder.listenPort, this::routeByInfoHash);
+    }
+
+    /**
+     * 库内兜底事件线程：守护标记保证不阻止 JVM 退出（close 时 shutdownNow）。
+     */
+    private static ExecutorService newOwnedEventExecutor() {
+        return Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "javathunder-events");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    private void ensureOpen() {
+        if (closed.get()) {
+            throw new IllegalStateException("client is closed");
+        }
     }
 
     @Nullable
@@ -199,9 +212,7 @@ public final class DefaultTorrentClient implements TorrentClient {
 
     @Override
     public DownloadTask download(Path torrentFile, DownloadOptions options) throws Exception {
-        if (closed.get()) {
-            throw new IllegalStateException("client is closed");
-        }
+        ensureOpen();
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(torrentFile));
         return startSession(meta, options);
     }
@@ -214,13 +225,13 @@ public final class DefaultTorrentClient implements TorrentClient {
     @Override
     public DownloadTask seed(Path torrentFile, SeedOptions seedOptions)
             throws Exception {
-        if (closed.get()) {
-            throw new IllegalStateException("client is closed");
-        }
+        ensureOpen();
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(torrentFile));
-        DownloadOptions options = new DownloadOptions(
-                seedOptions.dataDir(), true, true, /*seedAfterComplete=*/ true,
-                0, seedOptions.uploadLimitBytesPerSecond(), RestartVerifyMode.FULL);
+        DownloadOptions options = DownloadOptions.defaults()
+                .targetDir(seedOptions.dataDir())
+                .rateLimits(0, seedOptions.uploadLimitBytesPerSecond())
+                .restartVerify(RestartVerifyMode.FULL)
+                .seedAfterComplete(true);
         return startSession(meta, options, /*seedOnly=*/ true);
     }
 
@@ -231,14 +242,14 @@ public final class DefaultTorrentClient implements TorrentClient {
      */
     @Override
     public DownloadTask download(MagnetUri magnet, DownloadOptions options) throws Exception {
-        if (closed.get()) {
-            throw new IllegalStateException("client is closed");
-        }
+        ensureOpen();
+        // 元数据抓取阶段即占并发槽：BEP 9 拉取与正式下载一样消耗连接/带宽，
+        // 若等会话建立才占槽，并发磁力任务会无上限地同时抓元数据。槽延迟到
+        // 元数据会话接管（startSessionFromMagnet 再占新槽）或抓取失败时释放。
         slots.acquire();
-        boolean[] released = { false };
+        AtomicBoolean released = new AtomicBoolean();
         Runnable releaseOnce = () -> {
-            if (!released[0]) {
-                released[0] = true;
+            if (released.compareAndSet(false, true)) {
                 slots.release();
             }
         };

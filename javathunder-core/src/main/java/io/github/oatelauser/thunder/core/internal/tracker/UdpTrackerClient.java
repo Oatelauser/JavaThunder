@@ -15,7 +15,6 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -31,7 +30,13 @@ public final class UdpTrackerClient implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(UdpTrackerClient.class);
     private static final long CONNECT_PROTOCOL_ID = 0x41727101980AL;
+    /** BEP 15：connection_id 客户端侧最多缓存 1 分钟；tracker 侧容忍到 2 分钟。 */
     private static final long CONNECTION_TTL_MILLIS = 60_000;
+    /**
+     * 重传次数（首次 + 2 次重试）。退避基数 500ms：BEP 15 建议 15×2ⁿ 秒（上限 n=8），
+     * 那是整点退避的保守值；库内 announce 挂在虚拟线程上、上层 tier 失败转移另有
+     * 全局退避，故按毫秒级缩短，避免单 tracker 故障拖住整个发现周期。
+     */
     private static final int MAX_ATTEMPTS = 3;
 
     private record Connection(long id, long acquiredMillis) {
@@ -39,7 +44,6 @@ public final class UdpTrackerClient implements AutoCloseable {
 
     private final DatagramSocket socket;
     private final ConcurrentHashMap<String, Connection> connections = new ConcurrentHashMap<>();
-    private final SecureRandom random = new SecureRandom();
     private volatile boolean closed;
 
     public UdpTrackerClient() throws IOException {
@@ -92,6 +96,11 @@ public final class UdpTrackerClient implements AutoCloseable {
             AnnounceRequest request)
             throws IOException, InterruptedException {
         int transactionId = newTransactionId();
+        // BEP 15 announce 请求（98 字节，偏移为规范值）：downloaded@56 → left@64 →
+        // uploaded@72 → event@80 → ip@84 → key@88 → num_want@92 → port@96（2 字节大端）。
+        // ip=0 由 tracker 自取源地址；key=0（无会话标识）。字段顺序/宽度错位会被真实
+        // tracker 解读成 num_want=0 / port=0（曾把 left/uploaded 写反、port 写成 int
+        // 且尾部 6 字节未写满——UdpTrackerClientTest 对逐字段偏移有断言）
         ByteBuffer out = ByteBuffer.allocate(98).order(ByteOrder.BIG_ENDIAN)
                 .putLong(connectionId)
                 .putInt(1) // action: announce
@@ -99,11 +108,13 @@ public final class UdpTrackerClient implements AutoCloseable {
                 .put(request.infoHash())
                 .put(request.peerId())
                 .putLong(request.downloaded())
-                .putLong(request.uploaded())
                 .putLong(request.left())
+                .putLong(request.uploaded())
                 .putInt(eventAction(request.event()))
-                .putInt(request.port())
-                .putInt(request.numwant()); // key/extensions 略（BEP 15 可选字段）
+                .putInt(0) // ip
+                .putInt(0) // key
+                .putInt(request.numwant())
+                .putShort((short) request.port());
         ByteBuffer response = exchange(address, out.array(), transactionId, 1);
         // BEP 15 应答头：action/transaction_id 之外为 interval/leechers/seeders（注意与 HTTP
         // 的 complete/incomplete 顺序相反，leechers 在前），peer 紧凑表从偏移 20 起
@@ -171,6 +182,10 @@ public final class UdpTrackerClient implements AutoCloseable {
         };
     }
 
+    /**
+     * 事务 ID 只用于匹配请求/应答（防串扰与迟到包），无需加密强度，
+     * 用无争用的 ThreadLocalRandom 即可。
+     */
     private int newTransactionId() {
         return ThreadLocalRandom.current().nextInt();
     }

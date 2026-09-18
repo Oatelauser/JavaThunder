@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * v1 .torrent 解析器（BEP 3 / 12 / 19 / 27）。
+ * .torrent 解析器（v1/hybrid/v2：BEP 3 / 12 / 19 / 27 / 47 / 52）。
  *
  * <p>info-hash 必须对 info 字典的<b>原始字节区间</b>计算——本解析器在扫描顶层字典时记录
  * info 值的字节边界，禁止"解码后重编码再哈希"（规范形可能与原始字节不一致）。
@@ -188,14 +188,8 @@ public final class TorrentParser {
         if (s.info().value().containsKey(BString.of("file tree"))) {
             return buildV2(s, lazyLayers);
         }
-        if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
-            throw new IllegalArgumentException("no tracker and no url-list in torrent; "
-                    + "trackerless download requires DHT (inject via peerDiscovery)");
-        }
-        String name = requireString(s.info(), "name");
-        if (name.isEmpty()) {
-            throw new IllegalArgumentException("info.name must not be empty");
-        }
+        requireDownloadSource(s);
+        String name = requireName(s);
         long pieceLength = requireInteger(s.info(), "piece length").value();
         if (pieceLength <= 0) {
             throw new IllegalArgumentException("info.'piece length' must be positive");
@@ -234,6 +228,26 @@ public final class TorrentParser {
                 name, length, pieceLength, pieces.value(), privateFlag, files, s.webSeeds());
     }
 
+    /**
+     * 无 tracker 且无 url-list 时没有任何数据源（无 DHT 注入的会话拿不到 Peer），
+     * v1/v2 构造期即拒绝——与其下载期空转，不如尽早失败。
+     */
+    private static void requireDownloadSource(Scanned s) {
+        if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
+            throw new IllegalArgumentException("no tracker and no url-list in torrent; "
+                    + "trackerless download requires DHT (inject via peerDiscovery)");
+        }
+    }
+
+    /** v1/v2 共用：name 既是展示名也是落盘根名，必须存在且非空。 */
+    private static String requireName(Scanned s) {
+        String name = requireString(s.info(), "name");
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("info.name must not be empty");
+        }
+        return name;
+    }
+
     // ---------------------------------------------------------------- v2 / hybrid（BEP 52）
 
     /**
@@ -242,14 +256,8 @@ public final class TorrentParser {
      * 主哈希恒 20 字节（v2-only 取 SHA-256 截断前 20 字节，满足 DHT/线协议的 v1 宽度）。
      */
     private static TorrentMetadata buildV2(Scanned s, boolean lazyLayers) {
-        if (s.announce() == null && s.announceList().isEmpty() && s.webSeeds().isEmpty()) {
-            throw new IllegalArgumentException("no tracker and no url-list in torrent; "
-                    + "trackerless download requires DHT (inject via peerDiscovery)");
-        }
-        String name = requireString(s.info(), "name");
-        if (name.isEmpty()) {
-            throw new IllegalArgumentException("info.name must not be empty");
-        }
+        requireDownloadSource(s);
+        String name = requireName(s);
         BencodeValue metaVersion = s.info().get("meta version");
         if (!(metaVersion == null || metaVersion instanceof BInteger mv && mv.value() == 2)) {
             throw new IllegalArgumentException("meta version must be 2 when present");
@@ -390,15 +398,23 @@ public final class TorrentParser {
                 && asInteger(info.get("private"), "private").value() == 1;
     }
 
-    /** 复用 v1 的路径穿越防护（仅实文件；填充文件由引擎内部消化）。 */
+    /** v2 file tree 的路径穿越防护（仅实文件；填充文件由引擎内部消化）。 */
     private static void validatePathComponents(List<String> path) {
         for (String component : path) {
-            if (component.isEmpty() || "..".equals(component) || component.contains("\\")
-                    || component.contains("/") || component.contains(":")
-                    || component.chars().anyMatch(c -> c < 0x20)
-                    || isWindowsReserved(component)) {
-                throw new IllegalArgumentException("unsafe path component in torrent: " + component);
-            }
+            requireSafePathComponent(component);
+        }
+    }
+
+    /**
+     * 路径组件安全校验（DESIGN §6.6，v1/v2 共用）：拒绝空组件、`..`、路径分隔符、
+     * 盘符、Windows 保留设备名与控制字符——防恶意种子逃出目标目录。
+     */
+    private static void requireSafePathComponent(String component) {
+        if (component.isEmpty() || "..".equals(component) || component.contains("\\")
+                || component.contains("/") || component.contains(":")
+                || component.chars().anyMatch(c -> c < 0x20)
+                || isWindowsReserved(component)) {
+            throw new IllegalArgumentException("unsafe path component in torrent: " + component);
         }
     }
 
@@ -421,11 +437,7 @@ public final class TorrentParser {
         return Arrays.copyOf(hash, 20);
     }
 
-    /**
-     * 多文件清单（BEP 3）：info.files[] 的 path[]/length 映射为拼接流偏移。
-     * 路径穿越防护（DESIGN §6.6）：拒绝空组件、`..`、绝对路径元素、反斜杠、
-     * 盘符、Windows 保留设备名与控制字符——防恶意种子逃出目标目录。
-     */
+    /** 多文件清单（BEP 3）：info.files[] 的 path[]/length 映射为拼接流偏移。 */
     private static List<TorrentMetadata.TorrentFile> parseFiles(BDict info) {
         BencodeValue filesValue = require(info, "files");
         if (!(filesValue instanceof BList fileList) || fileList.value().isEmpty()) {
@@ -448,12 +460,7 @@ public final class TorrentParser {
             List<String> path = new ArrayList<>();
             for (BencodeValue componentValue : pathList.value()) {
                 String component = asString(componentValue, "files entry path component");
-                if (component.isEmpty() || "..".equals(component) || component.contains("\\")
-                        || component.contains("/") || component.contains(":")
-                        || component.chars().anyMatch(c -> c < 0x20)
-                        || isWindowsReserved(component)) {
-                    throw new IllegalArgumentException("unsafe path component in torrent: " + component);
-                }
+                requireSafePathComponent(component);
                 path.add(component);
             }
             result.add(new TorrentMetadata.TorrentFile(List.copyOf(path), offset, fileLength));

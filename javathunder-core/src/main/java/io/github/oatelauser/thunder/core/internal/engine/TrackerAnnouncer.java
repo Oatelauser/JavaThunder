@@ -70,43 +70,47 @@ final class TrackerAnnouncer {
         long left = remainingBytes.getAsLong();
         AnnounceRequest request = new AnnounceRequest(infoHash, peerId, listenPort,
                 uploadedSupplier.getAsLong(), downloadedSupplier.getAsLong(), left, event, NUMWANT);
-        boolean anySuccess = false;
         for (List<String> tier : tiers) {
             for (String url : tier) {
-                try {
-                    AnnounceResponse response = gateway.announce(url, request);
-                    if (response.failureReason() != null) {
-                        log.warn("tracker {} rejected announce: {}", url, response.failureReason());
-                        if (dispatcher != null) {
-                            dispatcher.trackerAnnounce(url, response.failureReason(), 0, 0);
-                        }
-                        continue;
-                    }
-                    intervalSeconds = response.interval();
-                    for (InetSocketAddress peer : response.peers()) {
-                        candidateSink.accept(peer);
-                    }
-                    if (dispatcher != null) {
-                        dispatcher.trackerAnnounce(url, null, response.seeders(), response.leechers());
-                    }
-                    anySuccess = true;
+                if (announceOnce(url, request)) {
                     backoffSeconds = 0; // 成功即复位
                     return;
-                } catch (TrackerException e) {
-                    log.debug("tracker {} failed: {}", url, e.getMessage());
-                    if (dispatcher != null) {
-                        dispatcher.trackerAnnounce(url, e.getMessage(), 0, 0);
-                    }
                 }
             }
         }
         log.warn("announce {} failed on all trackers", event);
-        if (!anySuccess) {
-            // 全部 tracker 失败：指数退避 interval×2^k，上限 30 分钟
-            backoffSeconds = backoffSeconds == 0
-                    ? Math.max(2, intervalSeconds) * 2
-                    : Math.min(backoffSeconds * 2, BACKOFF_CAP_SECONDS);
-            intervalSeconds = backoffSeconds;
+        // 全部 tracker 失败：指数退避 interval×2^k，上限 30 分钟
+        backoffSeconds = backoffSeconds == 0
+                ? Math.max(2, intervalSeconds) * 2
+                : Math.min(backoffSeconds * 2, BACKOFF_CAP_SECONDS);
+        intervalSeconds = backoffSeconds;
+    }
+
+    /** 单 tracker 一次 announce：成功消费应答（更新 interval、peer 交候选队列）返回 true。 */
+    private boolean announceOnce(String url, AnnounceRequest request) {
+        try {
+            AnnounceResponse response = gateway.announce(url, request);
+            if (response.failureReason() != null) {
+                log.warn("tracker {} rejected announce: {}", url, response.failureReason());
+                if (dispatcher != null) {
+                    dispatcher.trackerAnnounce(url, response.failureReason(), 0, 0);
+                }
+                return false;
+            }
+            intervalSeconds = response.interval();
+            for (InetSocketAddress peer : response.peers()) {
+                candidateSink.accept(peer);
+            }
+            if (dispatcher != null) {
+                dispatcher.trackerAnnounce(url, null, response.seeders(), response.leechers());
+            }
+            return true;
+        } catch (TrackerException e) {
+            log.debug("tracker {} failed: {}", url, e.getMessage());
+            if (dispatcher != null) {
+                dispatcher.trackerAnnounce(url, e.getMessage(), 0, 0);
+            }
+            return false;
         }
     }
 

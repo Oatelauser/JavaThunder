@@ -45,11 +45,10 @@ class HybridAndCorruptionAcceptanceTest {
     private Seed hybridSeed(String name, int size, Random random) throws IOException {
         byte[] content = new byte[size];
         random.nextBytes(content);
-        return buildSeed(name, content, true, random);
+        return buildSeed(name, content, true);
     }
 
-    private Seed buildSeed(String name, byte[] content, boolean hybrid,
-            Random random) throws IOException {
+    private Seed buildSeed(String name, byte[] content, boolean hybrid) throws IOException {
         int size = content.length;
         int pieceCount = (size + PIECE_LENGTH - 1) / PIECE_LENGTH;
 

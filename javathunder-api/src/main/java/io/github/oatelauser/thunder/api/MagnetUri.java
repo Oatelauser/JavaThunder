@@ -41,6 +41,12 @@ public record MagnetUri(byte[] infoHash, String displayName, List<String> tracke
         trackers = List.copyOf(trackers);
     }
 
+    /**
+     * 解析磁力字符串（xt 必填——btih 40 位 hex / 32 位 base32 或 btmh 64 位 hex；
+     * dn / tr 可选，tr 可多个）。
+     *
+     * @throws IllegalArgumentException 非 magnet:? 前缀、缺 xt、或哈希编码/长度非法
+     */
     public static MagnetUri parse(String uri) {
         if (uri == null || !uri.startsWith("magnet:?")) {
             throw new IllegalArgumentException("not a magnet uri: " + uri);

@@ -17,7 +17,6 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class KrpcMessageTest {
 
@@ -39,7 +38,6 @@ class KrpcMessageTest {
         byte[] tx = {9, 9};
         NodeId id = DhtClient.randomId();
         byte[] token = {7, 7, 7};
-        // 两个紧凑节点 + 一个紧凑 peer
         // 两个紧凑节点 + 一个紧凑 peer（IP 各占 4 字节）
         byte[] node1 = new byte[26];
         node1[20] = 127;
@@ -93,9 +91,7 @@ class KrpcMessageTest {
         assertThrows(IllegalArgumentException.class, () -> KrpcMessage.parse(Bencode.encode(
             new BInteger(5))));
         assertThrows(IllegalArgumentException.class,
-            () -> KrpcMessage.parse("d1:ad2:id20:aaaaaaaaaaaaaaaaaaaae1:t2:aae".getBytes()));
-        // 缺 y
-        assertTrue(true);
+            () -> KrpcMessage.parse("d1:ad2:id20:aaaaaaaaaaaaaaaaaaaae1:t2:aae".getBytes())); // 缺 y
     }
 
     @Test

@@ -54,9 +54,24 @@ public final class StorageManager implements TorrentStorage {
         this.workFile = adoptExistingData && !Files.exists(partFile) && Files.exists(finalFile)
                 && Files.size(finalFile) == meta.length() ? finalFile : partFile;
         this.channels = new FileChannel[WRITE_CHANNELS];
-        for (int i = 0; i < WRITE_CHANNELS; i++) {
-            channels[i] = FileChannel.open(workFile,
-                    StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        try {
+            for (int i = 0; i < WRITE_CHANNELS; i++) {
+                channels[i] = FileChannel.open(workFile,
+                        StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            }
+        } catch (IOException e) {
+            // 构造失败必须释放已开通道：对象未构造成功，调用方无从 close——
+            // 残留句柄在 Windows 上会锁住工作文件（对照 MultiFileStorage 构造器同款兜底）
+            for (FileChannel channel : channels) {
+                if (channel != null) {
+                    try {
+                        channel.close();
+                    } catch (IOException suppressed) {
+                        e.addSuppressed(suppressed);
+                    }
+                }
+            }
+            throw e;
         }
         if (workFile == partFile) {
             // 预分配（仅全新下载）：截长防残留，末位写一字节撑出全尺寸（稀疏）
@@ -122,7 +137,7 @@ public final class StorageManager implements TorrentStorage {
         long offset = pieceOffset(pieceIndex);
         while (buffer.hasRemaining()) {
             if (channelFor(pieceIndex).read(buffer, offset + buffer.position()) < 0) {
-                throw new IOException("unexpected end of " + partFile + " while verifying piece " + pieceIndex);
+                throw new IOException("unexpected end of " + workFile + " while verifying piece " + pieceIndex);
             }
         }
         buffer.flip();
@@ -143,7 +158,7 @@ public final class StorageManager implements TorrentStorage {
         ByteBuffer buffer = ByteBuffer.allocate(length);
         while (buffer.hasRemaining()) {
             if (channelFor(pieceIndex).read(buffer, pieceOffset(pieceIndex) + begin + buffer.position()) < 0) {
-                throw new IOException("unexpected end of " + partFile + " serving piece " + pieceIndex);
+                throw new IOException("unexpected end of " + workFile + " serving piece " + pieceIndex);
             }
         }
         return buffer.array();

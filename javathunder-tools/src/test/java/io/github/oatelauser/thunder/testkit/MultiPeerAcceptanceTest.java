@@ -46,8 +46,9 @@ class MultiPeerAcceptanceTest {
 
     @Test
     void downloadsFromConcurrentSeeders() throws Exception {
-        int sizeBytes = Integer.getInteger("multiPeer.mb", 1) == 1
-            ? 1_500_000 : Integer.getInteger("multiPeer.mb", 1) * 1024 * 1024;
+        // mb=1 是"正确性小尺寸"特殊档（1.5MB）；显式传大值跑扩展曲线测量
+        int mb = Integer.getInteger("multiPeer.mb", 1);
+        int sizeBytes = mb == 1 ? 1_500_000 : mb * 1024 * 1024;
         int seederCount = Integer.getInteger("multiPeer.seeders", 4);
         boolean nio = "nio".equalsIgnoreCase(System.getProperty("javathunder.transport", "blocking"));
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {

@@ -22,6 +22,8 @@ class UdpTrackerClientTest {
     private final AtomicInteger connectCount = new AtomicInteger();
     private volatile boolean running = true;
     private final AtomicReference<byte[]> lastPeerBytes = new AtomicReference<>();
+    /** 服务线程内的请求体断言失败经此传回主线程（异步断言不直接抛）。 */
+    private final AtomicReference<AssertionError> requestShapeError = new AtomicReference<>();
 
     @AfterEach
     void stop() {
@@ -48,10 +50,33 @@ class UdpTrackerClientTest {
             assertEquals(7777, response.peers().get(0).getPort());
             assertEquals(8888, response.peers().get(1).getPort());
             assertEquals(1, connectCount.get(), "connection_id 应被缓存复用（单次 announce 只 connect 一次）");
+            AssertionError shape = requestShapeError.get();
+            if (shape != null) {
+                throw shape; // 服务线程捕到的请求体字段断言失败在此抛出
+            }
 
             // 同一 client 二次 announce：命中缓存，不再 connect
             client.announce("udp://127.0.0.1:" + server.getLocalPort() + "/announce", request);
             assertEquals(1, connectCount.get());
+        }
+    }
+
+    /**
+     * 请求体逐字段断言（BEP 15 标准偏移）：曾把 left/uploaded 写反、port 写成 int
+     * 且尾部 6 字节未写满——真实 tracker 会解出 num_want=0/port=0。值取
+     * 200/300/100（downloaded/left/uploaded）互异以捕捉换位。
+     */
+    private void assertAnnounceRequestShape(ByteBuffer in, int packetLength) {
+        try {
+            assertEquals(98, packetLength, "announce 请求应恰为 98 字节");
+            assertEquals(200L, in.getLong(56), "downloaded@56");
+            assertEquals(300L, in.getLong(64), "left@64");
+            assertEquals(100L, in.getLong(72), "uploaded@72");
+            assertEquals(2, in.getInt(80), "event@80（started=2）");
+            assertEquals(10, in.getInt(92), "num_want@92");
+            assertEquals(6881, in.getShort(96) & 0xFFFF, "port@96（2 字节大端）");
+        } catch (AssertionError e) {
+            requestShapeError.compareAndSet(null, e);
         }
     }
 
@@ -73,6 +98,7 @@ class UdpTrackerClientTest {
                     out = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
                         .putInt(0).putInt(transactionId).putLong(0x1234567890ABCDEFL);
                 } else if (action == 1) {
+                    assertAnnounceRequestShape(in, packet.getLength());
                     byte[] peers = {127, 0, 0, 1, 0x1E, 0x61, 127, 0, 0, 2, 0x22, (byte) 0xB8};
                     lastPeerBytes.set(peers);
                     out = ByteBuffer.allocate(20 + peers.length).order(ByteOrder.BIG_ENDIAN)

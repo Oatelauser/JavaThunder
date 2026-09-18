@@ -88,6 +88,9 @@ public final class DownloadSession {
 
     private static final int PIPELINE_DEPTH = 32;
     private static final int MAX_BAD_PIECES_PER_PEER = 2;
+    /** 组装器并发件的内存预算与硬上限（maxActivePieces = min(预算/件长, maxPeers, 硬上限)）。 */
+    private static final long ASSEMBLER_MEMORY_BUDGET = 64L * 1024 * 1024;
+    private static final int MAX_CONCURRENT_PIECES = 64;
 
     public record SessionConfig(int maxPeers, int listenPort,
                                 RateLimiter globalDownload, RateLimiter globalUpload,
@@ -180,8 +183,8 @@ public final class DownloadSession {
         this.sequential = options.downloadOrder() == DownloadOrder.SEQUENTIAL;
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length());
         this.choking = new ChokingManager(random);
-        this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
-                64L * 1024 * 1024 / Math.max(1, meta.pieceLength())));
+        this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(),
+                MAX_CONCURRENT_PIECES), ASSEMBLER_MEMORY_BUDGET / Math.max(1, meta.pieceLength())));
         this.taskDownloadLimit = options.downloadLimitBytesPerSecond() > 0
                 ? new RateLimiter(options.downloadLimitBytesPerSecond()) : null;
         this.taskUploadLimit = options.uploadLimitBytesPerSecond() > 0
@@ -810,10 +813,7 @@ public final class DownloadSession {
         // —— 监视器外：CPU/磁盘重活，可与该 Peer 的后续块并行 ——
         boolean verified;
         try {
-            verified = switch (meta.version()) {
-                case V2 -> V2PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
-                default -> PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
-            };
+            verified = verifyAndStoreByVersion(assembler, piece);
         } catch (IOException e) {
             verifyingPieces.remove(piece);
             fail(e);
@@ -827,6 +827,14 @@ public final class DownloadSession {
                 onBadPiece(source, piece);
             }
         }
+    }
+
+    /** 按 torrent 版本选择校验器（v2 走 Merkle 层带，v1/hybrid 走 SHA-1）。 */
+    private boolean verifyAndStoreByVersion(PieceAssembler assembler, int piece) throws IOException {
+        return switch (meta.version()) {
+            case V2 -> V2PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+            default -> PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
+        };
     }
 
     /**
@@ -1124,10 +1132,7 @@ public final class DownloadSession {
             assembler.blocks[slot++] =
                     Arrays.copyOfRange(body, block.begin(), block.begin() + block.length());
         }
-        boolean verified = switch (meta.version()) {
-            case V2 -> V2PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
-            default -> PieceVerifier.verifyAndStore(storage, meta, assembler, piece);
-        };
+        boolean verified = verifyAndStoreByVersion(assembler, piece);
         if (verified) {
             completeVerifiedPiece(piece);
         }

@@ -65,13 +65,18 @@ final class WebSeedFetcher {
         }
     }
 
+    /** 选件资格：本地缺失、未被任一通道占用（Peer 组装/在途/校验中）且属于必需件。 */
+    private boolean claimable(int piece) {
+        return !session.hasPiece(piece) && !session.pieceClaimed(piece) && session.wantedPiece(piece);
+    }
+
     /** 选件：本地缺失 ∩ 未被占用 ∩ 必需；顺序模式（优先级降序, 索引升序），否则（优先级降序, availability 升序）——与 Peer 选件同字典序。 */
     private int pickPiece() {
         if (session.sequentialDownload()) {
             int best = -1;
             int bestPriority = Integer.MIN_VALUE;
             for (int i = 0; i < meta.pieceCount(); i++) {
-                if (session.hasPiece(i) || session.pieceClaimed(i) || !session.wantedPiece(i)) {
+                if (!claimable(i)) {
                     continue;
                 }
                 int priority = session.piecePriority(i);
@@ -86,7 +91,7 @@ final class WebSeedFetcher {
         int bestPriority = Integer.MIN_VALUE;
         int bestAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {
-            if (session.hasPiece(i) || session.pieceClaimed(i) || !session.wantedPiece(i)) {
+            if (!claimable(i)) {
                 continue;
             }
             int priority = session.piecePriority(i);
@@ -154,10 +159,7 @@ final class WebSeedFetcher {
             long from = Math.max(pieceStart, fileStart);
             long to = Math.min(pieceEnd, fileEnd);
             if (from >= to) {
-                continue; // 该文件与件无交集（files 按偏移升序，越过件尾即可提前结束）
-            }
-            if (to < pieceStart) {
-                continue;
+                continue; // 该文件与件无交集（files 按偏移升序，件尾之后的文件同样落在此分支）
             }
             if (file.padding()) {
                 continue; // 全零段：body 已零初始化
@@ -170,7 +172,8 @@ final class WebSeedFetcher {
     }
 
     /** 坏件：放认领允许重下；连续 2 件即视为源数据不可信，停通道（Peer 照常）。 */
-    private void onBadPiece(int piece) {        session.releaseWebSeedClaim(piece);
+    private void onBadPiece(int piece) {
+        session.releaseWebSeedClaim(piece);
         consecutiveBadPieces++;
         log.warn("web seed piece {} failed verification (bad #{})", piece, consecutiveBadPieces);
         if (consecutiveBadPieces >= MAX_BAD_PIECES) {

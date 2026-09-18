@@ -82,8 +82,9 @@ class TtorrentInteropTest {
             Client seeder = startTtorrentSeeder(generated, "seed-a");
             try (TorrentClient client = TorrentClient.builder()
                     .transport(Transports.select()).build()) {
-                DownloadOptions seedOptions = new DownloadOptions(
-                    dir.resolve("out"), true, true, true, 0, 0); // resume + verify + seed, 不限速
+                DownloadOptions seedOptions = DownloadOptions.defaults()
+                        .targetDir(dir.resolve("out"))
+                        .seedAfterComplete(true); // resume + verify + seed, 不限速
                 DownloadTask task = client.download(generated.torrentFile(), seedOptions);
                 DownloadResult result = task.future().get(90, TimeUnit.SECONDS);
                 // seedAfterComplete=true 时终态直接是 SEEDING（DownloadSession.complete 先 setState 再完成 future）

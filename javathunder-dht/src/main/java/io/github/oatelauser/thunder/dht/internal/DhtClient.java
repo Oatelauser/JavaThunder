@@ -34,6 +34,21 @@ public final class DhtClient implements AutoCloseable {
     public static final List<String> DEFAULT_BOOTSTRAP = List.of("router.bittorrent.com:6881",
             "dht.transmissionbt.com:6881", "router.utorrent.com:6881");
 
+    /** 节点 ID 随机源：SecureRandom 线程安全，静态复用免每次重新播种（熵源初始化有开销）。 */
+    private static final SecureRandom ID_RANDOM = new SecureRandom();
+    /** 自举迭代轮数上限：种子节点通常 1~2 轮即可带出足够邻居，3 轮兜底慢网络。 */
+    private static final int BOOTSTRAP_ROUNDS = 3;
+    /** 自举完成阈值：对"找 peer"为主的客户端够用；满表后查找质量靠 offer 热度自然筛选。 */
+    private static final int BOOTSTRAP_TARGET_NODES = 64;
+    /** 自举轮间歇：sendQuery 是发后不管，须留时间让响应经 observer 写入路由表，否则迭代空转。 */
+    private static final long BOOTSTRAP_ROUND_PAUSE_MILLIS = 100;
+    /** get_peers 迭代轮数上限：正常由 frontier 收敛先退出，上限只防坏节点循环指路导致游走不收敛。 */
+    private static final int LOOKUP_MAX_ROUNDS = 16;
+    /** 单次查找收集的 peer 上限：引擎一次建连用不了更多，同时防 peers 列表无界增长。 */
+    private static final int LOOKUP_MAX_PEERS = 50;
+    /** find_node 迭代轮数上限：只填路由表不集 peer，比 get_peers 更快收敛，轮数减半。 */
+    private static final int FIND_NODE_MAX_ROUNDS = 8;
+
     private final NodeId selfId;
     private final RoutingTable table;
     private final KrpcRpc rpc;
@@ -56,8 +71,8 @@ public final class DhtClient implements AutoCloseable {
     }
 
     public static NodeId randomId() {
-        byte[] id = new byte[20];
-        new SecureRandom().nextBytes(id);
+        byte[] id = new byte[KrpcMessage.NODE_ID_BYTES];
+        ID_RANDOM.nextBytes(id);
         return new NodeId(id);
     }
 
@@ -83,9 +98,9 @@ public final class DhtClient implements AutoCloseable {
                     .id(selfId));
         }
         // 迭代收敛：几轮 nearest 查询填充
-        for (int round = 0; round < 3 && table.size() < 64; round++) {
+        for (int round = 0; round < BOOTSTRAP_ROUNDS && table.size() < BOOTSTRAP_TARGET_NODES; round++) {
             iterativeFindNode(selfId);
-            sleepMillis(100);
+            sleepMillis(BOOTSTRAP_ROUND_PAUSE_MILLIS);
         }
         log.info("dht bootstrapped: {} nodes known", table.size());
     }
@@ -113,7 +128,8 @@ public final class DhtClient implements AutoCloseable {
         List<InetSocketAddress> peers = new ArrayList<>();
         Set<String> announced = new HashSet<>();
         Frontier frontier = new Frontier(target, table.nearest(target, Frontier.ALPHA * 2));
-        for (int round = 0; round < 16 && !frontier.isEmpty() && peers.size() < 50; round++) {
+        for (int round = 0; round < LOOKUP_MAX_ROUNDS && !frontier.isEmpty()
+                && peers.size() < LOOKUP_MAX_PEERS; round++) {
             for (RoutingTable.Entry entry : frontier.takeBatch()) {
                 queryGetPeers(entry, target, peers, announced, frontier);
             }
@@ -169,7 +185,7 @@ public final class DhtClient implements AutoCloseable {
     List<RoutingTable.Entry> iterativeFindNode(NodeId target) {
         List<RoutingTable.Entry> found = new ArrayList<>();
         Frontier frontier = new Frontier(target, table.nearest(target, Frontier.ALPHA * 2));
-        for (int round = 0; round < 8 && !frontier.isEmpty(); round++) {
+        for (int round = 0; round < FIND_NODE_MAX_ROUNDS && !frontier.isEmpty(); round++) {
             for (RoutingTable.Entry entry : frontier.takeBatch()) {
                 queryFindNode(entry, target, found, frontier);
             }

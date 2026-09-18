@@ -25,9 +25,11 @@ public record DownloadOptions(
         FilePriority filePriorities) {
 
     /**
-     * @deprecated 用 {@link #restartVerifyMode} 三档替代布尔开关；等价于 FULL/NONE。
+     * @deprecated 1.0 冻结移除。等价迁移：
+     * {@code DownloadOptions.defaults().targetDir(dir).resumeEnabled(r).restartVerify(FULL)}
+     * （verifyOnRestart=true ↔ FULL，false ↔ NONE）。
      */
-    @Deprecated
+    @Deprecated(forRemoval = true, since = "1.0")
     public DownloadOptions(Path targetDir, boolean resumeEnabled, boolean verifyOnRestart,
             boolean seedAfterComplete, long downloadLimitBytesPerSecond,
             long uploadLimitBytesPerSecond) {
@@ -38,11 +40,9 @@ public record DownloadOptions(
     }
 
     /**
-     * @deprecated 用 10 参构造（含 {@link FilePriority}）或
-     * {@link #defaults()} + {@link #fileFilter(FileFilter)} /
-     * {@link #downloadOrder(DownloadOrder)} 链式设置；本重载等于全量 + 稀缺优先。
+     * @deprecated 1.0 冻结移除。等价迁移：{@code defaults()} + 各 wither 链式设置。
      */
-    @Deprecated
+    @Deprecated(forRemoval = true, since = "1.0")
     public DownloadOptions(Path targetDir, boolean resumeEnabled, boolean verifyOnRestart,
             boolean seedAfterComplete, long downloadLimitBytesPerSecond,
             long uploadLimitBytesPerSecond, RestartVerifyMode restartVerifyMode) {
@@ -53,9 +53,9 @@ public record DownloadOptions(
     }
 
     /**
-     * @deprecated 用 10 参构造或链式设置；本重载等于稀缺优先。
+     * @deprecated 1.0 冻结移除。等价迁移：{@code defaults().fileFilter(...)} 等 wither。
      */
-    @Deprecated
+    @Deprecated(forRemoval = true, since = "1.0")
     public DownloadOptions(Path targetDir, boolean resumeEnabled, boolean verifyOnRestart,
             boolean seedAfterComplete, long downloadLimitBytesPerSecond,
             long uploadLimitBytesPerSecond, RestartVerifyMode restartVerifyMode,
@@ -67,10 +67,9 @@ public record DownloadOptions(
     }
 
     /**
-     * @deprecated 用 10 参构造或 {@link #defaults()} + {@link #filePriorities(FilePriority)}
-     * 链式设置；本重载等于全量 NORMAL 优先级。
+     * @deprecated 1.0 冻结移除。等价迁移：{@code defaults().downloadOrder(...)} 等 wither。
      */
-    @Deprecated
+    @Deprecated(forRemoval = true, since = "1.0")
     public DownloadOptions(Path targetDir, boolean resumeEnabled, boolean verifyOnRestart,
             boolean seedAfterComplete, long downloadLimitBytesPerSecond,
             long uploadLimitBytesPerSecond, RestartVerifyMode restartVerifyMode,
@@ -105,6 +104,24 @@ public record DownloadOptions(
     public DownloadOptions restartVerify(RestartVerifyMode mode) {
         return new DownloadOptions(targetDir, resumeEnabled, mode != RestartVerifyMode.NONE,
                 seedAfterComplete, downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, mode,
+                fileFilter, downloadOrder, filePriorities);
+    }
+
+    /**
+     * 断点续传开关（默认开）：关闭则每次启动视为全新下载，不读也不写 resume 文件。
+     */
+    public DownloadOptions resumeEnabled(boolean enabled) {
+        return new DownloadOptions(targetDir, enabled, verifyOnRestart, seedAfterComplete,
+                downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, restartVerifyMode,
+                fileFilter, downloadOrder, filePriorities);
+    }
+
+    /**
+     * 完成后不退出、转入持续做种（默认关；见 MANUAL §5.1"下载完成后继续做种"）。
+     */
+    public DownloadOptions seedAfterComplete(boolean seed) {
+        return new DownloadOptions(targetDir, resumeEnabled, verifyOnRestart, seed,
+                downloadLimitBytesPerSecond, uploadLimitBytesPerSecond, restartVerifyMode,
                 fileFilter, downloadOrder, filePriorities);
     }
 

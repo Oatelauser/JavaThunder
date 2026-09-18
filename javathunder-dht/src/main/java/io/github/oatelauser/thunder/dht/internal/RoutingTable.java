@@ -9,12 +9,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Kademlia 路由表（BEP 5 简化实现）：平面单桶（不做 k-bucket 前缀分裂），
- * 节点按最近活跃刷新（lru 语义），容量满（2048）按 XOR 距离淘汰最远者；
+ * 节点按最近活跃刷新（lru 语义），容量满（{@value #MAX_NODES}）按 XOR 距离淘汰最远者；
  * 未实现 stale ping 替换。对"找 peer"的查询路径够用，实现规模刻意收敛。
  */
 public final class RoutingTable {
 
     public static final int K = 8;
+    /** 容量上限：单桶模型的取舍——真实 Kademlia 分桶可容纳更多，此规模对查 peer 已绰绰有余。 */
+    private static final int MAX_NODES = 2048;
     private static final long STALE_MILLIS = 15 * 60 * 1000;
 
     /**
@@ -49,8 +51,10 @@ public final class RoutingTable {
             existing.touch();
             return;
         }
-        // 距离最近的 K×桶容量上限内的候选才保留（简化空间；查找质量靠 offer 热度自然筛选）
-        if (nodes.size() >= 2048) {
+        // 满表时只接收比现有最远者更近的节点（挤掉最远者）。注意容量检查→淘汰→插入
+        // 非原子：并发 offer 可能瞬时超限或重复评估最远者——本表只是查询候选来源，
+        // nearest 会重排，容忍弱一致，不加桶级锁
+        if (nodes.size() >= MAX_NODES) {
             KrpcMessage.NodeId farthest = farthestByDistance();
             if (farthest != null && compareDistances(id, farthest) > 0) {
                 return; // 比最远者还远且表满：丢弃

@@ -11,14 +11,17 @@ import java.nio.file.Path;
  */
 public record SeedOptions(Path dataDir, long uploadLimitBytesPerSecond) {
 
+    /** 全默认：数据目录 {@code downloads}、不限速。 */
     public static SeedOptions defaults() {
         return new SeedOptions(Path.of("downloads"), 0);
     }
 
+    /** 数据目录 wither。 */
     public SeedOptions dataDir(Path dir) {
         return new SeedOptions(dir, uploadLimitBytesPerSecond);
     }
 
+    /** 上传限速 wither（字节/秒；0 = 不限）。 */
     public SeedOptions uploadLimitBytesPerSecond(long bytesPerSecond) {
         return new SeedOptions(dataDir, bytesPerSecond);
     }

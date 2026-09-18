@@ -80,6 +80,9 @@ public final class BlockingTransport implements PeerTransport {
             handler.onConnected(channel);
             channel.start();
         } catch (IOException | RuntimeException e) {
+            // 握手失败的对端只能弃连；留 debug 痕迹便于排查互操作问题
+            log.debug("inbound peer {} failed during handshake: {}", socket.getRemoteSocketAddress(),
+                    e.toString());
             closeQuietly(socket);
         }
     }

@@ -23,6 +23,9 @@ import org.jspecify.annotations.Nullable;
  */
 final class SwarmRegistry {
 
+    /** compact peer 条目宽度 = 4B IPv4 + 2B 端口（BEP 23）。 */
+    private static final int COMPACT_PEER_BYTES = 6;
+
     /**
      * swarm 成员：lastSeen 驱动过期；sticky（直接注册）不过期。
      */
@@ -252,7 +255,7 @@ final class SwarmRegistry {
             if (self == null || entry.getKey().equals(self)) {
                 continue;
             }
-            if (maxPeers > 0 && peers.size() / 6 >= maxPeers) {
+            if (maxPeers > 0 && peers.size() / COMPACT_PEER_BYTES >= maxPeers) {
                 continue;
             }
             byte[] address = entry.getKey().getAddress().getAddress();
@@ -260,6 +263,7 @@ final class SwarmRegistry {
                 continue; // compact（BEP 23）仅 IPv4
             }
             peers.writeBytes(address);
+            // 端口按网络序（大端）两字节压入 compact 条目
             peers.write(entry.getKey().getPort() >> 8);
             peers.write(entry.getKey().getPort() & 0xFF);
         }

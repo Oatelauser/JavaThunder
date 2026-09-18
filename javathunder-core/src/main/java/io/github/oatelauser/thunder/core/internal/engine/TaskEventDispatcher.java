@@ -7,6 +7,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * 任务事件扇出：监听回调固定在调用方注入的事件执行器上运行（不占用 selector /
@@ -27,80 +28,43 @@ final class TaskEventDispatcher {
         listeners.add(listener);
     }
 
-    void error(Throwable error) {
+    /** 逐监听器投递到事件执行器；单监听器异常就地吞掉（见类注释）。 */
+    private void dispatch(Consumer<TaskListener> call) {
         for (TaskListener listener : listeners) {
             eventExecutor.execute(() -> {
                 try {
-                    listener.onError(error);
+                    call.accept(listener);
                 } catch (RuntimeException ignored) {
                 }
             });
         }
+    }
+
+    void error(Throwable error) {
+        dispatch(listener -> listener.onError(error));
     }
 
     void trackerAnnounce(String url, @Nullable String failure, int seeders, int leechers) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onTrackerAnnounce(url, failure, seeders, leechers);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onTrackerAnnounce(url, failure, seeders, leechers));
     }
 
     void peerConnected(String key) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onPeerConnected(key);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onPeerConnected(key));
     }
 
     void peerDisconnected(String key, @Nullable String cause) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onPeerDisconnected(key, cause);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onPeerDisconnected(key, cause));
     }
 
     void pieceComplete(int piece) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onPieceComplete(piece);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onPieceComplete(piece));
     }
 
     void progress(ProgressSnapshot snapshot) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onProgress(snapshot);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onProgress(snapshot));
     }
 
     void stateChanged(TaskState from, TaskState to) {
-        for (TaskListener listener : listeners) {
-            eventExecutor.execute(() -> {
-                try {
-                    listener.onStateChanged(from, to);
-                } catch (RuntimeException ignored) {
-                }
-            });
-        }
+        dispatch(listener -> listener.onStateChanged(from, to));
     }
 }

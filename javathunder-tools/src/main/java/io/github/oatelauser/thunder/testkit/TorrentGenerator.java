@@ -53,25 +53,18 @@ public final class TorrentGenerator {
         Path contentFile = dir.resolve(name);
         Files.write(contentFile, content);
 
-        int pieceCount = (sizeBytes + pieceLength - 1) / pieceLength;
-        byte[] pieces = new byte[pieceCount * 20];
-        for (int p = 0; p < pieceCount; p++) {
-            int from = p * pieceLength;
-            int to = Math.min(from + pieceLength, sizeBytes);
-            byte[] hash = sha1(content, from, to);
-            System.arraycopy(hash, 0, pieces, p * 20, 20);
-        }
-
         Map<BString, BencodeValue> info = new TreeMap<>(BString.UNSIGNED_ORDER);
         info.put(BString.of("name"), BString.of(name));
         info.put(BString.of("piece length"), new BInteger(pieceLength));
         info.put(BString.of("length"), new BInteger(sizeBytes));
-        info.put(BString.of("pieces"), new BString(pieces));
+        info.put(BString.of("pieces"), new BString(sha1Pieces(content, pieceLength)));
         Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
         if (announceUrl != null) {
             top.put(BString.of("announce"), BString.of(announceUrl));
         }
         if (!webSeeds.isEmpty()) {
+            // 单文件形态恒写 BList；单 url 裸字符串形态由 generateMultiFile 覆盖——
+            // BEP 19 两种合法线形态各留一臂，勿统一。
             List<BencodeValue> urls = new ArrayList<>();
             for (String url : webSeeds) {
                 urls.add(BString.of(url));
@@ -81,13 +74,12 @@ public final class TorrentGenerator {
         top.put(BString.of("info"), new BDict(info));
         Path torrentFile = dir.resolve(name + ".torrent");
         Files.write(torrentFile, Bencode.encode(new BDict(top)));
-        return new GeneratedTorrent(contentFile, torrentFile, pieceCount);
+        return new GeneratedTorrent(contentFile, torrentFile, pieceCount(content.length, pieceLength));
     }
 
     /**
      * 生成多文件种子：name 根目录下按 [path, sizeBytes] 写随机内容，Piece 覆盖拼接流。
      */
-    @SuppressWarnings("unchecked")
     public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name, List<List<Object>> specs,
             int pieceLength, String announceUrl, Random random) throws IOException {
         return generateMultiFile(dir, name, specs, pieceLength, announceUrl, List.of(), random);
@@ -97,7 +89,6 @@ public final class TorrentGenerator {
      * 完整形态：可附带 WebSeed 源（BEP 19 顶层 url-list，目录形态——base 供拼接相对路径）。
      * {@code announceUrl} 传 null 且 urlList 非空时生成纯 WebSeed 种子。
      */
-    @SuppressWarnings("unchecked")
     public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name, List<List<Object>> specs,
             int pieceLength, @Nullable String announceUrl, List<String> urlList, Random random)
             throws IOException {
@@ -107,24 +98,18 @@ public final class TorrentGenerator {
             writeMultiFileEntry(dir, name, spec, random, concatenated, fileDicts);
         }
         byte[] stream = concatenated.toByteArray();
-        int pieceCount = (stream.length + pieceLength - 1) / pieceLength;
-        byte[] pieces = new byte[pieceCount * 20];
-        for (int p = 0; p < pieceCount; p++) {
-            int from = p * pieceLength;
-            int to = Math.min(from + pieceLength, stream.length);
-            byte[] hash = sha1(stream, from, to);
-            System.arraycopy(hash, 0, pieces, p * 20, 20);
-        }
         Map<BString, BencodeValue> info = new TreeMap<>(BString.UNSIGNED_ORDER);
         info.put(BString.of("name"), BString.of(name));
         info.put(BString.of("piece length"), new BInteger(pieceLength));
-        info.put(BString.of("pieces"), new BString(pieces));
+        info.put(BString.of("pieces"), new BString(sha1Pieces(stream, pieceLength)));
         info.put(BString.of("files"), new BList(fileDicts));
         Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
         if (announceUrl != null) {
             top.put(BString.of("announce"), BString.of(announceUrl));
         }
         if (!urlList.isEmpty()) {
+            // BEP 19 允许 url-list 为裸字符串或列表：单 url 写裸字符串（目录 base 用例），
+            // 多 url 写列表——与单文件 generate() 恒写列表互补，覆盖两种线形态。
             top.put(BString.of("url-list"), urlList.size() == 1
                     ? BString.of(urlList.get(0))
                     : new BList(urlList.stream().map(BString::of).collect(Collectors.toList())));
@@ -132,7 +117,8 @@ public final class TorrentGenerator {
         top.put(BString.of("info"), new BDict(info));
         Path torrentFile = dir.resolve(name + ".torrent");
         Files.write(torrentFile, Bencode.encode(new BDict(top)));
-        return new GeneratedMultiFileTorrent(dir.resolve(name), torrentFile, pieceCount);
+        return new GeneratedMultiFileTorrent(dir.resolve(name), torrentFile,
+                pieceCount(stream.length, pieceLength));
     }
 
     /** 写出一个 spec 条目的随机内容文件并追加 file 字典与拼接流字节。 */
@@ -159,6 +145,22 @@ public final class TorrentGenerator {
         }
         fileDict.put(BString.of("path"), new BList(pathElements));
         fileDicts.add(new BDict(fileDict));
+    }
+
+    /** 件数 = ceil(总长 / 件长)，末件允许截断。 */
+    private static int pieceCount(long totalBytes, int pieceLength) {
+        return (int) ((totalBytes + pieceLength - 1) / pieceLength);
+    }
+
+    /** V1 pieces 字段：对拼接流按件长切块，逐件 SHA-1 后 20 字节哈希串联。 */
+    private static byte[] sha1Pieces(byte[] stream, int pieceLength) {
+        byte[] pieces = new byte[pieceCount(stream.length, pieceLength) * 20];
+        for (int p = 0; p * pieceLength < stream.length; p++) {
+            int from = p * pieceLength;
+            byte[] hash = sha1(stream, from, Math.min(from + pieceLength, stream.length));
+            System.arraycopy(hash, 0, pieces, p * 20, 20);
+        }
+        return pieces;
     }
 
     private static byte[] sha1(byte[] data, int from, int to) {

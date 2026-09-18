@@ -145,7 +145,7 @@ class UdpTrackerProtocolTest {
         }
     }
 
-    // ---- 脚本化 UDP 客户端（布局镜像 core UdpTrackerClient：port 为 int、numwant 在其后） ----
+    // ---- 脚本化 UDP 客户端（BEP 15 标准布局：left@64、event@72、num_want@92、port@96 两字节） ----
 
     private static final int TID = 0x5A5A5A5A;
 
@@ -170,12 +170,14 @@ class UdpTrackerProtocolTest {
                 .putInt(TID)
                 .put(infoHash)
                 .put(new byte[20]) // peer_id
-                .putLong(0L)       // downloaded
-                .putLong(0L)       // uploaded
-                .putLong(left)
-                .putInt(event)
-                .putInt(port)
-                .putInt(numwant);
+                .putLong(0L)       // downloaded@56
+                .putLong(left)     // left@64
+                .putLong(0L)       // uploaded@72
+                .putInt(event)     // event@80
+                .putInt(0)         // ip@84
+                .putInt(0)         // key@88
+                .putInt(numwant)   // num_want@92
+                .putShort((short) port); // port@96（2 字节）
         return exchange(socket, target, out.array());
     }
 

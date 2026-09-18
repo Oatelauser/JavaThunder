@@ -2,6 +2,44 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
+## 1.0.0（待发布）
+
+### API 冻结（ADR-0005）
+
+- **api 面冻结**：1.0.0 发布时的 javathunder-api 全部公共类型即对外承诺面，
+  1.x 期间只做纯新增与实现修复，破坏性变更升 major（japicmp 对 tag 基线守护）
+- **`DownloadOptions` 补齐 wither 自洽**：新增 `resumeEnabled(boolean)` 与
+  `seedAfterComplete(boolean)`——自此 `defaults()` + wither 链可表达规范构造的
+  全部取值（此前做种开关只能经原始构造设置，属冻结前的真实缺口）
+- **4 个历史兼容构造升级 `@Deprecated(forRemoval = true)`**（6/7/8/9 参重载，
+  编译期强警告 + 迁移注释），**2.0 移除**
+- **文档事实纠正与补全**：`DownloadResult` 类注释不再声称"SHA-1 校验"（v2-only
+  为 SHA-256 Merkle；选择性下载后为必需件集）；`DownloadTask` 全成员、`TaskState`
+  全常量、`TorrentClient.download(Path)`、`MagnetUri.parse`、`SeedOptions`
+  工厂/wither 补齐 Javadoc（语义/异常/边界）。无行为变更
+
+### 修复（全项目规范走查产出，~145 文件审阅）
+
+- **UDP tracker announce 请求编码修正为 BEP 15 标准**（客户端 + 内嵌 UDP 服务端
+  两侧同步）：此前 `left`/`uploaded` 字段写反、`port` 误写 4 字节 int 且 98 字节
+  缓冲尾部 6 字节未写满——真实 tracker 会解读为 `num_want=0`（不给 peer）与我方
+  `port=0`（入站失效）；内嵌服务端此前镜像同一私有布局，第三方客户端无法直连。
+  现两侧均为标准布局（含逐字段偏移断言的测试）
+- **NIO 帧上限前置校验**：恶意对端仅凭 4 字节长度前缀声明超大帧（含 ≥0x80000000
+  的负数化长度）即可在解码期检查生效前触发巨额堆分配；现读入即按无符号比对断连
+  （与阻塞路径一致，新增专项测试）
+- **内嵌 UDP tracker 服务线程不再被单次 IO 异常杀死**：Windows 上向已消失对端回包
+  后的 ICMP 端口不可达会令下一次 receive 抛异常，旧实现静默退出整个 announce 线程；
+  现仅正常关停退出（对齐 dht KrpcRpc 的同款处理）
+- **v2-only 磁力层带装配竞态**：哈希请求批量发给全部对端，两会话并发交付同一块时
+  计数越过零、整带终检永不触发（任务 60s 超时收场）；现以 `ConcurrentMap.remove(k,v)`
+  原子占位，仅胜者装配计数
+- **Windows 句柄两项**：`StorageManager` 构造器部分失败不再泄漏已开文件通道（锁
+  文件）；`MultiFileStorage.finish()` 现关闭填充文件通道（`.part` 暂存目录此前删不掉）
+- **零行为重构约 37 处**：方法下沉/卫语句/魔法值提名/死代码清除（含 KRPC 死方法、
+  恒真断言、未用字段）/失实注释纠正——依据 AGENTS.md（Clean Code + 阿里 P3C 黄山版
+  人工口径）逐文件执行，双臂全量测试零回归
+
 ## 0.8.0（2026-09-18）
 
 ### 新增

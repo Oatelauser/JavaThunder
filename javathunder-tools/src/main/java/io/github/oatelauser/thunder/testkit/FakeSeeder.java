@@ -35,7 +35,7 @@ public final class FakeSeeder implements AutoCloseable {
     private final FileChannel content;
     private final TorrentMetadata meta;
     private final byte[] peerId = PeerIds.generate();
-    private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final List<Integer> requestedPieceOrder = new CopyOnWriteArrayList<>();
 
@@ -48,7 +48,7 @@ public final class FakeSeeder implements AutoCloseable {
     public static FakeSeeder start(Path contentFile, TorrentMetadata meta) throws IOException {
         ServerSocket serverSocket = new ServerSocket(0, 64, InetAddress.getLoopbackAddress());
         FakeSeeder seeder = new FakeSeeder(serverSocket, FileChannel.open(contentFile, READ), meta);
-        seeder.threads.submit(seeder::acceptLoop);
+        seeder.executor.submit(seeder::acceptLoop);
         return seeder;
     }
 
@@ -69,7 +69,7 @@ public final class FakeSeeder implements AutoCloseable {
         while (running.get()) {
             try {
                 Socket socket = serverSocket.accept();
-                threads.submit(() -> serve(socket));
+                executor.submit(() -> serve(socket));
             } catch (IOException e) {
                 return; // closed
             }
@@ -131,6 +131,6 @@ public final class FakeSeeder implements AutoCloseable {
             content.close();
         } catch (IOException ignored) {
         }
-        threads.shutdownNow();
+        executor.shutdownNow();
     }
 }

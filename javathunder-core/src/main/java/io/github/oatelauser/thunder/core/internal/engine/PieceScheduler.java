@@ -182,7 +182,8 @@ public final class PieceScheduler {
     public List<BlockRequest> blocksOf(int pieceIndex) {
         long offset = pieceIndex * pieceLength;
         long pieceSize = Math.min(pieceLength, totalLength - offset);
-        List<BlockRequest> blocks = new ArrayList<>();
+        int blockCount = (int) ((pieceSize + BLOCK_SIZE - 1) / BLOCK_SIZE);
+        List<BlockRequest> blocks = new ArrayList<>(blockCount);
         for (int begin = 0; begin < pieceSize; begin += BLOCK_SIZE) {
             blocks.add(new BlockRequest(pieceIndex, begin, (int) Math.min(BLOCK_SIZE, pieceSize - begin)));
         }

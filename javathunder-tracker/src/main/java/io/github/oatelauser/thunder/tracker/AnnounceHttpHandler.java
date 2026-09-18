@@ -36,13 +36,13 @@ final class AnnounceHttpHandler {
             byte[] portBytes = Query.first(params, "port");
             int port = parsePort(portBytes);
             if (infoHash == null || infoHash.length != 20 || port < 0) {
-                Http.respond(exchange, failure("invalid announce"));
+                Http.respond(exchange, Http.failure("invalid announce"));
                 return;
             }
             metrics.httpAnnounce();
             String denied = registry.denyReason(infoHash);
             if (denied != null) {
-                Http.respond(exchange, failure(denied));
+                Http.respond(exchange, Http.failure(denied));
                 return;
             }
             String event = Query.textOf(Query.first(params, "event"));
@@ -53,7 +53,7 @@ final class AnnounceHttpHandler {
                     "stopped".equals(event), "completed".equals(event), -1));
             Http.respond(exchange, announceResponse(view));
         } catch (RuntimeException e) {
-            Http.respond(exchange, failure("tracker error: " + e));
+            Http.respond(exchange, Http.failure("tracker error: " + e));
         }
     }
 
@@ -77,9 +77,5 @@ final class AnnounceHttpHandler {
                 BString.of("incomplete"), new BInteger(view.leechers()),
                 BString.of("interval"), new BInteger(announceIntervalSeconds),
                 BString.of("peers"), new BString(view.peersCompact()))));
-    }
-
-    private static byte[] failure(String reason) {
-        return Bencode.encode(BDict.of(Map.of(BString.of("failure reason"), BString.of(reason))));
     }
 }

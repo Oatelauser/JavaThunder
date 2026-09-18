@@ -9,12 +9,15 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ThreadLocalRandom;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * UDP announce（BEP 15 服务端）：单 socket 收发循环 + 报文编解码。
  * connect 无状态——每次发回新生成的 connection_id，announce 不校验之。
- * announce 请求布局镜像 core 的 UdpTrackerClient（port 为 int@84、numwant@88，
- * 与标准 BEP 15 的 ip/key 字段位置差异已在注释中标明）。畸形/未知 action
- * 静默丢弃（防放大，BEP 15 安全建议）；事务 ID 原样回带。
+ * announce 请求按 BEP 15 标准布局解析（left@64、event@72、num_want@92、
+ * port@96 两字节）——与第三方客户端（libtorrent 等）及 core 客户端一致。
+ * 畸形/未知 action 静默丢弃（防放大，BEP 15 安全建议）；事务 ID 原样回带。
  */
 final class UdpTrackerServer {
 
@@ -28,10 +31,11 @@ final class UdpTrackerServer {
     private static final int EVENT_COMPLETED = 1;
     private static final int EVENT_STOPPED = 3;
     /**
-     * core UdpTrackerClient 布局的 announce 请求最小长度（port 84..88、numwant 88..92）。
+     * BEP 15 标准布局的 announce 请求长度（含 port@96 两字节，共 98）。
      */
-    private static final int ANNOUNCE_REQUEST_BYTES = 92;
+    private static final int ANNOUNCE_REQUEST_BYTES = 98;
 
+    private static final Logger logger = LoggerFactory.getLogger(UdpTrackerServer.class);
     private final DatagramSocket socket;
     private final SwarmRegistry registry;
     private final TrackerMetrics metrics;
@@ -69,7 +73,13 @@ final class UdpTrackerServer {
                 handlePacket(ByteBuffer.wrap(buffer, 0, packet.getLength()).order(ByteOrder.BIG_ENDIAN),
                         packet);
             } catch (IOException e) {
-                return; // socket 关闭或不可恢复：退出循环
+                if (socket.isClosed()) {
+                    return; // 正常关停
+                }
+                // Windows 上向已消失对端回包后，ICMP 端口不可达会让下一次 receive 抛
+                // SocketException——单次 IO 异常不得静默杀死整个 UDP 服务线程
+                // （对照 dht KrpcRpc.receiveLoop 的同款处理）
+                logger.debug("udp tracker receive failed; continuing: {}", e.toString());
             }
         }
     }
@@ -105,16 +115,21 @@ final class UdpTrackerServer {
         }
         byte[] infoHash = new byte[20];
         in.position(16).get(infoHash);
-        long left = in.position(72).getLong();
+        // BEP 15 标准偏移：left@64、event@80、ip@84/key@88（不消费）、num_want@92、
+        // port@96（2 字节大端无符号）。曾镜像 core 客户端的私有布局（left@72/port 为
+        // int@84）——两侧已一并改回标准，第三方客户端（libtorrent 等）可直连
+        long left = in.getLong(64);
         int event = in.getInt(80);
-        int port = in.getInt(84) & 0xFFFF; // core UdpTrackerClient 布局：port 为 int
-        int numwant = in.getInt(88);
+        int numwant = in.getInt(92);
+        int port = in.getShort(96) & 0xFFFF;
         String denied = registry.denyReason(infoHash);
         if (denied != null) {
             error(packet, transactionId, denied);
             return;
         }
         metrics.udpAnnounce();
+        // numwant ≤ 0 一律视为不限量：core 客户端缺省发 -1；0 在 BEP 3 语义里是"不要 peer"，
+        // 此处按不限量处理（镜像 core 客户端行为，见 UdpClientInteropTest）
         SwarmRegistry.SwarmView view = registry.apply(new SwarmRegistry.Announce(
                 infoHash,
                 new InetSocketAddress(packet.getAddress().getHostAddress(), port),

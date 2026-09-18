@@ -28,6 +28,10 @@ final class KrpcRpc implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(KrpcRpc.class);
     private static final int QUERY_TIMEOUT_MILLIS = 2000;
+    /** 接收缓冲：KRPC 实践报文 <1.5KB（大 nodes 列表居多数百字节），4KB 留足余量。 */
+    private static final int RECEIVE_BUFFER_BYTES = 4096;
+    /** 事务 ID 宽度：主流 DHT 实现约定 2 字节；碰撞时后写者覆盖事务表、前者由超时兜底返回 null。 */
+    private static final int TRANSACTION_ID_BYTES = 2;
 
     private final DatagramSocket socket;
     private final SecureRandom random = new SecureRandom();
@@ -85,13 +89,13 @@ final class KrpcRpc implements AutoCloseable {
     }
 
     byte[] newTransactionId() {
-        byte[] id = new byte[2];
+        byte[] id = new byte[TRANSACTION_ID_BYTES];
         random.nextBytes(id);
         return id;
     }
 
     private void receiveLoop() {
-        byte[] buffer = new byte[4096];
+        byte[] buffer = new byte[RECEIVE_BUFFER_BYTES];
         DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
         while (!closed.get()) {
             try {

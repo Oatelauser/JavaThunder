@@ -84,7 +84,8 @@ class LoopbackDhtTest {
                     case "find_node", "get_peers" ->
                         serveLookup(query, response, server, serverId);
                     case "announce_peer" -> {
-                        // 已宣告（断言由 get_peers 流程隐含——token 校验通过才会被接受）
+                        // 空 r 字典应答即可：客户端拿到 token 后必发 announce_peer，
+                        // 是否真的宣告由 get_peers 流程隐含覆盖
                     }
                     default -> {
                         continue;

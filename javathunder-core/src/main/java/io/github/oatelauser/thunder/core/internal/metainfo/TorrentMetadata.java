@@ -13,8 +13,10 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * v1 种子元数据（BEP 3）：文件清单、Piece 大小、逐 Piece SHA-1、Tracker 分层。
- * {@code infoHash} 恒等于 info 字典原始字节的 SHA-1。
+ * 种子元数据（v1/hybrid/v2）：文件清单、Piece 大小、Tracker 分层。
+ * {@code infoHash} 恒为 20 字节——v1/hybrid 为 info 字典原始字节的 SHA-1，
+ * v2-only 为 SHA-256 截断前 20 字节（满足 DHT/线协议的 v1 宽度）；
+ * 完整 32 字节 SHA-256 只在 v2/hybrid 形态下放 {@code infoHashV2}。
  *
  * <p>多文件种子（B3）：{@code files} 非空，{@code length} = 全部文件长度之和，
  * Piece 覆盖文件的拼接字节流（可跨文件边界）；{@code name} 为根目录名。

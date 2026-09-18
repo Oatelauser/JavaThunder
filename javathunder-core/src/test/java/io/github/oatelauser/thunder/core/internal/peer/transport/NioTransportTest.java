@@ -66,6 +66,52 @@ class NioTransportTest {
     }
 
     @Test
+    void oversizedFrameDeclarationClosesConnectionWithoutAllocation() throws Exception {
+        // 恶意对端只发 4 字节前缀声明 0x7FFFFFFF 帧长：必须在扩容/解码之前断连
+        // （前置校验）——若引擎误扩容等完整帧，假对端永远等不到 EOF，测试超时失败
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             NioTransport transport = new NioTransport(OWN_PEER_ID)) {
+            CompletableFuture<PeerChannel> connected = new CompletableFuture<>();
+            CompletableFuture<Throwable> closed = new CompletableFuture<>();
+
+            Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    InputStream in = new BufferedInputStream(socket.getInputStream());
+                    OutputStream out = socket.getOutputStream();
+                    byte[] handshake = new byte[68];
+                    readFully(in, handshake);
+                    out.write(Handshake.encode(INFO_HASH, FAKE_PEER_ID));
+                    out.flush();
+                    out.write(new byte[]{0x7F, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF});
+                    out.flush();
+                    int eof = in.read();
+                    assertTrue(eof < 0, "引擎应以断连回应超限帧声明，而非等待载荷");
+                } catch (IOException ignored) {
+                }
+            });
+
+            transport.connect(new InetSocketAddress("127.0.0.1", server.getLocalPort()), INFO_HASH,
+                new TransportHandler() {
+                    @Override
+                    public void onConnected(PeerChannel channel) {
+                        channel.setCloseListener(closed::complete);
+                        connected.complete(channel);
+                    }
+
+                    @Override
+                    public void onConnectFailed(InetSocketAddress address, Throwable cause) {
+                        connected.completeExceptionally(cause);
+                    }
+                });
+
+            connected.get(5, TimeUnit.SECONDS);
+            Throwable cause = closed.get(5, TimeUnit.SECONDS);
+            assertTrue(cause != null && cause.getMessage() != null
+                    && cause.getMessage().contains("exceeds limit"), "close 原因应为帧超限：" + cause);
+        }
+    }
+
+    @Test
     void outboundHandshakeAndMessageRoundTrip() throws Exception {
         try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
              NioTransport transport = new NioTransport(OWN_PEER_ID)) {

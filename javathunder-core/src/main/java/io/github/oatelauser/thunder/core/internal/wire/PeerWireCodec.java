@@ -6,6 +6,9 @@ import java.util.List;
 
 /**
  * 线协议帧编解码（BEP 3）：4 字节大端长度前缀 + 1 字节消息 ID + 载荷。
+ * 长度前缀计入消息 ID 字节本身（keep-alive 即前缀为 0）。
+ * 消息 ID 出处：0-8 见 BEP 3；13-17（suggest/have all/have none/reject/allowed fast）
+ * 见 BEP 6；20（扩展）见 BEP 10；21-23（hash request/hashes/hash reject）见 BEP 52。
  *
  * <p>帧上限 {@value #MAX_FRAME_BYTES}：合法 Block 请求恒为 16KiB（BEP 3），
  * 上限给到 128KiB 以容忍个别客户端的更大请求，同时阻断内存炸弹。
@@ -188,11 +191,15 @@ public final class PeerWireCodec {
         requireAtLeast(payloadLength, HASH_HEADER_BYTES, "hashes");
         HashRequest header = readHashHeader(buf, HashRequest::new);
         int hashCount = header.length();
-        if (hashCount <= 0 || (payloadLength - HASH_HEADER_BYTES) % HASH_WIDTH != 0) {
+        // length 为 2 的幂且 ≥1（BEP 52），非正值说明对端帧损坏
+        if (hashCount <= 0) {
+            throw new PeerWireException("hashes declares " + hashCount + " layer hashes");
+        }
+        if ((payloadLength - HASH_HEADER_BYTES) % HASH_WIDTH != 0) {
             throw new PeerWireException("hashes payload not a multiple of 32 bytes");
         }
         int totalHashes = (payloadLength - HASH_HEADER_BYTES) / HASH_WIDTH;
-        if (totalHashes - hashCount < 0) {
+        if (hashCount > totalHashes) {
             throw new PeerWireException("hashes declares " + hashCount
                     + " layer hashes but payload only fits " + totalHashes);
         }
@@ -230,6 +237,7 @@ public final class PeerWireCodec {
     }
 
     private static byte[] single(int id) {
+        // 长度前缀 = 1：载荷仅 1 字节消息 ID（BEP 3 无载荷消息）
         return new byte[]{ 0, 0, 0, 1, (byte) id };
     }
 
@@ -239,7 +247,7 @@ public final class PeerWireCodec {
 
     private static byte[] frame(int id, int payloadLength, PayloadWriter writer) {
         ByteBuffer buf = ByteBuffer.allocate(LENGTH_PREFIX + 1 + payloadLength);
-        buf.putInt(1 + payloadLength);
+        buf.putInt(1 + payloadLength); // 长度前缀含 ID 字节：1 + 载荷
         buf.put((byte) id);
         writer.write(buf);
         return buf.array();

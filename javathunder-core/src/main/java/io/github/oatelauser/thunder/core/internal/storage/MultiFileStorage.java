@@ -171,7 +171,11 @@ public final class MultiFileStorage implements TorrentStorage {
         for (int i = 0; i < files.length; i++) {
             TorrentMetadata.TorrentFile file = files[i];
             if (file.padding()) {
-                // BEP 47 填充文件：只占流偏移不落盘（树中的对齐占位）
+                // BEP 47 填充文件：只占流偏移不落盘（树中的对齐占位）；构造期为正长度
+                // 填充开出的通道须在此关闭，否则 Windows 上暂存目录删不掉、句柄滞留
+                if (channels[i] != null) {
+                    channels[i].close();
+                }
                 continue;
             }
             Path finalPath = rootDir;

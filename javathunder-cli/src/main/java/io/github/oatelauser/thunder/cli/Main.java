@@ -23,13 +23,7 @@ public final class Main {
             return;
         }
         Path torrent = Path.of(args[1]);
-        Path dir = Path.of("downloads");
-        List<String> rest = List.of(args).subList(2, args.length);
-        for (int i = 0; i + 1 < rest.size(); i++) {
-            if ("--dir".equals(rest.get(i))) {
-                dir = Path.of(rest.get(i + 1));
-            }
-        }
+        Path dir = targetDir(args);
 
         try (TorrentClient client = TorrentClient.create()) {
             DownloadTask task = client.download(torrent, DownloadOptions.defaults().targetDir(dir));
@@ -52,6 +46,21 @@ public final class Main {
             System.out.printf("%ncompleted: %s (%d bytes, %ds)%n",
                     result.file(), result.bytes(), result.elapsed().toSeconds());
         }
+    }
+
+    /**
+     * 解析可选 {@code --dir <目录>}（缺省 downloads）。多次出现时最后一个生效；
+     * 循环上界 {@code i + 1 < size} 保证取值下标存在，悬空尾置 {@code --dir} 被忽略。
+     */
+    private static Path targetDir(String[] args) {
+        Path dir = Path.of("downloads");
+        List<String> rest = List.of(args).subList(2, args.length);
+        for (int i = 0; i + 1 < rest.size(); i++) {
+            if ("--dir".equals(rest.get(i))) {
+                dir = Path.of(rest.get(i + 1));
+            }
+        }
+        return dir;
     }
 
     private Main() {

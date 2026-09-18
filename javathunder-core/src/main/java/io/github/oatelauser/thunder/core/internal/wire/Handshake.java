@@ -15,6 +15,12 @@ import java.util.Arrays;
 public record Handshake(byte[] infoHash, byte[] peerId) {
 
     private static final byte[] PROTOCOL = "BitTorrent protocol".getBytes(StandardCharsets.US_ASCII);
+    /** BEP 3：info-hash 与 peer-id 各 20 字节。 */
+    private static final int HASH_BYTES = 20;
+    /** 线格式偏移：info-hash 起始 = pstrlen(1) + 协议串(19) + 保留位(8)。 */
+    private static final int INFO_HASH_OFFSET = 1 + PROTOCOL.length + 8;
+    /** 线格式偏移：peer-id 起始 = info-hash 起始 + 20。 */
+    private static final int PEER_ID_OFFSET = INFO_HASH_OFFSET + HASH_BYTES;
     private static final int WIRE_LENGTH = 1 + PROTOCOL.length + 8 + 20 + 20;
     /**
      * BEP 10 扩展协议位掩码（规范原文：bit 20 counting from 0, {@code reserved[5] & 0x10}）。
@@ -39,7 +45,7 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
     public static final int V2_BIT_OFFSET = 27;
 
     public Handshake {
-        if (infoHash.length != 20 || peerId.length != 20) {
+        if (infoHash.length != HASH_BYTES || peerId.length != HASH_BYTES) {
             throw new IllegalArgumentException("info-hash and peer-id must be 20 bytes");
         }
         infoHash = infoHash.clone();
@@ -47,7 +53,7 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
     }
 
     public static byte[] encode(byte[] infoHash, byte[] peerId) {
-        if (infoHash.length != 20 || peerId.length != 20) {
+        if (infoHash.length != HASH_BYTES || peerId.length != HASH_BYTES) {
             throw new IllegalArgumentException("info-hash and peer-id must be 20 bytes");
         }
         byte[] wire = new byte[WIRE_LENGTH];
@@ -57,8 +63,8 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         wire[EXTENSION_BIT_OFFSET] = EXTENSION_BIT_MASK | FAST_EXTENSION_BIT_MASK;
         // reserved[7]：0x10 v2 协议（BEP 52 哈希交换）
         wire[V2_BIT_OFFSET] = V2_PROTOCOL_BIT_MASK;
-        System.arraycopy(infoHash, 0, wire, 28, 20);
-        System.arraycopy(peerId, 0, wire, 48, 20);
+        System.arraycopy(infoHash, 0, wire, INFO_HASH_OFFSET, HASH_BYTES);
+        System.arraycopy(peerId, 0, wire, PEER_ID_OFFSET, HASH_BYTES);
         return wire;
     }
 
@@ -72,8 +78,8 @@ public record Handshake(byte[] infoHash, byte[] peerId) {
         if (!Arrays.equals(wire, 1, 1 + PROTOCOL.length, PROTOCOL, 0, PROTOCOL.length)) {
             throw new PeerWireException("handshake protocol string mismatch");
         }
-        byte[] infoHash = Arrays.copyOfRange(wire, 28, 48);
-        byte[] peerId = Arrays.copyOfRange(wire, 48, 68);
+        byte[] infoHash = Arrays.copyOfRange(wire, INFO_HASH_OFFSET, PEER_ID_OFFSET);
+        byte[] peerId = Arrays.copyOfRange(wire, PEER_ID_OFFSET, WIRE_LENGTH);
         return new Handshake(infoHash, peerId);
     }
 

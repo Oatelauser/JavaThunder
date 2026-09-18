@@ -50,6 +50,8 @@ public final class PieceLayerFetcher {
     private static final Logger log = LoggerFactory.getLogger(PieceLayerFetcher.class);
     private static final long TIMEOUT_MILLIS = 60_000;
     private static final int MAX_CHUNK = 512;
+    /** 并发哈希交换会话上限：候选多时丢弃而非排队（announce 循环会周期性重新补给）。 */
+    private static final int MAX_SESSIONS = 8;
 
     private final TorrentMetadata meta;
     private final byte[] infoHash;
@@ -163,7 +165,7 @@ public final class PieceLayerFetcher {
                 }
                 continue;
             }
-            if (sessions.size() >= 8) {
+            if (sessions.size() >= MAX_SESSIONS) {
                 continue;
             }
             connectOne(address);
@@ -240,14 +242,21 @@ public final class PieceLayerFetcher {
         fillChunk(chunk, message.hashes());
     }
 
-    /** 验证通过后的装配：拷入实段（越尾填充段丢弃）→ 剩余清零触发整带终检。 */
+    /**
+     * 验证通过后的装配：先原子占位（{@code remove(key, value)} 只允许一个会话胜出——
+     * 请求批量发给全部对端，两会话并发交付同一 chunk 时若用 get-then-remove 的
+     * check-then-act，双方都会 decrement，计数越过 0 永不归零、整带终检不触发），
+     * 胜者拷入实段（越尾填充段丢弃）→ 剩余清零触发终检。
+     */
     private void fillChunk(Chunk chunk, List<byte[]> hashes) {
+        if (!pending.remove(chunkKey(chunk.piecesRoot(), chunk.index()), chunk)) {
+            return; // 输给了并发交付同一 chunk 的会话：本份丢弃
+        }
         int real = Math.min(chunk.count(), chunk.strip().filePieces - chunk.index());
         for (int i = 0; i < real; i++) {
             System.arraycopy(hashes.get(i), 0, chunk.strip().buffer,
                     (chunk.index() + i) * MerkleHashes.HASH_WIDTH, MerkleHashes.HASH_WIDTH);
         }
-        pending.remove(chunkKey(chunk.piecesRoot(), chunk.index()));
         if (chunk.strip().remaining.decrementAndGet() == 0) {
             verifyStrip(chunk.strip());
         }
@@ -290,7 +299,8 @@ public final class PieceLayerFetcher {
     }
 
     private void onReject(HashReject reject) {
-        // 拒答不消除 pending（其他 Peer 可能可服务），但该会话视为不可用，换源重试
+        // 拒答不消除 pending（其他会话可能可服务）；本会话保留——同一对端仍可能
+        // 应答其他区间，重试由多会话并发发出的同一批量请求自然覆盖
         log.debug("peer rejected hash request at index {}", reject.index());
     }
 

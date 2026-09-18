@@ -14,6 +14,12 @@ import java.util.concurrent.Executor;
  */
 public interface TorrentClient extends AutoCloseable {
 
+    /**
+     * .torrent 文件下载：解析 → 断点续传校验（按 {@link DownloadOptions#restartVerifyMode}）
+     * → 下载（Peer + 可选 WebSeed 双通道）→ 逐件校验 → 完成/做种。
+     *
+     * @throws Exception 种子文件不存在/不可解析；目标目录不可写；并发槽位获取被中断
+     */
     DownloadTask download(Path torrentFile, DownloadOptions options) throws Exception;
 
     /**

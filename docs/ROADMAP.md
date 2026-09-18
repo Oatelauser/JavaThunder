@@ -97,4 +97,8 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 - 公共 API 与实现分模块（见 ADR-0002），`*.internal.*` 包永不公共
 - japicmp 基线比对在第一个 0.x tag（有可比对的历史版本）后立即启用
 - CI 测试矩阵：JDK 21 / 25 / 26
-- 0.x 期间 API 可破坏；MVP + API 走查通过后升 1.0 冻结公共 API
+- 0.x 期间 API 可破坏；**1.0 API 冻结走查已完成（ADR-0005，随 1.0.0 发布生效）**：
+  冻结面 = 1.0.0 的 javathunder-api 全部公共类型，1.x 只做纯新增与实现修复；
+  wither 自洽补齐（resumeEnabled/seedAfterComplete），历史兼容构造升级
+  forRemoval（2.0 移除）；P3C 构建门禁因 p3c-pmd 不兼容 JDK 21 暂缓（IDEA 插件
+  人工口径 + checkstyle 门禁过渡，ADR-0005 决策 7）

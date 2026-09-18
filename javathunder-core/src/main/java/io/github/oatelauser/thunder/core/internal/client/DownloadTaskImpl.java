@@ -23,26 +23,32 @@ public final class DownloadTaskImpl implements DownloadTask {
         // （入站握手路由、announce、上传服务都要继续）。若此时就注销路由/释放并发槽，
         // 做种客户端对外表现为"完成即下线"（A1 互操作：ttorrent 连我方监听端口握手即 EOF）。
         // 因此：非做种任务在 future 完成时终止；做种任务延迟到真正终止（COMPLETED/CANCELLED/FAILED）。
-        AtomicBoolean finished = new AtomicBoolean();
-        Runnable finishOnce = () -> {
-            if (finished.compareAndSet(false, true)) {
-                onFinished.run();
-            }
-        };
-        session.future().whenComplete((result, error) -> {
-            if (session.state() == TaskState.SEEDING) {
-                session.addListener(new TaskListener() {
-                    @Override
-                    public void onStateChanged(TaskState from, TaskState to) {
-                        if (to == TaskState.COMPLETED || to == TaskState.CANCELLED || to == TaskState.FAILED) {
-                            finishOnce.run();
-                        }
-                    }
-                });
-            } else {
-                finishOnce.run();
+        Runnable finishOnce = once(onFinished);
+        session.future().whenComplete((result, error) -> finishWhenSessionEnds(finishOnce));
+    }
+
+    private void finishWhenSessionEnds(Runnable finishOnce) {
+        if (session.state() != TaskState.SEEDING) {
+            finishOnce.run();
+            return;
+        }
+        session.addListener(new TaskListener() {
+            @Override
+            public void onStateChanged(TaskState from, TaskState to) {
+                if (to == TaskState.COMPLETED || to == TaskState.CANCELLED || to == TaskState.FAILED) {
+                    finishOnce.run();
+                }
             }
         });
+    }
+
+    private static Runnable once(Runnable action) {
+        AtomicBoolean finished = new AtomicBoolean();
+        return () -> {
+            if (finished.compareAndSet(false, true)) {
+                action.run();
+            }
+        };
     }
 
     @Override

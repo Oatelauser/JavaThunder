@@ -8,7 +8,6 @@ import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import org.jspecify.annotations.Nullable;
 
-import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -22,12 +21,19 @@ import java.util.TreeMap;
  */
 public final class KrpcMessage {
 
+    /** 紧凑 peer 地址 = 4B IPv4 + 2B 端口（get_peers 响应的 values 元素）。 */
+    static final int COMPACT_PEER_BYTES = 6;
+    /** 节点 ID 固定 20 字节（BEP 5）。 */
+    static final int NODE_ID_BYTES = 20;
+    /** 紧凑节点地址 = 20B id + 6B ip:port（find_node/get_peers 响应的 nodes 字段）。 */
+    static final int COMPACT_NODE_BYTES = NODE_ID_BYTES + COMPACT_PEER_BYTES;
+
     /**
      * 20 字节 DHT 节点 ID。
      */
     public record NodeId(byte[] bytes) {
         public NodeId {
-            if (bytes.length != 20) {
+            if (bytes.length != NODE_ID_BYTES) {
                 throw new IllegalArgumentException("node id must be 20 bytes");
             }
             bytes = bytes.clone();
@@ -37,8 +43,8 @@ public final class KrpcMessage {
          * XOR 距离（Kademlia 度量），大端序比较。
          */
         public byte[] distanceTo(NodeId other) {
-            byte[] out = new byte[20];
-            for (int i = 0; i < 20; i++) {
+            byte[] out = new byte[NODE_ID_BYTES];
+            for (int i = 0; i < NODE_ID_BYTES; i++) {
                 out[i] = (byte) (bytes[i] ^ other.bytes[i]);
             }
             return out;
@@ -65,7 +71,7 @@ public final class KrpcMessage {
     public record PeerAddr(byte @Nullable [] nodeId, String host, int port) {
 
         public static PeerAddr compact6(byte[] six) {
-            if (six.length != 6) {
+            if (six.length != COMPACT_PEER_BYTES) {
                 throw new IllegalArgumentException("compact peer must be 6 bytes");
             }
             String host = (six[0] & 0xFF) + "." + (six[1] & 0xFF) + "."
@@ -75,11 +81,11 @@ public final class KrpcMessage {
         }
 
         public static PeerAddr compact26(byte[] twentySix) {
-            if (twentySix.length != 26) {
+            if (twentySix.length != COMPACT_NODE_BYTES) {
                 throw new IllegalArgumentException("compact node must be 26 bytes");
             }
-            PeerAddr base = compact6(Arrays.copyOfRange(twentySix, 20, 26));
-            return new PeerAddr(Arrays.copyOf(twentySix, 20), base.host, base.port);
+            PeerAddr base = compact6(Arrays.copyOfRange(twentySix, NODE_ID_BYTES, COMPACT_NODE_BYTES));
+            return new PeerAddr(Arrays.copyOf(twentySix, NODE_ID_BYTES), base.host, base.port);
         }
     }
 
@@ -177,12 +183,13 @@ public final class KrpcMessage {
                 return List.of();
             }
             byte[] data = raw.value();
-            if (data.length % 26 != 0) {
+            // 长度非 26 的整数倍说明对端编码有误：整包弃用，避免错位解出伪节点
+            if (data.length % COMPACT_NODE_BYTES != 0) {
                 return List.of();
             }
-            List<PeerAddr> result = new ArrayList<>(data.length / 26);
-            for (int i = 0; i + 26 <= data.length; i += 26) {
-                result.add(PeerAddr.compact26(Arrays.copyOfRange(data, i, i + 26)));
+            List<PeerAddr> result = new ArrayList<>(data.length / COMPACT_NODE_BYTES);
+            for (int i = 0; i + COMPACT_NODE_BYTES <= data.length; i += COMPACT_NODE_BYTES) {
+                result.add(PeerAddr.compact26(Arrays.copyOfRange(data, i, i + COMPACT_NODE_BYTES)));
             }
             return result;
         }
@@ -231,9 +238,5 @@ public final class KrpcMessage {
         } catch (RuntimeException e) {
             throw new IllegalArgumentException("malformed krpc: " + e.getMessage(), e);
         }
-    }
-
-    public static InetSocketAddress resolve(PeerAddr addr) {
-        return new InetSocketAddress(addr.host(), addr.port());
     }
 }

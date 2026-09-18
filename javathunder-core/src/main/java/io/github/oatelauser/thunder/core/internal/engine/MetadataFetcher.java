@@ -51,6 +51,10 @@ public final class MetadataFetcher {
     private static final int METADATA_BLOCK = 16 * 1024;
     private static final int OUR_UT_METADATA_ID = 1;
     private static final long TIMEOUT_MILLIS = 60_000;
+    /** 并发元数据会话上限：单 info-hash 的并行试探连接数（候选多时丢弃而非排队）。 */
+    private static final int MAX_SESSIONS = 8;
+    /** 对端自报 metadata_size 的钳制上限：防恶意超大值触发巨额分配（分配按此值一次到位）。 */
+    private static final int MAX_METADATA_SIZE = 8 * 1024 * 1024;
 
     private final byte[] infoHash;
     private final byte[] peerId;
@@ -58,6 +62,8 @@ public final class MetadataFetcher {
     private final PeerTransport transport;
     private final TrackerAnnouncer announcer;
     private final int listenPort;
+    @Nullable
+    private final PeerDiscoverySource discovery;
     private final CompletableFuture<byte[]> result = new CompletableFuture<>();
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, MetadataSession> sessions = new ConcurrentHashMap<>();
@@ -79,9 +85,6 @@ public final class MetadataFetcher {
         this.listenPort = listenPort;
         this.discovery = discovery;
     }
-
-    @Nullable
-    private final PeerDiscoverySource discovery;
 
     /**
      * 异步拉取，完成后给出 info 字典的原始字节。announce 周期循环与连接循环
@@ -161,7 +164,7 @@ public final class MetadataFetcher {
                 sleepMillis(200);
                 continue;
             }
-            if (sessions.size() >= 8) {
+            if (sessions.size() >= MAX_SESSIONS) {
                 continue;
             }
             String key = PeerAddresses.key(address);
@@ -216,26 +219,24 @@ public final class MetadataFetcher {
     /**
      * 消息分发：只处理 BEP 10 扩展消息（握手与 ut_metadata data），其余不影响元数据交换。
      */
-    private boolean handle(MetadataSession session, PeerWireMessage message) {
+    private void handle(MetadataSession session, PeerWireMessage message) {
         if (!(message instanceof ExtendedMessage extended)) {
-            return true; // 非扩展消息不影响元数据交换
+            return; // 非扩展消息不影响元数据交换
         }
         if (extended.extendedId() == 0) {
-            return handleHandshake(session, extended.payload());
-        }
-        if (extended.extendedId() == OUR_UT_METADATA_ID && session.remoteUtMetadataId > 0) {
+            handleHandshake(session, extended.payload());
+        } else if (extended.extendedId() == OUR_UT_METADATA_ID && session.remoteUtMetadataId > 0) {
             handleData(session, extended.payload());
         }
-        return true;
     }
 
     /**
      * BEP 10 扩展握手：协商对端的 ut_metadata 子 ID 与 metadata_size，两者齐备即开始请求分块。
      */
-    private boolean handleHandshake(MetadataSession session, byte[] payload) {
+    private void handleHandshake(MetadataSession session, byte[] payload) {
         BDict handshake = decode(payload);
         if (handshake == null) {
-            return true;
+            return;
         }
         BencodeValue utMetadata = handshake.get("m") instanceof BDict m
                 ? m.get("ut_metadata") : null;
@@ -243,12 +244,11 @@ public final class MetadataFetcher {
             session.remoteUtMetadataId = (int) id.value();
             BencodeValue size = handshake.get("metadata_size");
             if (size instanceof BInteger metadataSize
-                    && metadataSize.value() > 0 && metadataSize.value() <= 8 * 1024 * 1024) {
+                    && metadataSize.value() > 0 && metadataSize.value() <= MAX_METADATA_SIZE) {
                 session.metadataSize = (int) metadataSize.value();
                 requestBlocks(session);
             }
         }
-        return true;
     }
 
     /**
@@ -319,7 +319,8 @@ public final class MetadataFetcher {
             closeAll();
         } else {
             log.debug("metadata hash mismatch from peer, discarding");
-            // 换下一个 Peer 重来：关闭当前会话，连接循环仍在跑
+            // 坏数据整份丢弃即止：该会话的请求只发一次、不会重试，新会话由连接循环
+            // 继续建立（候选仍在入队）；本会话不主动关闭，至多占位到超时
         }
     }
 
