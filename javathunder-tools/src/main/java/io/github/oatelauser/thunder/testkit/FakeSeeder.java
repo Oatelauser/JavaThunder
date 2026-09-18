@@ -15,6 +15,8 @@ import java.net.Socket;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,6 +26,8 @@ import static java.nio.file.StandardOpenOption.WRITE;
 
 /**
  * 已知良好的种子方：全量位图、立即 unchoke、按文件分块读应答 request（D2：内存与文件大小无关）。
+ * 记录按到达序的 Request 件号（{@link #requestedPieceOrder}）——顺序下载类验收用它
+ * 断言客户端的请求序（比完成事件序更强也更真实：完成序受并发校验影响可局部翻转）。
  */
 public final class FakeSeeder implements AutoCloseable {
 
@@ -33,6 +37,7 @@ public final class FakeSeeder implements AutoCloseable {
     private final byte[] peerId = PeerIds.generate();
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicBoolean running = new AtomicBoolean(true);
+    private final List<Integer> requestedPieceOrder = new CopyOnWriteArrayList<>();
 
     private FakeSeeder(ServerSocket serverSocket, FileChannel content, TorrentMetadata meta) {
         this.serverSocket = serverSocket;
@@ -55,6 +60,11 @@ public final class FakeSeeder implements AutoCloseable {
         tracker.register(meta.infoHash(), port());
     }
 
+    /** 按到达序的 Request 件号（跨连接汇总；断言用首现序，见类注释）。 */
+    public List<Integer> requestedPieceOrder() {
+        return List.copyOf(requestedPieceOrder);
+    }
+
     private void acceptLoop() {
         while (running.get()) {
             try {
@@ -74,6 +84,7 @@ public final class FakeSeeder implements AutoCloseable {
             while (running.get()) {
                 PeerWireMessage message = connection.read();
                 if (message instanceof Request request) {
+                    requestedPieceOrder.add(request.pieceIndex());
                     connection.write(new PieceMessage(request.pieceIndex(), request.begin(),
                             SeederCore.readBlock(content, meta, request)));
                 }

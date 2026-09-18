@@ -5,7 +5,6 @@ import io.github.oatelauser.thunder.api.DownloadOrder;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.DownloadTask;
 import io.github.oatelauser.thunder.api.FileFilter;
-import io.github.oatelauser.thunder.api.TaskListener;
 import io.github.oatelauser.thunder.api.TorrentClient;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
@@ -15,36 +14,45 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * 顺序下载端到端验收（DownloadOrder.SEQUENTIAL）：完成事件按 Piece 索引严格递增
- * （流式消费——首文件最先凑齐）。件取 512KiB（32 块 = 管线深度），单件在途、
- * 顺序确定；第二个用例验证与选择性下载组合：只在必需件集内按序。
+ * 顺序下载端到端验收（DownloadOrder.SEQUENTIAL）：断言**请求首现序**严格递增
+ * （在种子方观测——这是顺序语义的真保证；完成事件序受并发校验影响可在相邻件间
+ * 局部翻转，不作强断言）。第二个用例验证与选择性下载组合：只在必需件集内按序。
  */
 class SequentialDownloadAcceptanceTest {
 
     @TempDir
     Path tempDir;
 
-    /** 512KiB：32 块恰为管线深度，任意时刻单件在途，完成序 = 请求序。 */
     private static final int PIECE_LENGTH = 512 * 1024;
 
+    /** 请求件号的首现序（管线会重复请求同件的不同块，去重保首现）。 */
+    private static List<Integer> firstSeenOrder(List<Integer> requested) {
+        Set<Integer> seen = new LinkedHashSet<>();
+        for (int piece : requested) {
+            seen.add(piece);
+        }
+        return new ArrayList<>(seen);
+    }
+
     @Test
-    void sequentialModeCompletesPiecesInIndexOrder() throws Exception {
+    void sequentialModeRequestsPiecesInIndexOrder() throws Exception {
         Random random = new Random(66);
         EmbeddedTracker tracker = EmbeddedTracker.start();
         TorrentGenerator.GeneratedTorrent seed = TorrentGenerator.generate(
                 tempDir, "stream.bin", 6 * PIECE_LENGTH, PIECE_LENGTH,
                 tracker.announceUrl(), random);
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(seed.torrentFile()));
-        List<Integer> completed = new CopyOnWriteArrayList<>();
 
         try (TorrentClient client = TorrentClient.builder()
                 .transport(Transports.select())
@@ -56,19 +64,14 @@ class SequentialDownloadAcceptanceTest {
                         .targetDir(tempDir.resolve("dlSeq"))
                         .downloadOrder(DownloadOrder.SEQUENTIAL);
                 DownloadTask task = client.download(seed.torrentFile(), options);
-                task.addListener(new TaskListener() {
-                    @Override
-                    public void onPieceComplete(int pieceIndex) {
-                        completed.add(pieceIndex);
-                    }
-                });
                 DownloadResult result = task.future().get(90, TimeUnit.SECONDS);
                 assertArrayEquals(Files.readAllBytes(seed.contentFile()),
                         Files.readAllBytes(result.file()), "内容字节级一致");
+                assertEquals(List.of(0, 1, 2, 3, 4, 5),
+                        firstSeenOrder(seeder.requestedPieceOrder()),
+                        "请求首现序应按索引严格递增（顺序语义的真保证）");
             }
         }
-        // 严格递增即顺序语义（0..5）——顺序模式是构造性保证，不靠稀缺度巧合
-        assertEquals(List.of(0, 1, 2, 3, 4, 5), completed, "完成事件应按索引严格递增");
     }
 
     @Test
@@ -84,7 +87,6 @@ class SequentialDownloadAcceptanceTest {
                         List.of(List.of("c.bin"), 3 * PIECE_LENGTH)),
                 PIECE_LENGTH, tracker.announceUrl(), random);
         TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(seed.torrentFile()));
-        List<Integer> completed = new CopyOnWriteArrayList<>();
 
         try (TorrentClient client = TorrentClient.builder()
                 .transport(Transports.select())
@@ -97,17 +99,13 @@ class SequentialDownloadAcceptanceTest {
                         .downloadOrder(DownloadOrder.SEQUENTIAL)
                         .fileFilter(FileFilter.paths("a.bin", "c.bin"));
                 DownloadTask task = client.download(seed.torrentFile(), options);
-                task.addListener(new TaskListener() {
-                    @Override
-                    public void onPieceComplete(int pieceIndex) {
-                        completed.add(pieceIndex);
-                    }
-                });
                 DownloadResult result = task.future().get(90, TimeUnit.SECONDS);
                 assertArrayEquals(Files.readAllBytes(seed.rootDir().resolve("c.bin")),
                         Files.readAllBytes(result.file().resolve("c.bin")));
+                assertEquals(List.of(0, 3, 4, 5),
+                        firstSeenOrder(seeder.requestedPieceOrder()),
+                        "只在必需件集内按索引升序请求");
             }
         }
-        assertEquals(List.of(0, 3, 4, 5), completed, "只在必需件集内按索引升序完成");
     }
 }
