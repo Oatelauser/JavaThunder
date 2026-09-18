@@ -20,11 +20,14 @@ final class PeerSession {
     final ArrayDeque<BlockRequest> pending = new ArrayDeque<>();
     final Set<BlockRequest> issued = ConcurrentHashMap.newKeySet();
     /**
-     * 上传服务 FIFO（虚拟线程）：按请求到达顺序应答。BEP 3 不禁止乱序块，但请求序应答
-     * 是主流实现事实标准，且 ttorrent 1.5 的 Piece.record 在收到 offset=0 的块时会重置
-     * 整片缓冲——乱序块 0 会静默抹掉已收块导致校验失败（A1 互操作实测）。
+     * 上传服务队列（单线程 FIFO 虚拟线程）：提交序 = 执行序 = 写出序。串行化是
+     * 互操作正确性要求而非仅性能选择——ttorrent 1.5 的 Piece.record 在收到
+     * offset=0 的块时会重置整片缓冲，若块服务乱序完成（虚拟线程并发 + 磁盘读/
+     * 限速等待的完成序不确定），晚到的块 0 会静默抹掉已收块，拼出损坏件（A1
+     * 互操作实测；CPU 饱和下确定性复现）。跨 Peer 仍并行（每会话各一线程）。
      */
-    final ExecutorService serveExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    final ExecutorService serveExecutor = Executors.newSingleThreadExecutor(
+            Thread.ofVirtual().name("javathunder-serve-").factory());
     volatile boolean peerChokingUs = true;
     volatile boolean weChokingThem = true;
     volatile boolean remoteInterested;
