@@ -30,8 +30,13 @@ final class KrpcRpc implements AutoCloseable {
     private static final int QUERY_TIMEOUT_MILLIS = 2000;
     /** 接收缓冲：KRPC 实践报文 <1.5KB（大 nodes 列表居多数百字节），4KB 留足余量。 */
     private static final int RECEIVE_BUFFER_BYTES = 4096;
-    /** 事务 ID 宽度：主流 DHT 实现约定 2 字节；碰撞时后写者覆盖事务表、前者由超时兜底返回 null。 */
+    /**
+     * 事务 ID 宽度：主流 DHT 实现约定 2 字节；并发下有生日碰撞概率，碰撞方在
+     * {@link #register} 内换新 ID 重试（仍撞则退回覆盖语义，由 2s 超时兜底）。
+     */
     private static final int TRANSACTION_ID_BYTES = 2;
+    /** tid 碰撞的重生成上限：连续撞说明事务表近乎占满，再试无益，退回覆盖语义。 */
+    private static final int TRANSACTION_ID_RETRIES = 3;
 
     private final DatagramSocket socket;
     private final SecureRandom random = new SecureRandom();
@@ -62,9 +67,9 @@ final class KrpcRpc implements AutoCloseable {
      * 阻塞式请求-响应：登记事务 future，等接收线程按事务 ID 配对完成；超时/失败返回 null。
      */
     KrpcMessage.Parsed roundTrip(InetSocketAddress address, KrpcMessage.Builder query) {
-        byte[] transactionId = query.transactionId();
         CompletableFuture<KrpcMessage.Parsed> future = new CompletableFuture<>();
-        transactions.put(key(transactionId), future);
+        query = register(query, future);
+        byte[] transactionId = query.transactionId();
         try {
             byte[] wire = query.encode();
             socket.send(new DatagramPacket(wire, wire.length, address.getAddress(), address.getPort()));
@@ -74,6 +79,38 @@ final class KrpcRpc implements AutoCloseable {
         } finally {
             transactions.remove(key(transactionId));
         }
+    }
+
+    /**
+     * 以 putIfAbsent 登记事务并返回生效的查询（tid 可能已换）。2 字节 tid 在并发
+     * roundTrip 下有生日碰撞，直接 put 会令后写者顶掉在途事务的 future（前者白等
+     * 2s 超时）；碰撞时重新生成 ID 并按新 tid 重建查询重试。重试上限后仍撞（事务表
+     * 被长事务占满的极端情形）则退回覆盖语义——被顶掉方由其 2s 超时兜底，好过无界
+     * 重试阻塞调用方。重建走"编码→解析→再编码"：Builder 的 tid 在构造时已烘进
+     * bencode 字典、无替换入口，不值得为此扩 Builder API；碰撞是稀有路径，成本可忽略。
+     */
+    private KrpcMessage.Builder register(KrpcMessage.Builder query,
+            CompletableFuture<KrpcMessage.Parsed> future) {
+        for (int attempt = 0; attempt < TRANSACTION_ID_RETRIES; attempt++) {
+            if (transactions.putIfAbsent(key(query.transactionId()), future) == null) {
+                return query;
+            }
+            query = rebindTransactionId(query, newTransactionId());
+        }
+        transactions.put(key(query.transactionId()), future);
+        return query;
+    }
+
+    /** 按新 tid 重建等价查询（方法与参数逐项搬运，线格式除 t 外一致）。 */
+    private static KrpcMessage.Builder rebindTransactionId(KrpcMessage.Builder query,
+            byte[] newTransactionId) {
+        KrpcMessage.Parsed self = KrpcMessage.parse(query.encode());
+        KrpcMessage.Builder rebound = KrpcMessage.Builder.query(newTransactionId,
+                self.method() == null ? "" : self.method());
+        if (self.args() != null) {
+            self.args().value().forEach((name, value) -> rebound.arg(name.text(), value));
+        }
+        return rebound;
     }
 
     /**

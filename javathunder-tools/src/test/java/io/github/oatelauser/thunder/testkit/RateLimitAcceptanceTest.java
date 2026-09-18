@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 实测须落在 ±30% 带内（11.2–20.8s；比 DESIGN 的 ±20% 放宽以容忍测试噪声），
  * 且聚合吞吐与限速自洽。任务级（{@link DownloadOptions#rateLimits}）与
  * 全局（builder 限速）各验一遍。
+ * 端口说明：listenPort 取宽带 17000–37000 随机抖动，与它类的窄分段互相重叠，
+ * 并无跨测试类的防撞约定，勿据此新增"端口分配表"。
  */
 class RateLimitAcceptanceTest {
 

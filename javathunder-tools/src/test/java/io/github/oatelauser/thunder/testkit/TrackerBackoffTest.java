@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 失败 announce 时间戳：默认间隔 5s，首次全失败后应翻倍为 10s——
  * 有退避 ⇒ 事件落在 t≈0/10（2 次，间隔 ~10s）；无退避 ⇒ t≈0/5/10（3 次）。
  * 监听器注册与 STARTED announce 存在竞态，首个事件可能丢失（⇒ 仅 1 次），同样符合退避。
+ * 端口说明：listenPort 取宽带 17000–37000 随机抖动，与它类的窄分段互相重叠，
+ * 并无跨测试类的防撞约定，勿据此新增"端口分配表"。
  */
 class TrackerBackoffTest {
 

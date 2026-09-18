@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * 纯 HTTP 源无 tracker 下载、HTTP 源不支持 Range 回退 Peer、HTTP 源数据损坏
  * （坏件熔断）回退 Peer、Peer+HTTP 混合完成。源先起（拿端口）→ 带 url-list 造种 →
  * 内容回填源，保证种子哈希与服务内容一致。
+ * 端口说明：listenPort 取宽带 17000–37000 随机抖动，与它类的窄分段互相重叠，
+ * 并无跨测试类的防撞约定，勿据此新增"端口分配表"。
  */
 class WebSeedAcceptanceTest {
 

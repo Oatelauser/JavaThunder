@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * D2 重启校验三档：坏块注入（把一个已完成件在磁盘上改脏）后分别以
@@ -68,7 +69,7 @@ class RestartVerifyModeTest {
                     RestartVerifyMode.SAMPLED);
 
                 // 抽样恢复不慢于全量（回环下载为主，宽松断言：≤ 全量的 1.1×）
-                assertEquals(true, sampledElapsed <= fullElapsed * 1.1 + 2_000_000_000L,
+                assertTrue(sampledElapsed <= fullElapsed * 1.1 + 2_000_000_000L,
                     "SAMPLED(" + sampledElapsed / 1_000_000 + "ms) should not be slower than "
                         + "FULL(" + fullElapsed / 1_000_000 + "ms)");
             }
@@ -173,7 +174,7 @@ class RestartVerifyModeTest {
     }
 
     @Test
-    void noneModeTrustsBitmapButFinalContentStillVerified() throws Exception {
+    void noneModeLeavesCorruptPieceOnDisk() throws Exception {
         int pieceLength = 256 * 1024;
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
             TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(

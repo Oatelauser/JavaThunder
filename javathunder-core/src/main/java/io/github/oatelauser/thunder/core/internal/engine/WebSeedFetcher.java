@@ -106,8 +106,11 @@ final class WebSeedFetcher {
         return best;
     }
 
+    /** 拉取一件：先原子认领（配对约束见 {@link DownloadSession#claimPieceForWebSeed}），失败即让出。 */
     private void fetchOne(int piece) {
-        session.claimPieceForWebSeed(piece);
+        if (!session.claimPieceForWebSeed(piece)) {
+            return; // 认领失败 = 占用方先到（Peer 或另一 WebSeed 循环）：让出且绝不 release
+        }
         byte[] body;
         try {
             body = fetchPieceBytes(piece);

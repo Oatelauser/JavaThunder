@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** BEP 15 对拍：脚本化 UDP tracker 应答 connect/announce，验证两段事务与紧凑 peer 解析。 */
@@ -125,5 +127,142 @@ class UdpTrackerClientTest {
     void supportsOnlyUdpScheme() {
         assertTrue(UdpTrackerClient.supports("udp://t:6969/announce"));
         assertTrue(!UdpTrackerClient.supports("http://t/announce"));
+    }
+
+    /**
+     * 恶意/损坏 tracker 回 tid 匹配但截短的 connect 应答（12 &lt; 16 字节）：
+     * 修复前 getLong(8) 抛 IndexOutOfBoundsException（RuntimeException）穿透
+     * announce——调用方只捕获 TrackerException；修复后按本轮失败退避重试，
+     * 最终以 TrackerException 收场而非越界异常。
+     */
+    @Test
+    void truncatedConnectResponseFailsAsTrackerExceptionNotOutOfBounds() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
+             UdpTrackerClient client = new UdpTrackerClient()) {
+            Thread.ofVirtual().start(() -> serveTruncatedConnect(server));
+            assertThrows(TrackerException.class, () -> client.announce(
+                "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest()));
+        }
+    }
+
+    /**
+     * 同一 client 的并发 announce 必须在共享 socket 上串行化：假 tracker 给每个
+     * 事务 300ms 应答延迟并统计在途数——串行化下客户端收到应答才会发下一事务，
+     * 服务端观测到的在途数恒为 1；修复前两事务并发在途（互相丢弃对方应答）。
+     */
+    @Test
+    void concurrentAnnouncesSerializeOnSharedSocket() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
+             UdpTrackerClient client = new UdpTrackerClient()) {
+            AtomicInteger inFlight = new AtomicInteger();
+            AtomicInteger maxInFlight = new AtomicInteger();
+            AtomicReference<RuntimeException> failure = new AtomicReference<>();
+            Thread.ofVirtual().start(() -> serveWithDelay(server, 300, inFlight, maxInFlight));
+            String url = "udp://127.0.0.1:" + server.getLocalPort() + "/announce";
+            Runnable announce = () -> {
+                try {
+                    client.announce(url, sampleRequest());
+                } catch (RuntimeException e) {
+                    failure.compareAndSet(null, e);
+                }
+            };
+            Thread first = Thread.ofVirtual().start(announce);
+            Thread second = Thread.ofVirtual().start(announce);
+            first.join(15_000);
+            second.join(15_000);
+            assertNull(failure.get(), "串行化下并发 announce 应全部成功");
+            assertTrue(maxInFlight.get() <= 1,
+                "共享 socket 的事务应串行化，观测最大在途=" + maxInFlight.get());
+        }
+    }
+
+    private static AnnounceRequest sampleRequest() {
+        return new AnnounceRequest(new byte[20], "-JT0001-udptest00001".getBytes(StandardCharsets.US_ASCII),
+            6881, 100, 200, 300, TrackerEvent.STARTED, 10);
+    }
+
+    /** 只回 tid 匹配的 12 字节截短 connect 应答（connection_id 只带 4 字节）。 */
+    private void serveTruncatedConnect(DatagramSocket server) {
+        byte[] buffer = new byte[2048];
+        while (running) {
+            try {
+                server.setSoTimeout(200);
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                server.receive(packet);
+                ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+                    .order(ByteOrder.BIG_ENDIAN);
+                if (in.getInt(8) != 0) {
+                    continue; // 只截短 connect；announce 不应发生（connect 已失败）
+                }
+                byte[] wire = ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+                    .putInt(0).putInt(in.getInt(12)).putInt(0x12345678).array();
+                server.send(new DatagramPacket(wire, wire.length,
+                    packet.getAddress(), packet.getPort()));
+            } catch (SocketTimeoutException ignored) {
+                // 检查 running
+            } catch (Exception ignored) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * 延迟应答并统计在途事务数：应答线程先递减再发送——客户端下一事务必然
+     * 在收到应答（即发送）之后，串行化时服务端不会计到并发在途。
+     */
+    private void serveWithDelay(DatagramSocket server, long delayMillis,
+            AtomicInteger inFlight, AtomicInteger maxInFlight) {
+        byte[] buffer = new byte[2048];
+        while (running) {
+            try {
+                server.setSoTimeout(200);
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                server.receive(packet);
+                maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+                Thread.ofVirtual().start(() -> respondSlowly(server, packet, delayMillis, inFlight));
+            } catch (SocketTimeoutException ignored) {
+                // 检查 running
+            } catch (Exception ignored) {
+                return;
+            }
+        }
+    }
+
+    private static void respondSlowly(DatagramSocket server, DatagramPacket request,
+            long delayMillis, AtomicInteger inFlight) {
+        try {
+            Thread.sleep(delayMillis);
+        } catch (InterruptedException ignored) {
+            inFlight.decrementAndGet();
+            return;
+        }
+        inFlight.decrementAndGet();
+        byte[] wire = replyFor(request);
+        if (wire == null) {
+            return;
+        }
+        try {
+            server.send(new DatagramPacket(wire, wire.length,
+                request.getAddress(), request.getPort()));
+        } catch (Exception ignored) {
+            // 客户端已关闭等情形：忽略
+        }
+    }
+
+    /** 按 action 回标准应答（connect/announce，tid 回显），其他动作不应出现。 */
+    private static byte[] replyFor(DatagramPacket packet) {
+        ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+            .order(ByteOrder.BIG_ENDIAN);
+        int action = in.getInt(8);
+        int transactionId = in.getInt(12);
+        if (action == 0) {
+            return ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+                .putInt(0).putInt(transactionId).putLong(0x1234567890ABCDEFL).array();
+        }
+        if (action == 1) {
+            return ByteBuffer.allocate(20).order(ByteOrder.BIG_ENDIAN)
+                .putInt(1).putInt(transactionId).putInt(1800).putInt(1).putInt(3).array();
+        }
+        return null;
     }
 }

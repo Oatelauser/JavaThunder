@@ -230,4 +230,37 @@ class BlockingTransportTest {
             assertTrue(eof.await(5, TimeUnit.SECONDS), "peer should see EOF after close");
         }
     }
+
+    /**
+     * transport.close() 必须关闭已建连接（对齐 NioTransport 语义）：修复前只关
+     * 监听 socket，已连接通道的读虚拟线程滞留在阻塞 read 上，直到对端断开或
+     * 120s 读超时。假对端握完手后干等：close 后应以本地关闭（cause=null）通知
+     * 通道，且对端观察到 EOF。
+     */
+    @Test
+    void transportCloseClosesEstablishedChannels() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             BlockingTransport transport = new BlockingTransport(OWN_PEER_ID)) {
+            CountDownLatch peerEof = new CountDownLatch(1);
+            startFakePeer(server, (in, out) -> {
+                byte[] handshake = new byte[68];
+                readFully(in, handshake);
+                out.write(Handshake.encode(INFO_HASH, FAKE_PEER_ID));
+                out.flush();
+                if (in.read() == -1) { // 阻塞至引擎关闭连接
+                    peerEof.countDown();
+                }
+            });
+
+            RecordingHandler handler = new RecordingHandler();
+            transport.connect(new InetSocketAddress("127.0.0.1", server.getLocalPort()),
+                INFO_HASH, handler);
+            handler.channel.get(5, TimeUnit.SECONDS); // 通道就绪且不主动关闭
+
+            transport.close();
+            assertNull(handler.closed.get(5, TimeUnit.SECONDS),
+                "transport.close() 应以本地关闭（cause=null）通知已建通道");
+            assertTrue(peerEof.await(5, TimeUnit.SECONDS), "对端应观察到 EOF");
+        }
+    }
 }

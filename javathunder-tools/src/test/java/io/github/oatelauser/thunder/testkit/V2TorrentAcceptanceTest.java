@@ -34,6 +34,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * v2 种子端到端验收（BEP 52 S3）：手造 v2 种子（file tree + piece layers + Merkle 根），
  * FakeSeeder 按线协议供块，引擎走完整下载管线（V2PieceVerifier 校验 + MultiFileStorage
  * 落位），最终字节级比对。纯 v2（无 v1 pieces 字段）。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class V2TorrentAcceptanceTest {
 

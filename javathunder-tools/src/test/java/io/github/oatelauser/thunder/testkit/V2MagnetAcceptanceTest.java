@@ -39,6 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *
  * <p>piece 取 32KiB（pieceLayer=1）、件数 5（非 2 的幂）——同时覆盖填充链约定
  * （pad₁ ≠ 零哈希）与"整层单块请求证明为空"的路径。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class V2MagnetAcceptanceTest {
 

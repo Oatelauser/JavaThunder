@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * 多文件 WebSeed 端到端验收（BEP 19 目录形态）：url-list 指向 HTTP 目录 base，
  * 引擎按 种子内相对路径 + 文件内 Range 逐段取回拼件——纯 WebSeed 种子（无 tracker
  * 无 Peer）完成下载并字节级比对。文件尺寸特意非对齐（件跨文件边界 → 多段拼接路径）。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class MultiFileWebSeedAcceptanceTest {
 

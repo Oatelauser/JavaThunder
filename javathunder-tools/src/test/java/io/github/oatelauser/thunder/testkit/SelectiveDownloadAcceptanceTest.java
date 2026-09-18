@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 选择性下载端到端验收：多文件种子（非对齐尺寸——件跨文件边界）只取部分文件，
  * 任务应完成、想要文件字节级一致、结果字节数按必需件计；被过滤文件以稀疏占位
  * 物化（跨界件携带的少量字节会写入，属协议粒度）。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class SelectiveDownloadAcceptanceTest {
 
@@ -37,40 +39,43 @@ class SelectiveDownloadAcceptanceTest {
         Random random = new Random(88);
         // 拼接流 70000B = 5 件：readme[0,10000) manual[10000,50000) cover[50000,70000)
         // 件 0 跨 readme/manual、件 3 跨 manual/cover——跨界件仍整件下载
-        EmbeddedTracker tracker = EmbeddedTracker.start();
-        TorrentGenerator.GeneratedMultiFileTorrent seed = TorrentGenerator.generateMultiFile(
-                tempDir, "bundle",
-                List.of(
-                        List.of(List.of("readme.txt"), 10000),
-                        List.of(List.of("docs", "manual.pdf"), 40000),
-                        List.of(List.of("img", "cover.png"), 20000)),
-                PIECE_LENGTH, tracker.announceUrl(), random);
-        TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(seed.torrentFile()));
-        assertEquals(5, meta.pieceCount());
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
+            // 拼接流 70000B = 5 件：readme[0,10000) manual[10000,50000) cover[50000,70000)
+            // 件 0 跨 readme/manual、件 3 跨 manual/cover——跨界件仍整件下载
+            TorrentGenerator.GeneratedMultiFileTorrent seed = TorrentGenerator.generateMultiFile(
+                    tempDir, "bundle",
+                    List.of(
+                            List.of(List.of("readme.txt"), 10000),
+                            List.of(List.of("docs", "manual.pdf"), 40000),
+                            List.of(List.of("img", "cover.png"), 20000)),
+                    PIECE_LENGTH, tracker.announceUrl(), random);
+            TorrentMetadata meta = TorrentParser.parse(Files.readAllBytes(seed.torrentFile()));
+            assertEquals(5, meta.pieceCount());
 
-        try (TorrentClient client = TorrentClient.builder()
-                .transport(Transports.select())
-                .listenPort(23000 + random.nextInt(3000))
-                .build()) {
-            try (FakeSeeder seeder = FakeSeeder.startMultiFile(meta, seed.rootDir())) {
-                seeder.announceTo(tracker);
-                DownloadOptions options = DownloadOptions.defaults()
-                        .targetDir(tempDir.resolve("dlSel"))
-                        .fileFilter(FileFilter.paths("readme.txt", "img/cover.png"));
-                DownloadResult result = client.download(seed.torrentFile(), options)
-                        .future().get(90, TimeUnit.SECONDS);
+            try (TorrentClient client = TorrentClient.builder()
+                    .transport(Transports.select())
+                    .listenPort(23000 + random.nextInt(3000))
+                    .build()) {
+                try (FakeSeeder seeder = FakeSeeder.startMultiFile(meta, seed.rootDir())) {
+                    seeder.announceTo(tracker);
+                    DownloadOptions options = DownloadOptions.defaults()
+                            .targetDir(tempDir.resolve("dlSel"))
+                            .fileFilter(FileFilter.paths("readme.txt", "img/cover.png"));
+                    DownloadResult result = client.download(seed.torrentFile(), options)
+                            .future().get(90, TimeUnit.SECONDS);
 
-                Path out = result.file();
-                assertArrayEquals(Files.readAllBytes(seed.rootDir().resolve("readme.txt")),
-                        Files.readAllBytes(out.resolve("readme.txt")), "想要文件字节级一致");
-                assertArrayEquals(Files.readAllBytes(seed.rootDir().resolve("img").resolve("cover.png")),
-                        Files.readAllBytes(out.resolve("img").resolve("cover.png")),
-                        "跨界末文件完整（件 3 携带 manual 尾部属预期）");
-                // 必需字节 = 件 0、件 3 两个跨界整件 + 件 4 截断（70000 - 4*16384）
-                assertEquals(2 * PIECE_LENGTH + (70000 - 4 * PIECE_LENGTH),
-                        result.bytes(), "结果字节按必需件计（跨界件整件）");
-                assertTrue(Files.exists(out.resolve("docs").resolve("manual.pdf")),
-                        "被过滤文件以稀疏占位物化（目录形状完整）");
+                    Path out = result.file();
+                    assertArrayEquals(Files.readAllBytes(seed.rootDir().resolve("readme.txt")),
+                            Files.readAllBytes(out.resolve("readme.txt")), "想要文件字节级一致");
+                    assertArrayEquals(Files.readAllBytes(seed.rootDir().resolve("img").resolve("cover.png")),
+                            Files.readAllBytes(out.resolve("img").resolve("cover.png")),
+                            "跨界末文件完整（件 3 携带 manual 尾部属预期）");
+                    // 必需字节 = 件 0、件 3 两个跨界整件 + 件 4 截断（70000 - 4*16384）
+                    assertEquals(2 * PIECE_LENGTH + (70000 - 4 * PIECE_LENGTH),
+                            result.bytes(), "结果字节按必需件计（跨界件整件）");
+                    assertTrue(Files.exists(out.resolve("docs").resolve("manual.pdf")),
+                            "被过滤文件以稀疏占位物化（目录形状完整）");
+                }
             }
         }
     }

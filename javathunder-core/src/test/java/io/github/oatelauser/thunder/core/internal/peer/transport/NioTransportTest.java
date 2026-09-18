@@ -285,4 +285,55 @@ class NioTransportTest {
             }
         }
     }
+
+    /**
+     * readBuffer 收缩：超初始 4 倍（64KB）的 70KB piece 帧会临时扩容缓冲，帧消费
+     * 完全排空后应换回初始容量 16KB——否则单次大帧让每连接缓冲永久驻留。
+     * 白盒断言：NioChannel 同包可见，消息经 Future 到手时收缩已完成。
+     */
+    @Test
+    void readBufferShrinksBackAfterOversizedFrameDrained() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             NioTransport transport = new NioTransport(OWN_PEER_ID)) {
+            CompletableFuture<PeerChannel> connected = new CompletableFuture<>();
+            CompletableFuture<PeerWireMessage> received = new CompletableFuture<>();
+
+            Thread.ofVirtual().start(() -> {
+                try (Socket socket = server.accept()) {
+                    InputStream in = new BufferedInputStream(socket.getInputStream());
+                    OutputStream out = socket.getOutputStream();
+                    byte[] handshake = new byte[68];
+                    readFully(in, handshake);
+                    out.write(Handshake.encode(INFO_HASH, FAKE_PEER_ID));
+                    out.flush();
+                    out.write(PeerWireCodec.encode(
+                        new PieceMessage(0, 0, new byte[70_000])));
+                    out.flush();
+                    readFrame(in); // 等引擎侧任意回帧/EOF 再退出，避免半写
+                } catch (IOException ignored) {
+                }
+            });
+
+            transport.connect(new InetSocketAddress("127.0.0.1", server.getLocalPort()), INFO_HASH,
+                new TransportHandler() {
+                    @Override
+                    public void onConnected(PeerChannel channel) {
+                        channel.setMessageListener(batch -> received.complete(batch.get(0)));
+                        connected.complete(channel);
+                    }
+
+                    @Override
+                    public void onConnectFailed(InetSocketAddress address, Throwable cause) {
+                        connected.completeExceptionally(cause);
+                    }
+                });
+
+            NioTransport.NioChannel channel =
+                (NioTransport.NioChannel) connected.get(5, TimeUnit.SECONDS);
+            PeerWireMessage message = received.get(5, TimeUnit.SECONDS);
+            assertTrue(message instanceof PieceMessage p && p.block().length == 70_000);
+            assertTrue(channel.readBuffer.capacity() == 16 * 1024,
+                "排空后应收缩回初始容量，实际=" + channel.readBuffer.capacity());
+        }
+    }
 }

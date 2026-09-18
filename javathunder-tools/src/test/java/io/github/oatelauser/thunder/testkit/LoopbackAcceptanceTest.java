@@ -25,7 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** 回环验收（DESIGN §1.3 第 1 条 + 断点续传）：生成种子 → 假 seeder → 完整下载 → 字节比对。 */
+/**
+ * 回环验收（DESIGN §1.3 第 1 条 + 断点续传）：生成种子 → 假 seeder → 完整下载 → 字节比对。
+ * 端口说明：listenPort 取宽带 17000–37000 随机抖动，与它类的窄分段互相重叠，
+ * 并无跨测试类的防撞约定，勿据此新增"端口分配表"。
+ */
 class LoopbackAcceptanceTest {
 
     @TempDir

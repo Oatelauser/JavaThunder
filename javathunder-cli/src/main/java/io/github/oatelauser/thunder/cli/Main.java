@@ -18,8 +18,7 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2 || !"download".equals(args[0])) {
-            System.err.println("usage: javathunder download <torrent-file> [--dir <target-dir>]");
-            System.exit(2);
+            usageAndExit();
             return;
         }
         Path torrent = Path.of(args[1]);
@@ -50,17 +49,26 @@ public final class Main {
 
     /**
      * 解析可选 {@code --dir <目录>}（缺省 downloads）。多次出现时最后一个生效；
-     * 循环上界 {@code i + 1 < size} 保证取值下标存在，悬空尾置 {@code --dir} 被忽略。
+     * 悬空尾置 {@code --dir}（缺值）视为用法错误：打印 usage 并以非零码退出，
+     * 不再静默落缺省目录（演示程序从简，不引参数解析库）。
      */
     private static Path targetDir(String[] args) {
         Path dir = Path.of("downloads");
         List<String> rest = List.of(args).subList(2, args.length);
-        for (int i = 0; i + 1 < rest.size(); i++) {
+        for (int i = 0; i < rest.size(); i++) {
             if ("--dir".equals(rest.get(i))) {
+                if (i + 1 >= rest.size()) {
+                    usageAndExit();
+                }
                 dir = Path.of(rest.get(i + 1));
             }
         }
         return dir;
+    }
+
+    private static void usageAndExit() {
+        System.err.println("usage: javathunder download <torrent-file> [--dir <target-dir>]");
+        System.exit(2);
     }
 
     private Main() {

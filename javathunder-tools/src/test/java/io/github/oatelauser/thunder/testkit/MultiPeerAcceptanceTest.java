@@ -28,7 +28,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * <ul>
  *   <li>{@code -DmultiPeer.mb=128}：payload 尺寸（默认 1 → 1.5MB 小尺寸跑正确性）</li>
  *   <li>{@code -DmultiPeer.seeders=16}：并发 seeder 数（默认 4，保持既有行为）</li>
- *   <li>{@code -Djavathunder.transport=nio}：引擎传输与对端类型（nio→NioSeeder，否则 FakeSeeder）</li>
+ *   <li>{@code -Djavathunder.transport=nio}：引擎传输与对端类型；缺省 nio——性能探针
+ *       默认须与 {@link Transports#select()} 的生产缺省同臂（nio→NioSeeder），显式传
+ *       {@code -Djavathunder.transport=blocking} 才走参照臂（FakeSeeder）</li>
  * </ul>
  */
 class MultiPeerAcceptanceTest {
@@ -50,7 +52,8 @@ class MultiPeerAcceptanceTest {
         int mb = Integer.getInteger("multiPeer.mb", 1);
         int sizeBytes = mb == 1 ? 1_500_000 : mb * 1024 * 1024;
         int seederCount = Integer.getInteger("multiPeer.seeders", 4);
-        boolean nio = "nio".equalsIgnoreCase(System.getProperty("javathunder.transport", "blocking"));
+        // 与 Transports.select() 同臂判定：缺省 nio（对端 NioSeeder），仅显式 blocking 走 FakeSeeder
+        boolean nio = !"blocking".equalsIgnoreCase(System.getProperty("javathunder.transport", "nio"));
         try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
             TorrentGenerator.GeneratedTorrent generated = TorrentGenerator.generate(
                 dir, "multi.bin", sizeBytes, tracker.announceUrl(), new Random(99));
@@ -58,12 +61,12 @@ class MultiPeerAcceptanceTest {
                 TorrentParser.parse(Files.readAllBytes(generated.torrentFile()));
 
             List<Seeder> seeders = new ArrayList<>(seederCount);
-            try (EmbeddedTracker t = tracker) {
+            try {
                 for (int i = 0; i < seederCount; i++) {
                     Seeder seeder = nio ? startNio(generated.contentFile(), meta)
                         : startFake(generated.contentFile(), meta);
                     seeders.add(seeder);
-                    seeder.announceTo(t);
+                    seeder.announceTo(tracker);
                 }
 
                 try (TorrentClient client = TorrentClient.builder()

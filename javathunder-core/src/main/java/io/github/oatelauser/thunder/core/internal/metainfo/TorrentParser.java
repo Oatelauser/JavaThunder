@@ -160,28 +160,21 @@ public final class TorrentParser {
 
     /**
      * 磁力路径（B1）：对已校验的 info 字典做与 .torrent 相同的字段校验并构造元数据。
+     * info-hash（v1 SHA-1 / v2-only 截断 SHA-256）与 v2 副哈希都对 {@code infoRawBytes}
+     * （BEP 9 收到的原始字节）计算——与 .torrent 路径同口径，磁力侧无需外部再传哈希。
      * 层带宽容：磁力只拿得到 info 字典（BEP 9），piece layers 是 .torrent 顶层字段——
      * 缺失时 v2-only 元数据以 pieceLayer=null 构造，由哈希交换阶段补齐（PieceLayerFetcher）；
      * hybrid 走 v1 面校验本就不需要层带。
      */
-    public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoHash, List<String> trackers) {
+    public static TorrentMetadata buildFromInfoDict(BDict info, byte[] infoRawBytes, List<String> trackers) {
         List<List<String>> tiers = trackers.isEmpty()
                 ? List.of()
                 : List.of(List.copyOf(trackers));
         Scanned scanned = new Scanned(
                 trackers.isEmpty() ? null : trackers.get(0),
                 tiers,
-                null, null, null, info, new byte[0], List.of(), null);
-        // 直接复用 build：Scanned.infoRawBytes 仅用于 info-hash（这里已外部校验传入）
-        return buildWithHash(scanned, infoHash, /*lazyLayers=*/ true);
-    }
-
-    private static TorrentMetadata buildWithHash(Scanned s, byte[] infoHash, boolean lazyLayers) {
-        TorrentMetadata meta = build(s, lazyLayers);
-        return new TorrentMetadata(infoHash, meta.announce(), meta.announceList(), meta.comment(),
-                meta.createdBy(), meta.creationDateSec(), meta.name(), meta.length(), meta.pieceLength(),
-                meta.pieces(), meta.privateFlag(), meta.files(), meta.webSeeds(),
-                meta.version(), meta.infoHashV2());
+                null, null, null, info, infoRawBytes, List.of(), null);
+        return build(scanned, /*lazyLayers=*/ true);
     }
 
     private static TorrentMetadata build(Scanned s, boolean lazyLayers) {

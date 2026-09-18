@@ -60,6 +60,14 @@ public final class MultiFileStorage implements TorrentStorage {
                 if (files[i].length() == 0) {
                     continue; // 空文件：finish 时直接创建占位
                 }
+                if (files[i].padding() && importMode) {
+                    // 导入（seed-only）模式不物化 BEP 47 填充文件：此模式工作路径=
+                    // 最终路径，开通道会在目标树多出 .pad 空文件；且导入无写路径，
+                    // 通道唯一用途是读出零值——读路径（verifyPiece/readBlock）对无
+                    // 通道的 pad 段直接按零段合成。下载模式维持暂存物化（.part 编号
+                    // 文件承载写零，finish 关闭后不落位）。
+                    continue;
+                }
                 Path staged = stagedPath(i);
                 Files.createDirectories(staged.getParent());
                 channels[i] = FileChannel.open(staged,
@@ -100,10 +108,15 @@ public final class MultiFileStorage implements TorrentStorage {
         while (remaining > 0) {
             int chunk = (int) Math.min(Math.min(buffer.length, remaining),
                     files[fileIndex].length() - fileOffset);
-            ByteBuffer view = ByteBuffer.wrap(buffer, 0, chunk);
-            while (view.hasRemaining()) {
-                if (channels[fileIndex].read(view, fileOffset + view.position()) < 0) {
-                    throw new IOException("unexpected eof verifying piece " + pieceIndex);
+            if (channels[fileIndex] == null) {
+                // 导入模式 pad 无通道：填充恒为零（BEP 47），按零段参与哈希
+                Arrays.fill(buffer, 0, chunk, (byte) 0);
+            } else {
+                ByteBuffer view = ByteBuffer.wrap(buffer, 0, chunk);
+                while (view.hasRemaining()) {
+                    if (channels[fileIndex].read(view, fileOffset + view.position()) < 0) {
+                        throw new IOException("unexpected eof verifying piece " + pieceIndex);
+                    }
                 }
             }
             digest.update(buffer, 0, chunk);
@@ -138,13 +151,18 @@ public final class MultiFileStorage implements TorrentStorage {
         int remaining = length;
         while (remaining > 0) {
             int chunk = (int) Math.min(remaining, files[fileIndex].length() - fileOffset);
-            ByteBuffer buffer = ByteBuffer.allocate(chunk);
-            while (buffer.hasRemaining()) {
-                if (channels[fileIndex].read(buffer, fileOffset + buffer.position()) < 0) {
-                    throw new IOException("unexpected eof serving piece " + pieceIndex);
+            if (channels[fileIndex] == null) {
+                // 导入模式 pad 无通道：对外仍须供出零段（拼接流里 pad 占位）
+                out.writeBytes(new byte[chunk]);
+            } else {
+                ByteBuffer buffer = ByteBuffer.allocate(chunk);
+                while (buffer.hasRemaining()) {
+                    if (channels[fileIndex].read(buffer, fileOffset + buffer.position()) < 0) {
+                        throw new IOException("unexpected eof serving piece " + pieceIndex);
+                    }
                 }
+                out.writeBytes(buffer.array());
             }
-            out.writeBytes(buffer.array());
             fileOffset += chunk;
             remaining -= chunk;
             if (fileOffset >= files[fileIndex].length() && remaining > 0) {
@@ -171,8 +189,9 @@ public final class MultiFileStorage implements TorrentStorage {
         for (int i = 0; i < files.length; i++) {
             TorrentMetadata.TorrentFile file = files[i];
             if (file.padding()) {
-                // BEP 47 填充文件：只占流偏移不落盘（树中的对齐占位）；构造期为正长度
-                // 填充开出的通道须在此关闭，否则 Windows 上暂存目录删不掉、句柄滞留
+                // BEP 47 填充文件：只占流偏移不落盘（树中的对齐占位）。下载模式构造期
+                // 为正长度填充开出的通道须在此关闭（否则 Windows 上暂存目录删不掉、
+                // 句柄滞留）；导入模式不开通道，同一 null 守卫兜底
                 if (channels[i] != null) {
                     channels[i].close();
                 }
@@ -237,7 +256,10 @@ public final class MultiFileStorage implements TorrentStorage {
                 int writable = (int) Math.min(chunk.length - chunkOff,
                         files[fileIndex].length() - fileOffset);
                 if (writable > 0) {
-                    channels[fileIndex].write(ByteBuffer.wrap(chunk, chunkOff, writable), fileOffset);
+                    if (channels[fileIndex] != null) {
+                        channels[fileIndex].write(ByteBuffer.wrap(chunk, chunkOff, writable), fileOffset);
+                    }
+                    // 导入模式 pad 无通道：写入丢弃（pad 恒零，本无落盘载体）
                     fileOffset += writable;
                     chunkOff += writable;
                 }

@@ -29,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 导入已有文件做种验收（G2）：seed() 对 dataDir 下已有数据全量校验后直接 SEEDING。
  * 场景 1 是核心证据链——不启任何 FakeSeeder，seed-only 客户端是唯一数据源，
  * 第二个真实客户端从它完整下载，字节级比对（上传路径端到端工作）。
+ * 端口说明：listenPort 取宽带 17000–37000 随机抖动，与它类的窄分段互相重叠，
+ * 并无跨测试类的防撞约定，勿据此新增"端口分配表"。
  */
 class SeedAcceptanceTest {
 

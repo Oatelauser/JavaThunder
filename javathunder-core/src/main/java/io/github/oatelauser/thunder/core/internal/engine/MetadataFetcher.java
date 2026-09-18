@@ -290,7 +290,7 @@ public final class MetadataFetcher {
         System.arraycopy(payload, headerEnd, session.metadata, from, dataLength);
         session.receivedPieces++;
         if (session.receivedPieces == totalPieces) {
-            completeWith(session.metadata, session.metadataSize);
+            completeWith(session);
         }
     }
 
@@ -312,15 +312,17 @@ public final class MetadataFetcher {
      * 20 字节身份是截断 SHA-256（BEP 52，与线协议握手一致）——任一匹配即通过，
      * 由 info 字典实际形态决定哪一个成立。
      */
-    private void completeWith(byte[] metadata, int size) {
-        byte[] info = Arrays.copyOf(metadata, size);
+    private void completeWith(MetadataSession session) {
+        byte[] info = Arrays.copyOf(session.metadata, session.metadataSize);
         if (matchesV1(info) || matchesV2(info)) {
             result.complete(info);
             closeAll();
         } else {
             log.debug("metadata hash mismatch from peer, discarding");
-            // 坏数据整份丢弃即止：该会话的请求只发一次、不会重试，新会话由连接循环
-            // 继续建立（候选仍在入队）；本会话不主动关闭，至多占位到超时
+            // 坏对端立刻让出会话槽：只丢数据不关会话会让它占位到超时（上限 8 槽），
+            // 挤占可用试探连接。关闭并移除后连接循环即可换源重试（候选持续入队）。
+            sessions.remove(session.key);
+            session.channel.close();
         }
     }
 

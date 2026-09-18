@@ -195,7 +195,7 @@ public final class DownloadSession {
         this.gateway = new TrackerGateway(trackerClient, config.udpTracker());
         this.announcer = new TrackerAnnouncer(meta.infoHash(), peerId, config.listenPort(),
                 meta.trackerTiers(), gateway, dispatcher,
-                () -> Math.max(0, wanted.wantedBytes() - localCardinality() * meta.pieceLength()),
+                this::remainingWantedBytes,
                 this::offerCandidate, stats::uploaded, stats::downloaded);
         this.pex = new PexManager(meta, config.maxPeers());
         this.webSeed = meta.webSeeds().isEmpty()
@@ -1094,9 +1094,25 @@ public final class DownloadSession {
         return verifyingPieces.contains(piece) || activePieces.contains(piece);
     }
 
-    /** WebSeed 认领一件（进 verifying 集合即对 Peer 选件隐藏，防两通道重复拉取）。 */
-    void claimPieceForWebSeed(int piece) {
-        verifyingPieces.add(piece);
+    /**
+     * WebSeed 认领一件（原子占位，防两通道重复拉同件）：先 verifyingPieces.add 抢占
+     * （布尔返回即占位结果，false = 另一 WebSeed 循环先到），再核对 Peer 通道未在
+     * 检查与占位的间隙选中同件（activePieces）——若是则撤回自己的占位让给 Peer。
+     *
+     * <p>配对约束：认领成功（true）后，成功路径经 verifyAndStoreWebSeedPiece →
+     * completeVerifiedPiece 释放；失败/坏件路径必须调 {@link #releaseWebSeedClaim}
+     * 释放——只允许释放自己成功认领过的件。认领失败方必须直接让出，不得 release
+     * （会放掉占用方的认领，导致双通道重复拉取）。
+     */
+    boolean claimPieceForWebSeed(int piece) {
+        if (!verifyingPieces.add(piece)) {
+            return false; // 已被占用（另一 WebSeed 循环先到）
+        }
+        if (activePieces.contains(piece)) {
+            verifyingPieces.remove(piece);
+            return false; // Peer 通道刚选中同件：让给 Peer
+        }
+        return true;
     }
 
     /** WebSeed 放弃认领（拉取失败/坏件），交还 Peer 通道。 */
@@ -1188,6 +1204,21 @@ public final class DownloadSession {
         synchronized (local) {
             return local.toBytes();
         }
+    }
+
+    /**
+     * tracker left（剩余量）：与进度分母同口径按必需件计——必需件中已持有的字节
+     * （末件按实际长度截断）从 wantedBytes 里扣除。不用 localCardinality()*pieceLength：
+     * resume 残留的非必需位会把 left 冲小，tracker 侧统计失真。
+     */
+    private long remainingWantedBytes() {
+        long remaining = wanted.wantedBytes();
+        for (int i = 0; i < meta.pieceCount(); i++) {
+            if (wanted.priorityOf(i) > 0 && localHas(i)) {
+                remaining -= Math.min(meta.pieceLength(), meta.length() - (long) i * meta.pieceLength());
+            }
+        }
+        return Math.max(0, remaining);
     }
 
     private static boolean sleepMillis(long millis) {

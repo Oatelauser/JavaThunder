@@ -36,6 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * hybrid 磁力端到端验收（BEP 52）：磁力（v1 btih 哈希）→ MetadataFetcher（ut_metadata
  * 拉到含 file tree 的 info 字典）→ hybrid 元数据（无 piece layers，v1 面校验）→
  * FakeSeeder 供块 → 下载完成 → 字节级比对。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class HybridMagnetAcceptanceTest {
 

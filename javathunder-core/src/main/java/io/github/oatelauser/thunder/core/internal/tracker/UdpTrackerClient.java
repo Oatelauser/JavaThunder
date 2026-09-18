@@ -130,8 +130,14 @@ public final class UdpTrackerClient implements AutoCloseable {
 
     /**
      * 发送并等待同事务 ID 的响应；action 不符（含 error=3）抛异常。指数退避重试。
+     *
+     * <p>串行化（synchronized）取舍：单 socket 上没有事务分发表，并发事务会互相
+     * 丢弃对方应答（tid 不匹配→continue→双方各自超时重传）。announce 频率低
+     * （tracker 周期分钟级），为并发事务排队一个 RTT 完全可接受，故按 client 实例
+     * 加锁串行化，而不是引入"收发线程 + tid→future 分发表"的大改；未来若需 UDP
+     * 高并发（scrape、多 tracker 同时探测），再升级为分发表方案。
      */
-    private ByteBuffer exchange(InetSocketAddress address, byte[] wire, int transactionId,
+    private synchronized ByteBuffer exchange(InetSocketAddress address, byte[] wire, int transactionId,
             int expectedAction) throws IOException, InterruptedException {
         long backoff = 500;
         IOException last = null;
@@ -163,6 +169,11 @@ public final class UdpTrackerClient implements AutoCloseable {
                 if (action != expectedAction) {
                     continue;
                 }
+                if (response.remaining() < minResponseBytes(expectedAction)) {
+                    // 损坏/恶意 tracker 的 tid 匹配截短包：解析期会越界读穿透
+                    //（调用方只捕获 TrackerException），按本轮失败走退避重试
+                    continue;
+                }
                 return response;
             } catch (SocketTimeoutException e) {
                 last = e;
@@ -171,6 +182,14 @@ public final class UdpTrackerClient implements AutoCloseable {
             backoff *= 2;
         }
         throw last != null ? last : new IOException("udp exchange failed");
+    }
+
+    /**
+     * tid 匹配应答的最小长度：connect 的 connection_id@8..16 需 16 字节，
+     * announce 的 seeders@16..20 需 20 字节（peer 紧凑表按剩余量截尾，无下限）。
+     */
+    private static int minResponseBytes(int expectedAction) {
+        return expectedAction == 0 ? 16 : 20;
     }
 
     private static int eventAction(TrackerEvent event) {

@@ -1,14 +1,10 @@
 package io.github.oatelauser.thunder.core.internal.metainfo;
 
 import io.github.oatelauser.thunder.core.internal.bencode.BDict;
-import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
-import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
 import org.jspecify.annotations.Nullable;
 
 import java.nio.ByteBuffer;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -73,29 +69,22 @@ public record TorrentMetadata(
     }
 
     /**
-     * 磁力链接路径（B1）：从 BEP 9 拉到的裸 info 字典字节构造（调用方已校验哈希——
-     * v1/hybrid 为 SHA-1，v2-only 为截断 20 字节 SHA-256，见 MetadataFetcher）。
-     * announce 侧由磁力的 tr 参数补齐，单层。
+     * 磁力链接路径（B1）：从 BEP 9 拉到的裸 info 字典字节构造（调用方已按 20 字节
+     * 身份校验——v1/hybrid 为 SHA-1，v2-only 为截断 SHA-256，见 MetadataFetcher）。
+     * 双哈希（主 infoHash 与 v2 副哈希 infoHashV2）由 {@link TorrentParser}
+     * 对这同一份原始字节计算，与 .torrent 路径同口径。announce 侧由磁力的 tr 参数
+     * 补齐，单层。
      */
     public static TorrentMetadata fromInfoDict(byte[] infoBytes, List<String> trackers) {
         try {
             ByteBuffer buf = ByteBuffer.wrap(infoBytes);
-            BencodeValue value = Bencode.decodeValue(buf);
-            if (!(value instanceof BDict info)) {
+            if (!(Bencode.decodeValue(buf) instanceof BDict info)) {
                 throw new IllegalArgumentException("info dict must be a bencoded dict");
             }
-            // info-hash 按形态推导：v2-only（有 file tree 无 pieces）= 截断 SHA-256，
-            // 其余 = SHA-1（与线协议握手用的 20 字节身份一致）
-            boolean v2Only = info.value().containsKey(BString.of("file tree"))
-                    && !info.value().containsKey(BString.of("pieces"));
-            byte[] digest = MessageDigest.getInstance(v2Only ? "SHA-256" : "SHA-1").digest(infoBytes);
-            byte[] infoHash = v2Only ? Arrays.copyOf(digest, 20) : digest;
-            // 复用 TorrentParser 的字段校验：把它当 .torrent 的 info 段解析
-            return TorrentParser.buildFromInfoDict(info, infoHash, trackers);
+            // 复用 TorrentParser 的字段校验与哈希推导：把它当 .torrent 的 info 段解析
+            return TorrentParser.buildFromInfoDict(info, infoBytes, trackers);
         } catch (RuntimeException e) {
             throw new IllegalArgumentException("invalid info dict: " + e.getMessage(), e);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
         }
     }
 

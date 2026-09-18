@@ -13,7 +13,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
@@ -53,8 +55,7 @@ public final class MagnetDownloadTask implements DownloadTask {
         this.eventExecutor = eventExecutor;
         metadataFuture.whenComplete((meta, error) -> {
             if (error != null) {
-                slotRelease.run();
-                result.completeExceptionally(wrap(error));
+                onMetadataFailed(error);
                 return;
             }
             // 元数据完成可能发生在对端传输线程（NIO selector）上：先切回事件线程，
@@ -84,6 +85,29 @@ public final class MagnetDownloadTask implements DownloadTask {
                 }
             });
         });
+    }
+
+    /**
+     * 元数据阶段失败/取消的分流：用户取消保持取消终态（调用方要能区分"取消"与
+     * "失败"，wrap 成 IllegalStateException 会抹掉该语义）；其余异常归一为
+     * IllegalStateException 并归还磁力槽位。取消路径不在此释放槽位——cancel()
+     * 的后续分支（delegate 尚未建）会释放，避免双释放依赖 releaseOnce 的幂等。
+     */
+    private void onMetadataFailed(Throwable error) {
+        if (isCancellation(error)) {
+            result.cancel(true);
+            return;
+        }
+        slotRelease.run();
+        result.completeExceptionally(wrap(error));
+    }
+
+    /** 取消可能裸达（本 future 被 cancel）也可能包在 CompletionException 里（上游链传播）。 */
+    private static boolean isCancellation(Throwable error) {
+        if (error instanceof CancellationException) {
+            return true;
+        }
+        return error instanceof CompletionException cause && cause.getCause() instanceof CancellationException;
     }
 
     private static Throwable wrap(Throwable error) {

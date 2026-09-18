@@ -40,6 +40,27 @@
   恒真断言、未用字段）/失实注释纠正——依据 AGENTS.md（Clean Code + 阿里 P3C 黄山版
   人工口径）逐文件执行，双臂全量测试零回归
 
+### 修复（backlog 清零批）
+
+- **磁力任务取消终态**：元数据阶段 `cancel()` 后 future 此前以
+  `IllegalStateException` 异常完成，调用方无法区分"用户取消"与"失败"；现为
+  正规取消态（`CancellationException`）——赶在 1.0 冻结前落定（此后即为 API 承诺）
+- **磁力路径 `infoHashV2` 修正**：此前恒为 `sha256("")`（潜伏数据错误）；现透传
+  真实 info 字节计算，主 infoHash 口径不变（v2-only 截断 20 字节）
+- **UDP tracker 客户端并发互踩**：共享单 socket 上并发 announce 互相丢弃对方
+  应答（靠超时重传自愈、peer 发现变慢）；现按 client 串行化事务，并防御 tid
+  匹配的截短应答（此前越界读异常穿透）
+- **阻塞传输 `close()` 语义对齐**：此前不关闭已建连接（读线程滞留至对端断开，
+  最长 120s）；现与 NIO 一致关闭全部通道
+- **杂项健壮性**：NIO 关停期 `ClosedSelectorException` 不再杀事件循环线程、
+  大帧后排空缓冲收缩回初始容量、KRPC 事务 ID 碰撞不再顶掉在途请求、
+  MetadataFetcher 坏元数据即时释放会话槽、WebSeed 件认领原子化、tracker 上报
+  left 按必需件口径（选择性下载下不再偏小）、导入做种不再物化 `.pad` 空文件
+  （pad 段零合成）
+- **测试卫生**：MultiPeer 性能探针缺省臂统一为 NIO（与生产一致）、误导性测试名
+  改名、CLI 悬空 `--dir` 报 usage、EmbeddedTracker 资源化管理等六项；断言语义
+  零触及
+
 ## 0.8.0（2026-09-18）
 
 ### 新增

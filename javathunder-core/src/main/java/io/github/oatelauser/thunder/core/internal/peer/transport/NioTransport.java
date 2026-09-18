@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -143,17 +144,21 @@ public final class NioTransport implements PeerTransport {
 
     private void eventLoop() {
         while (!closed) {
-            runPendingTasks();
             try {
+                runPendingTasks();
                 selector.select(SELECT_TICK_MILLIS);
+                if (closed) {
+                    return;
+                }
+                processReadyKeys();
+                processTimeouts();
+            } catch (ClosedSelectorException e) {
+                // close() 的 selector.close() 与刚过 while 检查的 select()/selectedKeys()
+                // 竞态：关停期噪音（RuntimeException 会杀死循环线程并打堆栈），静默退出
+                return;
             } catch (IOException e) {
                 return;
             }
-            if (closed) {
-                return;
-            }
-            processReadyKeys();
-            processTimeouts();
         }
     }
 
@@ -192,7 +197,13 @@ public final class NioTransport implements PeerTransport {
                     }
                 }
             } catch (IOException | RuntimeException e) {
-                ((NioChannel) key.attachment()).closeWith(e);
+                // OP_ACCEPT 键挂的是 router 而非通道：强转 (NioChannel) 会二次抛
+                // ClassCastException 掩盖根因——按附件类型分派，accept 侧异常只留痕
+                if (key.attachment() instanceof NioChannel channel) {
+                    channel.closeWith(e);
+                } else {
+                    log.debug("accept key {} failed: {}", key, e.toString());
+                }
             }
         }
     }
@@ -406,8 +417,22 @@ public final class NioTransport implements PeerTransport {
                 }
                 readBuffer.position(readBuffer.position() + frameSize);
             }
+            // 先回收再投递：监听器（经 Future 等）观察到消息时缓冲已回到初始容量
+            shrinkReadBufferIfDrained();
             if (!batch.isEmpty()) {
                 messageListener.accept(batch);
+            }
+        }
+
+        /**
+         * 大帧临时扩容的回收：缓冲完全排空且容量仍超初始值 4 倍时，换回初始容量的
+         * 新翻转缓冲——否则为单个 128KB 级 piece 的扩容会在每连接上永久驻留。
+         * 仅 selector 线程触达 readBuffer（onReadable→deliverFrames 单线程），无并发
+         * 风险；4 倍阈值避免频繁跨界的帧反复分配。
+         */
+        private void shrinkReadBufferIfDrained() {
+            if (readBuffer.remaining() == 0 && readBuffer.capacity() > READ_BUFFER_INITIAL * 4) {
+                readBuffer = flippedAllocate(READ_BUFFER_INITIAL);
             }
         }
 

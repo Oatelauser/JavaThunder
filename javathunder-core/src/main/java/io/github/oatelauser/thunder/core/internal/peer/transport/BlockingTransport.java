@@ -13,7 +13,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -30,6 +33,8 @@ public final class BlockingTransport implements PeerTransport {
     private volatile ServerSocket listenSocket;
     private volatile int listeningPort = -1;
     private volatile boolean closed;
+    /** 已建通道注册表：close() 时统一关闭（对齐 NioTransport 语义），通道自关闭时移除。 */
+    private final Set<BlockingChannel> channels = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     public BlockingTransport(byte[] peerId) {
         this.peerId = peerId.clone();
@@ -77,6 +82,12 @@ public final class BlockingTransport implements PeerTransport {
                     Handshake.supportsExtensions(wire), Handshake.supportsFastExtension(wire),
                     Handshake.supportsV2(wire));
             BlockingChannel channel = new BlockingChannel(connection);
+            channels.add(channel);
+            if (closed) {
+                // close() 的遍历可能刚错过本通道：自行补一刀，别让对端等 EOF
+                channel.closeWith(null);
+                return;
+            }
             handler.onConnected(channel);
             channel.start();
         } catch (IOException | RuntimeException e) {
@@ -94,6 +105,11 @@ public final class BlockingTransport implements PeerTransport {
                 PeerConnection connection =
                         PeerConnection.connect(address, infoHash, peerId, CONNECT_TIMEOUT_MILLIS);
                 BlockingChannel channel = new BlockingChannel(connection);
+                channels.add(channel);
+                if (closed) {
+                    channel.closeWith(null);
+                    return;
+                }
                 handler.onConnected(channel);
                 channel.start();
             } catch (IOException | RuntimeException e) {
@@ -110,6 +126,12 @@ public final class BlockingTransport implements PeerTransport {
     @Override
     public void close() {
         closed = true;
+        // 已建连接一并关闭：否则其读虚拟线程滞留在阻塞 read 上，直到对端断开或
+        // 120s 读超时（对齐 NioTransport 的 close 语义）。closeWith 幂等，与通道
+        // 自关闭路径并发安全（仅争用各通道自身监视器，无传输级锁，不会死锁）。
+        for (BlockingChannel channel : channels) {
+            channel.closeWith(null);
+        }
         try {
             if (listenSocket != null) {
                 listenSocket.close();
@@ -140,8 +162,9 @@ public final class BlockingTransport implements PeerTransport {
 
     /**
      * 阻塞式通道：一条读虚拟线程把消息推给监听器。
+     * （内部类：closeWith 须从传输的通道注册表自移除，防注册表随连接数无界增长。）
      */
-    static final class BlockingChannel implements PeerChannel {
+    final class BlockingChannel implements PeerChannel {
 
         private final PeerConnection connection;
         private volatile Consumer<List<PeerWireMessage>> messageListener = m -> {
@@ -223,6 +246,7 @@ public final class BlockingTransport implements PeerTransport {
                 return;
             }
             closed = true;
+            channels.remove(this);
             try {
                 connection.close();
             } catch (IOException ignored) {

@@ -30,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * BEP 6 快速扩展验收（真实引擎）：做种会话对声明快速扩展的对端以 HaveAll 替代整幅
  * 位图；对未声明（保留位为零）的传统对端仍按 BEP 3 发位图——协商门槛双向成立。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class FastExtensionAcceptanceTest {
 

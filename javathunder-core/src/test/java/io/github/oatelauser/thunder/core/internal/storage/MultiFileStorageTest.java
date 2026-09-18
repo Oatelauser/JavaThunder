@@ -6,6 +6,7 @@ import io.github.oatelauser.thunder.core.internal.bencode.BList;
 import io.github.oatelauser.thunder.core.internal.bencode.BString;
 import io.github.oatelauser.thunder.core.internal.bencode.Bencode;
 import io.github.oatelauser.thunder.core.internal.bencode.BencodeValue;
+import io.github.oatelauser.thunder.core.internal.metainfo.MerkleHashes;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentParser;
 import org.junit.jupiter.api.Test;
@@ -232,5 +233,76 @@ class MultiFileStorageTest {
             assertFalse(Files.exists(tempDir.resolve(NAME + ".part")));
             assertEquals(600, Files.size(root.resolve("a.bin")));
         }
+    }
+
+    /**
+     * 导入（seed-only）模式不物化 BEP 47 填充文件：修复前构造器会以最终路径为
+     * pad 开通道，目标树多出 .pad 空文件。跨 pad 的读（校验/供种）按零段合成。
+     * 布局（hybrid，16KiB 件）：.pad/16384(流 [0,16384)) + a.bin(流 [16384,16484))，
+     * v1 件 0 = 全零 pad，件 1 = a.bin 内容。
+     */
+    @Test
+    void importModeSkipsPadFilesAndServesPadAsZeros() throws IOException {
+        byte[] tail = new byte[100];
+        for (int i = 0; i < tail.length; i++) {
+            tail[i] = (byte) (i * 13 + 5);
+        }
+        TorrentMetadata meta = TorrentParser.parse(hybridTorrentWithPad(tail));
+        Path root = tempDir.resolve(NAME);
+        Files.createDirectories(root);
+        Files.write(root.resolve("a.bin"), tail);
+        Path padRoot = root.resolve(".pad");
+
+        try (MultiFileStorage storage = new MultiFileStorage(meta, tempDir, true)) {
+            assertFalse(Files.exists(padRoot), "导入模式不应物化 .pad 目录");
+            assertTrue(storage.verifyPiece(0), "纯 pad 件应按零段校验通过");
+            assertTrue(storage.verifyPiece(1), "实文件件应正常校验");
+            // 件 0 末尾跨界读 [16300,16484)：84 字节 pad 零 + 整个 a.bin
+            byte[] expected = new byte[84 + tail.length];
+            System.arraycopy(tail, 0, expected, 84, tail.length);
+            assertArrayEquals(expected, storage.readBlock(0, 16_384 - 84, 84 + tail.length));
+            storage.finish();
+        }
+        assertFalse(Files.exists(padRoot), "finish 后同样不应出现 .pad");
+        assertEquals(tail.length, Files.size(root.resolve("a.bin")));
+    }
+
+    /** hybrid 种子：file tree = .pad 目录 + a.bin（均单 piece，无需 piece layers）。 */
+    private static byte[] hybridTorrentWithPad(byte[] tail) {
+        int pieceLength = 16 * 1024;
+        byte[] padZeros = new byte[pieceLength];
+        Map<BString, BencodeValue> padDir = new TreeMap<>(BString.UNSIGNED_ORDER);
+        padDir.put(BString.of(String.valueOf(pieceLength)),
+            fileTreeEntry(pieceLength, MerkleHashes.leafHash(padZeros)));
+        Map<BString, BencodeValue> tree = new TreeMap<>(BString.UNSIGNED_ORDER);
+        tree.put(BString.of(".pad"), new BDict(padDir));
+        tree.put(BString.of("a.bin"), fileTreeEntry(tail.length, MerkleHashes.leafHash(tail)));
+
+        byte[] pieces = new byte[2 * 20];
+        System.arraycopy(sha1(padZeros, 0, padZeros.length), 0, pieces, 0, 20);
+        System.arraycopy(sha1(tail, 0, tail.length), 0, pieces, 20, 20);
+
+        Map<BString, BencodeValue> info = new TreeMap<>(BString.UNSIGNED_ORDER);
+        info.put(BString.of("name"), BString.of(NAME));
+        info.put(BString.of("piece length"), new BInteger(pieceLength));
+        info.put(BString.of("meta version"), new BInteger(2));
+        info.put(BString.of("file tree"), new BDict(tree));
+        info.put(BString.of("pieces"), new BString(pieces));
+
+        Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
+        top.put(BString.of("announce"), BString.of("http://t/announce"));
+        top.put(BString.of("piece layers"), new BDict(new TreeMap<>(BString.UNSIGNED_ORDER)));
+        top.put(BString.of("info"), new BDict(info));
+        return Bencode.encode(new BDict(top));
+    }
+
+    /** file tree 叶子条目：{ "" : { length, pieces root } }。 */
+    private static BDict fileTreeEntry(long length, byte[] root) {
+        Map<BString, BencodeValue> attrs = new TreeMap<>(BString.UNSIGNED_ORDER);
+        attrs.put(BString.of("length"), new BInteger(length));
+        attrs.put(BString.of("pieces root"), new BString(root));
+        Map<BString, BencodeValue> entry = new TreeMap<>(BString.UNSIGNED_ORDER);
+        entry.put(new BString(new byte[0]), new BDict(attrs));
+        return new BDict(entry);
     }
 }

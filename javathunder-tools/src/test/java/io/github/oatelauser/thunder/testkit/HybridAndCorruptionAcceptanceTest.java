@@ -34,6 +34,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * BEP 52 S4 验收：hybrid 种子双哈希下载走 v1 面校验；损坏数据 SHA-1 校验拒绝。
+ * 端口说明：listenPort 分段基址只是随机抖动起点，并非跨测试类的防撞约定
+ * （窄带彼此重叠、且落在它类的宽带 17000–37000 内），勿据此新增"端口分配表"。
  */
 class HybridAndCorruptionAcceptanceTest {
 
@@ -41,15 +43,10 @@ class HybridAndCorruptionAcceptanceTest {
     Path tempDir;
     private static final int PIECE_LENGTH = 16 * 1024;
 
-    /** 造 hybrid 种子（v1 pieces + v2 file tree/layers，同一数据两套描述）。 */
+    /** 造 hybrid 种子（v1 pieces + v2 file tree/layers，同一数据两套描述；纯 v2 由 V2TorrentAcceptanceTest 覆盖）。 */
     private Seed hybridSeed(String name, int size, Random random) throws IOException {
         byte[] content = new byte[size];
         random.nextBytes(content);
-        return buildSeed(name, content, true);
-    }
-
-    private Seed buildSeed(String name, byte[] content, boolean hybrid) throws IOException {
-        int size = content.length;
         int pieceCount = (size + PIECE_LENGTH - 1) / PIECE_LENGTH;
 
         List<byte[]> leaves = new ArrayList<>();
@@ -75,9 +72,7 @@ class HybridAndCorruptionAcceptanceTest {
         info.put(BString.of("piece length"), new BInteger(PIECE_LENGTH));
         info.put(BString.of("meta version"), new BInteger(2));
         info.put(BString.of("file tree"), new BDict(tree));
-        if (hybrid) {
-            info.put(BString.of("pieces"), new BString(v1PiecesOf(content, pieceCount)));
-        }
+        info.put(BString.of("pieces"), new BString(v1PiecesOf(content, pieceCount)));
 
         Map<BString, BencodeValue> layers = new TreeMap<>(BString.UNSIGNED_ORDER);
         layers.put(new BString(root), new BString(strip));
