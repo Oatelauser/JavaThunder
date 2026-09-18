@@ -40,7 +40,7 @@
                见 tracker/tools pom 同注）。基线始终对上一个发布 tag（CI/本地自举安装）。 -->
           <oldVersion>
             <file>
-              <path>${settings.localRepository}/io/github/oatelauser/javathunder-api/0.8.0/javathunder-api-0.8.0.jar</path>
+              <path>${settings.localRepository}/io/github/oatelauser/javathunder-api/1.0.0/javathunder-api-1.0.0.jar</path>
             </file>
           </oldVersion>
           <newVersion>
