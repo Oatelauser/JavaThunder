@@ -65,8 +65,16 @@ final class WebSeedFetcher {
         }
     }
 
-    /** 选件：本地缺失 ∩ 未被占用 ∩ 必需（选择性下载），availability 升序（与 Peer 选件同语义，优先救稀缺件）。 */
+    /** 选件：本地缺失 ∩ 未被占用 ∩ 必需（选择性下载）；顺序模式取索引最小（与 Peer 选件同序），否则 availability 升序（优先救稀缺件）。 */
     private int pickPiece() {
+        if (session.sequentialDownload()) {
+            for (int i = 0; i < meta.pieceCount(); i++) {
+                if (!session.hasPiece(i) && !session.pieceClaimed(i) && session.wantedPiece(i)) {
+                    return i;
+                }
+            }
+            return -1;
+        }
         int best = -1;
         int bestAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {

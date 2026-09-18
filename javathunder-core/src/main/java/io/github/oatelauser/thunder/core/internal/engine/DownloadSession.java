@@ -1,6 +1,7 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
 import io.github.oatelauser.thunder.api.DownloadOptions;
+import io.github.oatelauser.thunder.api.DownloadOrder;
 import io.github.oatelauser.thunder.api.DownloadResult;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.ProgressSnapshot;
@@ -115,6 +116,8 @@ public final class DownloadSession {
     private final Bitfield local;
     /** 选择性下载投影：必需件位图 + 进度/完成分母（无过滤器 = 全量，行为不变）。 */
     private final WantedPieces wanted;
+    /** 顺序下载（DownloadOrder.SEQUENTIAL）：选件按索引升序，流式消费场景。 */
+    private final boolean sequential;
     private final CompletableFuture<DownloadResult> future = new CompletableFuture<>();
     private final TaskEventDispatcher dispatcher;
     private final SessionStats stats;
@@ -172,6 +175,7 @@ public final class DownloadSession {
         // 选择性下载投影（seedOnly 恒全量：做种必须完整持有；过滤器只作用于下载）
         this.wanted = new WantedPieces(meta,
                 seedOnly ? path -> true : options.fileFilter());
+        this.sequential = options.downloadOrder() == DownloadOrder.SEQUENTIAL;
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length());
         this.choking = new ChokingManager(random);
         this.maxActivePieces = Math.max(1, (int) Math.min(Math.min(config.maxPeers(), 64),
@@ -322,6 +326,12 @@ public final class DownloadSession {
     }
 
     private void fail(Throwable error) {
+        if (future.isDone()) {
+            // 已终态（完成/取消后后台循环的收尾异常，如事件线程池关闭后的拒绝）：
+            // 不回写状态、不重复扇出——状态机不允许从终态回退
+            log.debug("post-terminal loop exception: {}", error.toString());
+            return;
+        }
         running.set(false);
         stopWebSeed();
         closeAllPeers();
@@ -648,9 +658,13 @@ public final class DownloadSession {
                 if (session.currentPiece >= 0) {
                     break; // 当前 piece 的 block 已全部发出，等待响应
                 }
-                int piece = scheduler.pickFor(session.key, local, new PieceConstraints(
-                        activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
-                        this::hasMissingBlock));
+                int piece = sequential
+                        ? scheduler.pickSequentialFor(session.key, local, new PieceConstraints(
+                                activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
+                                this::hasMissingBlock))
+                        : scheduler.pickFor(session.key, local, new PieceConstraints(
+                                activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
+                                this::hasMissingBlock));
                 if (piece < 0) {
                     break;
                 }
@@ -1151,6 +1165,11 @@ public final class DownloadSession {
     /** 选择性下载门控（WebSeed 通道与 Peer 通道共用语义，见 WantedPieces）。 */
     boolean wantedPiece(int piece) {
         return wanted.requiredPiece(piece);
+    }
+
+    /** 顺序下载模式（WebSeed 通道选件与 Peer 通道同序，见 DownloadOrder）。 */
+    boolean sequentialDownload() {
+        return sequential;
     }
 
     private byte[] localBytes() {

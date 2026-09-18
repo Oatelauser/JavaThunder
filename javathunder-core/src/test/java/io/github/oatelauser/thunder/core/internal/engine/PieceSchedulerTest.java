@@ -42,6 +42,43 @@ class PieceSchedulerTest {
     }
 
     @Test
+    void pickSequentialForTakesLowestEligibleIndexRegardlessOfRarity() {
+        PieceScheduler scheduler = new PieceScheduler(PIECE_COUNT, PIECE_LENGTH, TOTAL_LENGTH);
+        scheduler.peerConnected("peerA", of(1, 2)); // 件 0 无人持有（含 peerA）
+
+        // 稀缺优先会选 availability=1 的件 1/2 之一；顺序取对端有的最小索引 → 1
+        assertEquals(1, scheduler.pickSequentialFor("peerA",
+                new Bitfield(PIECE_COUNT), noConstraints()));
+
+        // 本地已有件 1：下一个是件 2（校验中的件 0 仍被隐藏，但无人持有本就不可选）
+        assertEquals(2, scheduler.pickSequentialFor("peerA", of(1), noConstraints()));
+        assertEquals(-1, scheduler.pickSequentialFor("peerA", of(1, 2), noConstraints()));
+    }
+
+    @Test
+    void pickSequentialForPrefersAssemblingPieceAndHonoursCap() {
+        PieceScheduler scheduler = new PieceScheduler(PIECE_COUNT, PIECE_LENGTH, TOTAL_LENGTH);
+        scheduler.peerConnected("peerA", of(0, 1, 2));
+
+        // 组装器满（0/1）：不开新件；件 2 在途（activePieces）仍是候选且索引最大
+        PieceConstraints capReached = new PieceConstraints(
+                Set.of(2), Set.of(), 2, 2, piece -> true);
+        assertEquals(2, scheduler.pickSequentialFor("peerA",
+                new Bitfield(PIECE_COUNT), capReached), "在途件绕过组装器上限");
+
+        // 组装器满且无在途件：无候选
+        assertEquals(-1, scheduler.pickSequentialFor("peerA",
+                new Bitfield(PIECE_COUNT),
+                new PieceConstraints(Set.of(), Set.of(), 2, 2, piece -> true)));
+
+        // 常态：件 0 在途未收齐（仍有缺失块）→ 顺序优先收尾手头件
+        PieceConstraints assemblingFirst = new PieceConstraints(
+                Set.of(0), Set.of(), 1, 2, piece -> true);
+        assertEquals(0, scheduler.pickSequentialFor("peerA",
+                new Bitfield(PIECE_COUNT), assemblingFirst));
+    }
+
+    @Test
     void pickForSkipsLocalAndVerifyingPieces() {
         PieceScheduler scheduler = new PieceScheduler(PIECE_COUNT, PIECE_LENGTH, TOTAL_LENGTH);
         scheduler.peerConnected("peerA", of(0, 1, 2));

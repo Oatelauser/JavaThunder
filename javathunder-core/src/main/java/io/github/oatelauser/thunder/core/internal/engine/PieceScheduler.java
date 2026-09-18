@@ -122,6 +122,29 @@ public final class PieceScheduler {
     }
 
     /**
+     * 顺序选件（{@code DownloadOrder.SEQUENTIAL}）：同一资格条件下取索引最小的件——
+     * 首文件最先凑齐（流式消费）。跳过条件与 {@link #pickFor} 完全一致（本地已有/
+     * 校验中/该对端没有/无缺失块；组装器满不开新件但在途件仍候选）；组装中的件
+     * 位图位未落定且仍有缺失块，天然排在最前，即"先收尾手头件再开下一件"。
+     */
+    public int pickSequentialFor(Object peerKey, Bitfield local, PieceConstraints constraints) {
+        Bitfield remote = peers.get(peerKey);
+        for (int i = 0; i < pieceCount; i++) {
+            if (local.has(i) || constraints.verifyingPieces().contains(i)
+                    || remote == null || !remote.has(i)
+                    || !constraints.hasMissingBlock().test(i)) {
+                continue;
+            }
+            if (!constraints.activePieces().contains(i)
+                    && constraints.assemblingCount() >= constraints.maxActivePieces()) {
+                continue;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    /**
      * 无锁热路径：并发容器的 values() 弱一致遍历对计数场景安全。
      */
     public int availability(int pieceIndex) {

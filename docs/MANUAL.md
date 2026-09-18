@@ -493,6 +493,25 @@ DownloadOptions smallDocs = DownloadOptions.defaults()
 - 纯做种（`client.seed(...)`）忽略过滤器——做种必须完整持有
 - `seedAfterComplete(true)` + 过滤器：完成后按实际持有的部分集合继续供种
 
+### 4.10 顺序下载（流式消费：边下边看）
+
+**依赖**：仅 core。`DownloadOptions.downloadOrder(DownloadOrder.SEQUENTIAL)`——选件按 Piece 索引从低到高（默认 `RAREST_FIRST` 稀缺优先），首文件最先凑齐。与 §4.9 选择性下载组合即"只下前两集、按顺序下、下完第一集就能看"：
+
+```java
+DownloadOptions options = DownloadOptions.defaults()
+    .targetDir(Path.of("out"))
+    .fileFilter(FileFilter.paths("ep01.mp4", "ep02.mp4"))
+    .downloadOrder(DownloadOrder.SEQUENTIAL);
+```
+
+行为边界（自动处理，无需干预）：
+
+- 组装中的在途件天然最优先（先收尾手头件再开下一件）；WebSeed 通道与 Peer 通道同序
+- 对端没有下一件时自动跳到其后它有的件（不空等）；无人持有的件由后续 Have 到达补选
+- 完成判定、进度语义与稀缺优先完全相同（区别只在选件顺序）；两模式可随重启任意切换
+- 代价：放弃稀缺优先的 swarm 健康性（人人都顺序下载时稀有件更晚扩散）——只在确需
+  按序消费时开启
+
 ---
 
 ## 第 5 章 上传与分发场景：我要把文件给别人

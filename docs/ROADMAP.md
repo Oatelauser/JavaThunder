@@ -80,8 +80,9 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
   做种侧层带对等服务；同批修正 Merkle 填充约定至 libtorrent 逐层 pad 链（互操作）
 - 选择性下载（文件级取舍）——**已实现（0.7.0）**：`DownloadOptions.fileFilter`
   （FileFilter：paths/extensions/谓词），必需件投影驱动选件/完成/进度换算，
-  跨界件整件下载；API 面在 1.0 冻结前落定。顺序下载/优先级分层（qB 式 0-7 档）
-  为后续增量，投影机制可直接复用
+  跨界件整件下载；API 面在 1.0 冻结前落定。顺序下载（`DownloadOrder.SEQUENTIAL`）
+  同批落地（索引升序选件、流式消费）；优先级分层（qB 式 0-7 档）为后续增量，
+  投影与 DownloadOrder 枚举机制可直接复用
 
 ## 明确不实现
 
