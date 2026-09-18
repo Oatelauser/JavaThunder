@@ -118,6 +118,12 @@ class BlockingTransportTest {
                 out.write(PeerWireCodec.encode(
                     new PieceMessage(3, 8192, new byte[]{7, 7, 7})));
                 out.flush();
+                // 等客户端先关再退出：否则服务端 EOF 可能抢在本地 close 之前到达
+                // readLoop，close 原因变成 IOException 而非 null——Linux CI 跑步者上
+                // 确定性复现的测试竞态（JDK 21/25/26 三腿全挂；closeWith 幂等保证
+                // 本地 close 先到即胜出，读循环其后的异常被吞）
+                while (in.read() != -1) {
+                }
             });
 
             RecordingHandler handler = new RecordingHandler();

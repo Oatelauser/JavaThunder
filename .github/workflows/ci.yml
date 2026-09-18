@@ -56,7 +56,9 @@ jobs:
   quickstart-public:
     # 手动触发的公网冒烟（真实 Swarm 进度事件流）：种子 URL 可输入覆盖，
     # 缺省 Ubuntu 24.04.4。不随 push/PR 跑——公网种子受网络环境影响，
-    # 只作人工触发的事后验证（对齐 MANUAL §2.2）。
+    # 只作人工触发的事后验证（对齐 MANUAL §2.2）。push/PR 触发时 inputs 为空、
+    # curl 空串必挂——本守卫缺失曾让主分支 CI 常红（quickstart 腿次次失败）。
+    if: github.event_name == 'workflow_dispatch'
     name: Public quickstart (manual)
     runs-on: ubuntu-latest
     timeout-minutes: 10
