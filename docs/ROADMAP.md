@@ -70,9 +70,10 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 
 - BEP 6 快速扩展——**已实现（0.5.0）**：握手协商 + HaveAll/HaveNone/Reject 主动发送
   （未协商对端自动回退 BEP 3 语义）；Suggest/AllowedFast 容忍解码不采纳
-- BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）——**已实现（v1，0.5.0）**：单文件
-  `url-list` 自动启用、按件 Range 拉取、源级退避熔断、与 Peer 通道在途互斥；
-  多文件 WebSeed（BEP 53 草案）未实现
+- BEP 19 HTTP/Web 种子（HTTP 镜像兜底下载源）——**已实现（v1 单文件 0.5.0；
+  多文件目录形态 0.8.0）**：单文件 `url-list`（URL 即文件）与目录 base（末尾 `/`，
+  引擎按种子内相对路径拼 URL、文件内 Range 逐段取回，跨文件件多段拼接、BEP 47
+  填充段本地零合成）都支持；源级退避熔断、与 Peer 通道在途互斥不变
 - BEP 52 v2 / 混合种子（Merkle 树 + SHA-256）——**已实现（0.6.0）**：v2-only/hybrid
   解析下载 + SHA-256 Merkle 逐件校验 + btmh 磁力解析
 - BEP 52 哈希交换（hash request/hashes/hash reject，ID 21-23）——**已实现（0.7.0）**：
@@ -81,8 +82,9 @@ stopped 事件摘除 / 多 swarm 并发 / 可观测统计；原 TrackerServer �
 - 选择性下载（文件级取舍）——**已实现（0.7.0）**：`DownloadOptions.fileFilter`
   （FileFilter：paths/extensions/谓词），必需件投影驱动选件/完成/进度换算，
   跨界件整件下载；API 面在 1.0 冻结前落定。顺序下载（`DownloadOrder.SEQUENTIAL`）
-  同批落地（索引升序选件、流式消费）；优先级分层（qB 式 0-7 档）为后续增量，
-  投影与 DownloadOrder 枚举机制可直接复用
+  同批落地（索引升序选件、流式消费）；文件优先级（`FilePriority`：HIGH/NORMAL/SKIP，
+  跨界件取最高，Peer/WebSeed 同字典序）**0.8.0 落地**——文件调度三角（取舍/顺序/
+  优先级）齐备，API 面收口
 
 ## 明确不实现
 

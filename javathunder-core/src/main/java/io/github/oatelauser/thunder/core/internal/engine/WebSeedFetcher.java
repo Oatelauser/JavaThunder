@@ -65,25 +65,36 @@ final class WebSeedFetcher {
         }
     }
 
-    /** 选件：本地缺失 ∩ 未被占用 ∩ 必需（选择性下载）；顺序模式取索引最小（与 Peer 选件同序），否则 availability 升序（优先救稀缺件）。 */
+    /** 选件：本地缺失 ∩ 未被占用 ∩ 必需；顺序模式（优先级降序, 索引升序），否则（优先级降序, availability 升序）——与 Peer 选件同字典序。 */
     private int pickPiece() {
         if (session.sequentialDownload()) {
+            int best = -1;
+            int bestPriority = Integer.MIN_VALUE;
             for (int i = 0; i < meta.pieceCount(); i++) {
-                if (!session.hasPiece(i) && !session.pieceClaimed(i) && session.wantedPiece(i)) {
-                    return i;
+                if (session.hasPiece(i) || session.pieceClaimed(i) || !session.wantedPiece(i)) {
+                    continue;
+                }
+                int priority = session.piecePriority(i);
+                if (priority > bestPriority) {
+                    best = i;
+                    bestPriority = priority;
                 }
             }
-            return -1;
+            return best;
         }
         int best = -1;
+        int bestPriority = Integer.MIN_VALUE;
         int bestAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < meta.pieceCount(); i++) {
             if (session.hasPiece(i) || session.pieceClaimed(i) || !session.wantedPiece(i)) {
                 continue;
             }
+            int priority = session.piecePriority(i);
             int availability = session.pieceAvailability(i);
-            if (availability < bestAvailability) {
+            if (priority > bestPriority
+                    || priority == bestPriority && availability < bestAvailability) {
                 best = i;
+                bestPriority = priority;
                 bestAvailability = availability;
             }
         }
@@ -94,7 +105,7 @@ final class WebSeedFetcher {
         session.claimPieceForWebSeed(piece);
         byte[] body;
         try {
-            body = client.fetchPiece(piece, meta.pieceLength());
+            body = fetchPieceBytes(piece);
             session.webSeedDownloaded(body.length);
         } catch (IOException e) {
             session.releaseWebSeedClaim(piece); // 让 Peer 通道接手该件
@@ -124,9 +135,42 @@ final class WebSeedFetcher {
         }
     }
 
+    /**
+     * 拉取一件的全部字节：单文件种子走拼接流整件 Range（URL 即文件）；多文件种子
+     * （BEP 19 目录形态）按件 × 文件交集逐段拉取——URL = base + 种子内相对路径，
+     * Range 为文件内偏移。v1 的件可跨文件（多段拼接）；v2 实文件按件对齐（单段）。
+     * BEP 47 填充文件是流内全零段，本地合成零（不发 HTTP）。
+     */
+    private byte[] fetchPieceBytes(int piece) throws IOException {
+        long pieceStart = (long) piece * meta.pieceLength();
+        long pieceEnd = Math.min(pieceStart + meta.pieceLength(), meta.length());
+        if (meta.files().isEmpty()) {
+            return client.fetchPiece(piece, meta.pieceLength());
+        }
+        byte[] body = new byte[(int) (pieceEnd - pieceStart)];
+        for (TorrentMetadata.TorrentFile file : meta.files()) {
+            long fileStart = file.offset();
+            long fileEnd = file.offset() + file.length();
+            long from = Math.max(pieceStart, fileStart);
+            long to = Math.min(pieceEnd, fileEnd);
+            if (from >= to) {
+                continue; // 该文件与件无交集（files 按偏移升序，越过件尾即可提前结束）
+            }
+            if (to < pieceStart) {
+                continue;
+            }
+            if (file.padding()) {
+                continue; // 全零段：body 已零初始化
+            }
+            byte[] segment = client.fetchFileSegment(String.join("/", file.path()),
+                    from - fileStart, to - fileStart - 1);
+            System.arraycopy(segment, 0, body, (int) (from - pieceStart), segment.length);
+        }
+        return body;
+    }
+
     /** 坏件：放认领允许重下；连续 2 件即视为源数据不可信，停通道（Peer 照常）。 */
-    private void onBadPiece(int piece) {
-        session.releaseWebSeedClaim(piece);
+    private void onBadPiece(int piece) {        session.releaseWebSeedClaim(piece);
         consecutiveBadPieces++;
         log.warn("web seed piece {} failed verification (bad #{})", piece, consecutiveBadPieces);
         if (consecutiveBadPieces >= MAX_BAD_PIECES) {

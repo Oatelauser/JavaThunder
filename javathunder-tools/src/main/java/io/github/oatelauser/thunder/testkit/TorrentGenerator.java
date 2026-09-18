@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 
 /**
@@ -89,28 +90,21 @@ public final class TorrentGenerator {
     @SuppressWarnings("unchecked")
     public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name, List<List<Object>> specs,
             int pieceLength, String announceUrl, Random random) throws IOException {
+        return generateMultiFile(dir, name, specs, pieceLength, announceUrl, List.of(), random);
+    }
+
+    /**
+     * 完整形态：可附带 WebSeed 源（BEP 19 顶层 url-list，目录形态——base 供拼接相对路径）。
+     * {@code announceUrl} 传 null 且 urlList 非空时生成纯 WebSeed 种子。
+     */
+    @SuppressWarnings("unchecked")
+    public static GeneratedMultiFileTorrent generateMultiFile(Path dir, String name, List<List<Object>> specs,
+            int pieceLength, @Nullable String announceUrl, List<String> urlList, Random random)
+            throws IOException {
         ByteArrayOutputStream concatenated = new ByteArrayOutputStream();
         List<BencodeValue> fileDicts = new ArrayList<>();
         for (List<Object> spec : specs) {
-            List<String> path = (List<String>) spec.get(0);
-            int sizeBytes = (Integer) spec.get(1);
-            byte[] content = new byte[sizeBytes];
-            random.nextBytes(content);
-            Path target = dir.resolve(name);
-            for (String component : path) {
-                target = target.resolve(component);
-            }
-            Files.createDirectories(target.getParent());
-            Files.write(target, content);
-            concatenated.writeBytes(content);
-            Map<BString, BencodeValue> fileDict = new TreeMap<>(BString.UNSIGNED_ORDER);
-            fileDict.put(BString.of("length"), new BInteger(sizeBytes));
-            List<BencodeValue> pathElements = new ArrayList<>();
-            for (String component : path) {
-                pathElements.add(BString.of(component));
-            }
-            fileDict.put(BString.of("path"), new BList(pathElements));
-            fileDicts.add(new BDict(fileDict));
+            writeMultiFileEntry(dir, name, spec, random, concatenated, fileDicts);
         }
         byte[] stream = concatenated.toByteArray();
         int pieceCount = (stream.length + pieceLength - 1) / pieceLength;
@@ -127,11 +121,44 @@ public final class TorrentGenerator {
         info.put(BString.of("pieces"), new BString(pieces));
         info.put(BString.of("files"), new BList(fileDicts));
         Map<BString, BencodeValue> top = new TreeMap<>(BString.UNSIGNED_ORDER);
-        top.put(BString.of("announce"), BString.of(announceUrl));
+        if (announceUrl != null) {
+            top.put(BString.of("announce"), BString.of(announceUrl));
+        }
+        if (!urlList.isEmpty()) {
+            top.put(BString.of("url-list"), urlList.size() == 1
+                    ? BString.of(urlList.get(0))
+                    : new BList(urlList.stream().map(BString::of).collect(Collectors.toList())));
+        }
         top.put(BString.of("info"), new BDict(info));
         Path torrentFile = dir.resolve(name + ".torrent");
         Files.write(torrentFile, Bencode.encode(new BDict(top)));
         return new GeneratedMultiFileTorrent(dir.resolve(name), torrentFile, pieceCount);
+    }
+
+    /** 写出一个 spec 条目的随机内容文件并追加 file 字典与拼接流字节。 */
+    @SuppressWarnings("unchecked")
+    private static void writeMultiFileEntry(Path dir, String name, List<Object> spec,
+            Random random, ByteArrayOutputStream concatenated, List<BencodeValue> fileDicts)
+            throws IOException {
+        List<String> path = (List<String>) spec.get(0);
+        int sizeBytes = (Integer) spec.get(1);
+        byte[] content = new byte[sizeBytes];
+        random.nextBytes(content);
+        Path target = dir.resolve(name);
+        for (String component : path) {
+            target = target.resolve(component);
+        }
+        Files.createDirectories(target.getParent());
+        Files.write(target, content);
+        concatenated.writeBytes(content);
+        Map<BString, BencodeValue> fileDict = new TreeMap<>(BString.UNSIGNED_ORDER);
+        fileDict.put(BString.of("length"), new BInteger(sizeBytes));
+        List<BencodeValue> pathElements = new ArrayList<>();
+        for (String component : path) {
+            pathElements.add(BString.of(component));
+        }
+        fileDict.put(BString.of("path"), new BList(pathElements));
+        fileDicts.add(new BDict(fileDict));
     }
 
     private static byte[] sha1(byte[] data, int from, int to) {

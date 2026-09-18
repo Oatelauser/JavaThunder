@@ -1,6 +1,7 @@
 package io.github.oatelauser.thunder.core.internal.engine;
 
 import io.github.oatelauser.thunder.api.FileFilter;
+import io.github.oatelauser.thunder.api.FilePriority;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentMetadata;
 import io.github.oatelauser.thunder.core.internal.metainfo.TorrentVersion;
 import io.github.oatelauser.thunder.core.internal.storage.Bitfield;
@@ -31,7 +32,7 @@ class WantedPiecesTest {
                 file("a.txt", 0, 10000),
                 file("b.bin", 10000, 40000),
                 file("c.txt", 50000, 20000)), 70000);
-        WantedPieces wanted = new WantedPieces(meta, FileFilter.extensions("txt"));
+        WantedPieces wanted = new WantedPieces(meta, FileFilter.extensions("txt"), FilePriority.all(FilePriority.NORMAL));
 
         assertTrue(wanted.requiredPiece(0), "a 覆盖件 0（跨界含 b 的头 6384B）");
         assertFalse(wanted.requiredPiece(1), "纯 b 区间");
@@ -48,7 +49,7 @@ class WantedPiecesTest {
                 file("a.bin", 0, PIECE),
                 file("b.txt", PIECE, 2 * PIECE),
                 file("c.bin", 3 * PIECE, PIECE)), 4 * PIECE);
-        WantedPieces wanted = new WantedPieces(meta, FileFilter.paths("b.txt"));
+        WantedPieces wanted = new WantedPieces(meta, FileFilter.paths("b.txt"), FilePriority.all(FilePriority.NORMAL));
 
         assertFalse(wanted.requiredPiece(0));
         assertTrue(wanted.requiredPiece(1));
@@ -61,9 +62,9 @@ class WantedPiecesTest {
     void singleFileTorrentJudgedByRootName() {
         TorrentMetadata meta = new TorrentMetadata(new byte[20], null, List.of(), null, null,
                 null, "model.bin", PIECE, PIECE, new byte[20], false, List.of(), List.of());
-        assertTrue(new WantedPieces(meta, FileFilter.paths("model.bin")).requiredPiece(0));
+        assertTrue(new WantedPieces(meta, FileFilter.paths("model.bin"), FilePriority.all(FilePriority.NORMAL)).requiredPiece(0));
         assertThrows(IllegalArgumentException.class,
-                () -> new WantedPieces(meta, FileFilter.paths("other.bin")),
+                () -> new WantedPieces(meta, FileFilter.paths("other.bin"), FilePriority.all(FilePriority.NORMAL)),
                 "排除唯一文件 = 无意义任务，构造期拒绝");
     }
 
@@ -72,7 +73,7 @@ class WantedPiecesTest {
         TorrentMetadata meta = multiFileMeta(List.of(
                 file("a.txt", 0, PIECE),
                 file("b.bin", PIECE, PIECE)), 2 * PIECE);
-        WantedPieces wanted = new WantedPieces(meta, FileFilter.paths("a.txt"));
+        WantedPieces wanted = new WantedPieces(meta, FileFilter.paths("a.txt"), FilePriority.all(FilePriority.NORMAL));
 
         Bitfield local = new Bitfield(2);
         local.set(0);
@@ -95,5 +96,33 @@ class WantedPiecesTest {
         return new TorrentMetadata(new byte[20], "http://tk/announce", List.of(), null, null,
                 null, "root", totalLength, PIECE, pieces, false, files, List.of(),
                 TorrentVersion.V1, null);
+    }
+    @Test
+    void prioritiesProjectToPiecesWithMaxOverSpanning() {
+        // a[0,10000)=HIGH, b[10000,50000)=NORMAL, c[50000,70000)=SKIP
+        // 件 0 压 a+b → HIGH；件 1/2 纯 b → NORMAL；件 3 压 b+c → NORMAL(max(NORMAL,SKIP))；
+        // 件 4 纯 c → 0（不需要）
+        TorrentMetadata meta = multiFileMeta(List.of(
+                file("a.txt", 0, 10000),
+                file("b.bin", 10000, 40000),
+                file("c.txt", 50000, 20000)), 70000);
+        WantedPieces wanted = new WantedPieces(meta, FileFilter.all(),
+                path -> path.get(0).equals("a.txt") ? FilePriority.HIGH
+                        : path.get(0).equals("c.txt") ? FilePriority.SKIP : FilePriority.NORMAL);
+
+        assertEquals(FilePriority.HIGH, wanted.priorityOf(0));
+        assertEquals(FilePriority.NORMAL, wanted.priorityOf(1));
+        assertEquals(FilePriority.NORMAL, wanted.priorityOf(2));
+        assertEquals(FilePriority.NORMAL, wanted.priorityOf(3), "跨界件取保留侧的最高优先级");
+        assertEquals(0, wanted.priorityOf(4), "SKIP 文件独占的件不参与");
+        assertFalse(wanted.requiredPiece(4));
+        assertEquals(4 * 16384, wanted.wantedBytes(), "件 0-3 整件");
+    }
+
+    @Test
+    void allSkipRejectsConstruction() {
+        TorrentMetadata meta = multiFileMeta(List.of(file("a.txt", 0, 16384)), 16384);
+        assertThrows(IllegalArgumentException.class,
+                () -> new WantedPieces(meta, FileFilter.all(), path -> FilePriority.SKIP));
     }
 }

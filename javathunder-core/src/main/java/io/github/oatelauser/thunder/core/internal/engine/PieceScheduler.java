@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntUnaryOperator;
 
 /**
  * Piece 调度（DESIGN §5.8）：远端位图单源、在途块表与生产选件策略（稀缺优先 +
@@ -83,23 +84,29 @@ public final class PieceScheduler {
     }
 
     /**
-     * 生产选件策略：逐件遍历，跳过本地已有 / 校验中 / 该对端没有 / 已无缺失块的件；
-     * 非组装中件在组装器满员（{@code assemblingCount >= maxActivePieces}）时跳过，
-     * 否则按 availability 严格小于更新 bestFree（先到先得——并列取先遍历到者，
-     * 保持确定性）；组装中件更新 bestBusy。返回 bestFree 优先，无候选返回 -1。
+     * 生产选件策略（含文件优先级字典序）：逐件遍历，跳过本地已有 / 校验中 / 该对端
+     * 没有 / 已无缺失块 / 非必需（选择性下载）的件；非组装中件在组装器满员
+     * （{@code assemblingCount >= maxActivePieces}）时跳过，否则按
+     * （优先级降序，availability 升序）更新 bestFree（并列取先遍历到者，保持确定性）；
+     * 组装中件更新 bestBusy（同字典序——高优先级的在途件优先补块）。
+     * 返回 bestFree 优先，无候选返回 -1。全部优先级相等时退化为纯稀缺优先。
      *
      * <p>并发说明：{@code local} 为调用方传入的 live 位图，此处无锁逐位读——
      * 与 {@link #availability(int)} 同一弱一致级别（并发容器遍历），瞬时陈旧只
      * 影响选择质量，不影响正确性（重复请求由在途表与组装器去重兜底）。
      */
-    public int pickFor(Object peerKey, Bitfield local, PieceConstraints constraints) {
+    public int pickFor(Object peerKey, Bitfield local, IntUnaryOperator priorityOf,
+            PieceConstraints constraints) {
         Bitfield remote = peers.get(peerKey);
         int bestFree = -1;
+        int bestFreePriority = Integer.MIN_VALUE;
         int bestFreeAvailability = Integer.MAX_VALUE;
         int bestBusy = -1;
+        int bestBusyPriority = Integer.MIN_VALUE;
         int bestBusyAvailability = Integer.MAX_VALUE;
         for (int i = 0; i < pieceCount; i++) {
-            if (local.has(i) || constraints.verifyingPieces().contains(i)
+            int priority = priorityOf.applyAsInt(i);
+            if (priority <= 0 || local.has(i) || constraints.verifyingPieces().contains(i)
                     || remote == null || !remote.has(i)
                     || !constraints.hasMissingBlock().test(i)) {
                 continue;
@@ -109,12 +116,16 @@ public final class PieceScheduler {
                 if (constraints.assemblingCount() >= constraints.maxActivePieces()) {
                     continue; // 组装器满：不开新件（在途件仍可补块）
                 }
-                if (availability < bestFreeAvailability) {
+                if (priority > bestFreePriority
+                        || priority == bestFreePriority && availability < bestFreeAvailability) {
                     bestFree = i;
+                    bestFreePriority = priority;
                     bestFreeAvailability = availability;
                 }
-            } else if (availability < bestBusyAvailability) {
+            } else if (priority > bestBusyPriority
+                    || priority == bestBusyPriority && availability < bestBusyAvailability) {
                 bestBusy = i;
+                bestBusyPriority = priority;
                 bestBusyAvailability = availability;
             }
         }
@@ -122,15 +133,20 @@ public final class PieceScheduler {
     }
 
     /**
-     * 顺序选件（{@code DownloadOrder.SEQUENTIAL}）：同一资格条件下取索引最小的件——
-     * 首文件最先凑齐（流式消费）。跳过条件与 {@link #pickFor} 完全一致（本地已有/
-     * 校验中/该对端没有/无缺失块；组装器满不开新件但在途件仍候选）；组装中的件
-     * 位图位未落定且仍有缺失块，天然排在最前，即"先收尾手头件再开下一件"。
+     * 顺序选件（{@code DownloadOrder.SEQUENTIAL}）：同一资格条件下取
+     * （优先级降序，索引升序）——高优先级文件内先流式，高优先级整体先于常规。
+     * 跳过条件与 {@link #pickFor} 完全一致；组装中的件位图位未落定且仍有缺失块，
+     * 天然排在同优先级最前，即"先收尾手头件再开下一件"。全部优先级相等时退化为
+     * 纯索引升序。
      */
-    public int pickSequentialFor(Object peerKey, Bitfield local, PieceConstraints constraints) {
+    public int pickSequentialFor(Object peerKey, Bitfield local, IntUnaryOperator priorityOf,
+            PieceConstraints constraints) {
         Bitfield remote = peers.get(peerKey);
+        int best = -1;
+        int bestPriority = Integer.MIN_VALUE;
         for (int i = 0; i < pieceCount; i++) {
-            if (local.has(i) || constraints.verifyingPieces().contains(i)
+            int priority = priorityOf.applyAsInt(i);
+            if (priority <= 0 || local.has(i) || constraints.verifyingPieces().contains(i)
                     || remote == null || !remote.has(i)
                     || !constraints.hasMissingBlock().test(i)) {
                 continue;
@@ -139,9 +155,12 @@ public final class PieceScheduler {
                     && constraints.assemblingCount() >= constraints.maxActivePieces()) {
                 continue;
             }
-            return i;
+            if (priority > bestPriority) {
+                best = i; // 升序扫描：同优先级的更小索引先到，严格大于才覆盖
+                bestPriority = priority;
+            }
         }
-        return -1;
+        return best;
     }
 
     /**

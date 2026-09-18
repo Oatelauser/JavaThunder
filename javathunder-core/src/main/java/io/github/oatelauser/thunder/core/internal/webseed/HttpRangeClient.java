@@ -10,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -54,6 +55,7 @@ public final class HttpRangeClient {
 
     /**
      * 拉取拼接流第 {@code pieceIndex} 件的全部字节（末件按剩余长度截断）。
+     * 单文件种子语义：URL 即文件本身，Range 按拼接流（= 文件）偏移。
      *
      * @throws IOException 全部源已熔断/退避中，或本轮尝试的每个源都失败
      */
@@ -63,6 +65,31 @@ public final class HttpRangeClient {
         if (pieceIndex < 0 || from > to || to >= totalLength) {
             throw new IllegalArgumentException("piece " + pieceIndex + " out of stream bounds");
         }
+        return rotate(source -> source.url, from, to);
+    }
+
+    /**
+     * 多文件种子语义（BEP 19 目录形态）：按种子内相对路径拼 URL
+     * （{@code base/<路径组件>/<文件名>}，base 末尾斜杠 tolerated），对单个文件内
+     * 的区间拉取——一件跨多个文件时由调用方逐段拼接（见 WebSeedFetcher）。
+     *
+     * @throws IOException 同 {@link #fetchPiece}
+     */
+    public byte[] fetchFileSegment(String relativePath, long from, long to) throws IOException {
+        if (relativePath == null || relativePath.isBlank() || relativePath.startsWith("/")
+                || from < 0 || from > to) {
+            throw new IllegalArgumentException("invalid segment [" + from + "," + to
+                    + "] of " + relativePath);
+        }
+        return rotate(source -> joinPath(source.url, relativePath), from, to);
+    }
+
+    private static String joinPath(String baseUrl, String relativePath) {
+        return baseUrl.endsWith("/") ? baseUrl + relativePath : baseUrl + "/" + relativePath;
+    }
+
+    /** 源轮询公共骨架：跳过熔断/退避中的源，成功复位并轮到下一源，失败走退避/熔断。 */
+    private byte[] rotate(Function<Source, String> urlOf, long from, long to) throws IOException {
         IOException last = new IOException("no web seed source available (all disabled or backing off)");
         int start = nextSourceIndex;
         for (int attempt = 0; attempt < sources.length; attempt++) {
@@ -72,7 +99,7 @@ public final class HttpRangeClient {
                 continue;
             }
             try {
-                byte[] body = request(source, from, to);
+                byte[] body = request(source, urlOf.apply(source), from, to);
                 source.consecutiveFailures = 0;
                 source.retryAtMillis = 0L;
                 nextSourceIndex = (index + 1) % sources.length;
@@ -95,11 +122,12 @@ public final class HttpRangeClient {
         return true;
     }
 
-    private byte[] request(Source source, long from, long to) throws IOException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(source.url))
+    /** 发起一次 Range 请求（URL 已由调用方按单文件/多文件语义拼好）。 */
+    private byte[] request(Source source, String url, long from, long to) throws IOException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Range", "bytes=" + from + "-" + to)
-                .header("User-Agent", "JavaThunder/0.5")
+                .header("User-Agent", "JavaThunder/0.7")
                 .GET()
                 .build();
         HttpResponse<byte[]> response;
@@ -112,19 +140,19 @@ public final class HttpRangeClient {
         if (response.statusCode() == 200) {
             // 服务器忽略 Range 回全量：大文件场景不可接受，视为不支持 Range，立即熔断
             disable(source, "HTTP 200 — Range not honored (full-body responses unsupported)");
-            throw new IOException(source.url + ": expected 206, got 200 (Range ignored)");
+            throw new IOException(url + ": expected 206, got 200 (Range ignored)");
         }
         if (response.statusCode() == 416) {
             disable(source, "HTTP 416 — source data does not match torrent bounds");
-            throw new IOException(source.url + ": 416 range not satisfiable");
+            throw new IOException(url + ": 416 range not satisfiable");
         }
         if (response.statusCode() != 206) {
-            throw new IOException(source.url + ": expected 206, got " + response.statusCode());
+            throw new IOException(url + ": expected 206, got " + response.statusCode());
         }
         byte[] body = response.body();
         long expected = to - from + 1;
         if (body.length != expected) {
-            throw new IOException(source.url + ": short body " + body.length + " bytes, expected " + expected);
+            throw new IOException(url + ": short body " + body.length + " bytes, expected " + expected);
         }
         return body;
     }

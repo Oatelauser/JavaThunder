@@ -3,6 +3,7 @@ package io.github.oatelauser.thunder.core.internal.engine;
 import io.github.oatelauser.thunder.api.DownloadOptions;
 import io.github.oatelauser.thunder.api.DownloadOrder;
 import io.github.oatelauser.thunder.api.DownloadResult;
+import io.github.oatelauser.thunder.api.FilePriority;
 import io.github.oatelauser.thunder.api.PeerDiscoverySource;
 import io.github.oatelauser.thunder.api.ProgressSnapshot;
 import io.github.oatelauser.thunder.api.TaskListener;
@@ -172,9 +173,10 @@ public final class DownloadSession {
                 : new StorageManager(meta, options.targetDir(), seedOnly);
         this.resumeFile = storage.partFile().resolveSibling(meta.name() + ".jt-resume");
         this.local = new Bitfield(meta.pieceCount());
-        // 选择性下载投影（seedOnly 恒全量：做种必须完整持有；过滤器只作用于下载）
+        // 选择性下载与文件优先级投影（seedOnly 恒全量 NORMAL：做种必须完整持有）
         this.wanted = new WantedPieces(meta,
-                seedOnly ? path -> true : options.fileFilter());
+                seedOnly ? path -> true : options.fileFilter(),
+                seedOnly ? path -> FilePriority.NORMAL : options.filePriorities());
         this.sequential = options.downloadOrder() == DownloadOrder.SEQUENTIAL;
         this.scheduler = new PieceScheduler(meta.pieceCount(), meta.pieceLength(), meta.length());
         this.choking = new ChokingManager(random);
@@ -659,12 +661,12 @@ public final class DownloadSession {
                     break; // 当前 piece 的 block 已全部发出，等待响应
                 }
                 int piece = sequential
-                        ? scheduler.pickSequentialFor(session.key, local, new PieceConstraints(
-                                activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
-                                this::hasMissingBlock))
-                        : scheduler.pickFor(session.key, local, new PieceConstraints(
-                                activePieces, verifyingPieces, assemblers.size(), maxActivePieces,
-                                this::hasMissingBlock));
+                        ? scheduler.pickSequentialFor(session.key, local, wanted::priorityOf,
+                                new PieceConstraints(activePieces, verifyingPieces,
+                                        assemblers.size(), maxActivePieces, this::hasMissingBlock))
+                        : scheduler.pickFor(session.key, local, wanted::priorityOf,
+                                new PieceConstraints(activePieces, verifyingPieces,
+                                        assemblers.size(), maxActivePieces, this::hasMissingBlock));
                 if (piece < 0) {
                     break;
                 }
@@ -1165,6 +1167,11 @@ public final class DownloadSession {
     /** 选择性下载门控（WebSeed 通道与 Peer 通道共用语义，见 WantedPieces）。 */
     boolean wantedPiece(int piece) {
         return wanted.requiredPiece(piece);
+    }
+
+    /** 件优先级（文件优先级投影，见 WantedPieces；0 = 不需要）。 */
+    int piecePriority(int piece) {
+        return wanted.priorityOf(piece);
     }
 
     /** 顺序下载模式（WebSeed 通道选件与 Peer 通道同序，见 DownloadOrder）。 */

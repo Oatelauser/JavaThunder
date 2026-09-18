@@ -411,7 +411,11 @@ options.rateLimits(/*↓*/ 512 * 1024, /*↑*/ 64 * 1024);
 - 源数据与种子不符（校验失败）连续 2 件即停用 HTTP 通道，Peer 通道照常完成下载；反之 Peer 全挂时 HTTP 通道兜底
 - HTTP 下载与 Peer 下载**共享同一对限速桶**（全局 + 任务级，§4.5），不会绕过限速
 - 磁力链接的元数据来自 BEP 9（裸 info 字典），天然不含 `url-list`——WebSeed 只对 .torrent 生效
-- 当前版本：单文件种子的 `url-list`（BEP 19 本体）；多文件 HTTP 源（BEP 53，草案态）未实现
+- **多文件种子（目录形态）**：url-list 指向目录 base（末尾带 `/`，如
+  `https://mirror.example.com/files/`），引擎自动按 种子内相对路径 拼出每个文件的
+  URL（`base/docs/manual.pdf`）并对文件内区间发 Range——一件跨两个文件时逐段拉取
+  拼接，对端只须把目录原样放到任意支持 Range 的静态服务器上。单文件种子的既有
+  语义（URL 即文件本身）不变
 
 用 testkit 造一个带兜底源的种子（给自己的集成测试/内网分发用）：
 
@@ -511,6 +515,29 @@ DownloadOptions options = DownloadOptions.defaults()
 - 完成判定、进度语义与稀缺优先完全相同（区别只在选件顺序）；两模式可随重启任意切换
 - 代价：放弃稀缺优先的 swarm 健康性（人人都顺序下载时稀有件更晚扩散）——只在确需
   按序消费时开启
+
+### 4.11 文件优先级（先要哪个文件）
+
+**依赖**：仅 core。与 §4.9 取舍、§4.10 顺序构成文件调度三角——`DownloadOptions.filePriorities(...)` 给每个文件一个优先级，Peer 与 WebSeed 两条通道都按（优先级降序，稀缺度/索引次之）选件：
+
+```java
+// 内网分发：先把 README 和首集拉下来，其余常规，样本目录不下：
+DownloadOptions options = DownloadOptions.defaults()
+    .targetDir(Path.of("out"))
+    .filePriorities(path ->
+        path.get(path.size() - 1).equals("README.md") ? FilePriority.HIGH
+        : path.get(0).equals("samples")              ? FilePriority.SKIP
+        : FilePriority.NORMAL);
+```
+
+行为边界（自动处理，无需干预）：
+
+- 三档语义：`HIGH`（先拉）/ `NORMAL`（常规，默认）/ `SKIP`（不下，与过滤器排除等效）；
+  任意 int 可用（越大越先），档位越多调度越接近串行
+- 与 `FileFilter` 组合：过滤器先决定取舍，优先级在保留集内定次序；跨界件取保留侧
+  最高优先级（不拖累高优先进度）
+- 只影响**次序**：完成判定、进度百分比、ETA 语义与不设优先级完全相同
+- 顺序模式（§4.10）叠加时：高优先级文件整体先于常规文件按索引序下载
 
 ---
 
