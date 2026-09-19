@@ -2,6 +2,22 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
+## 1.0.1（待发布）
+
+### 修复与加固
+
+- **内嵌 UDP tracker 的 connect 校验（BEP 15 合规，公网暴露前置条件）**：
+  connection_id 现与来源地址绑定（60s TTL、成功 announce 滑动续期、惰性清理），
+  id 未知/过期/来源不符一律回 error(action=3) 且不注册 peer——伪造源地址不再能
+  污染 peer 表
+- **UDP tracker 客户端并发化**：共享 socket 由串行化事务改为收发分离 + 事务 ID
+  分发表（tid→future），多任务并发 announce 不再互相排队（此前对端静默时最坏
+  排队约 16s）；配合服务端 connect 校验，announce 收到 action=3 自动丢弃缓存
+  重连一次（两侧 60s TTL 的时钟边界自愈）；close 立即异常完成全部在途请求
+- **Peer 侧件认领闭环（对称 WebSeed）**：多 worker 并发选件与 WebSeed 认领的
+  交错不再双占同件（重复传输窗口彻底关闭；补块合件语义不受影响）
+- 修正 UdpTrackerServer 类注释的 event 偏移笔误（72→80）
+
 ## 1.0.0（2026-09-18）
 
 ### API 冻结（ADR-0005）

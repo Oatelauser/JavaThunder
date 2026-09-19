@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * BEP 15 服务端对拍：脚本化 UDP 客户端打 connect/announce（布局镜像 core 的
  * UdpTrackerClient），校验事务 ID 回带、BEP 15 应答头顺序（interval/leechers/
- * seeders）、compact peers、stopped 摘除、非法报文静默丢弃、白名单 error 包。
+ * seeders）、compact peers、stopped 摘除、非法报文静默丢弃、白名单 error 包、
+ * connection_id 与来源地址的绑定（未 connect/换源 → error(action=3)）。
  */
 class UdpTrackerProtocolTest {
 
@@ -134,13 +135,55 @@ class UdpTrackerProtocolTest {
                         15800, 0, 2, 10);
                 assertEquals(3, denied.getInt(0), "action=error");
                 assertEquals(TID, denied.getInt(4));
-                byte[] message = new byte[denied.remaining() - 8];
-                denied.position(8).get(message);
-                assertEquals("torrent not registered", new String(message, StandardCharsets.UTF_8));
+                assertEquals("torrent not registered", errorText(denied));
                 assertNull(tracker.stats().get(hex(4)), "被拒 swarm 不得残留");
 
                 announce(socket, target, connectionId, infoHash(3), 15801, 0, 2, 10);
                 assertEquals(1, tracker.stats().get(hex(3)).total(), "白名单内正常放行");
+            }
+        }
+    }
+
+    /** BEP 15 绑定校验：未 connect 的随机 connection_id 直接 announce → error(action=3)，swarm 无注册。 */
+    @Test
+    void announceWithoutConnectIsRejected() throws Exception {
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
+            InetSocketAddress target = new InetSocketAddress("127.0.0.1", tracker.enableUdp(0));
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setSoTimeout(2_000);
+                ByteBuffer denied = announce(socket, target, 0xCAFEBABEL /* 从未 connect 的随机 id */,
+                        infoHash(5), 15900, 0, 2, 10);
+
+                assertEquals(3, denied.getInt(0), "action=error");
+                assertEquals(TID, denied.getInt(4));
+                assertEquals("connection id stale", errorText(denied));
+                assertNull(tracker.stats().get(hex(5)), "伪造的 connection_id 不得注册 peer");
+            }
+        }
+    }
+
+    /** BEP 15 源绑定：connect 的 id 被另一源端口冒用 → error(action=3)；真身同源仍放行。 */
+    @Test
+    void connectionIdFromDifferentSourceIsRejected() throws Exception {
+        try (EmbeddedTracker tracker = EmbeddedTracker.start()) {
+            InetSocketAddress target = new InetSocketAddress("127.0.0.1", tracker.enableUdp(0));
+            try (DatagramSocket owner = new DatagramSocket();
+                 DatagramSocket impersonator = new DatagramSocket()) {
+                owner.setSoTimeout(2_000);
+                impersonator.setSoTimeout(2_000);
+                long connectionId = connect(owner, target);
+
+                ByteBuffer denied = announce(impersonator, target, connectionId, infoHash(6),
+                        15901, 0, 2, 10);
+                assertEquals(3, denied.getInt(0), "action=error");
+                assertEquals(TID, denied.getInt(4));
+                assertEquals("connection id mismatch", errorText(denied));
+                assertNull(tracker.stats().get(hex(6)), "来源不符的 announce 不得注册 peer");
+
+                ByteBuffer legit = announce(owner, target, connectionId, infoHash(6),
+                        15902, 0, 2, 10);
+                assertEquals(1, legit.getInt(0), "真身同源 announce 仍放行（绑定未被冒用破坏）");
+                assertEquals(1, tracker.stats().get(hex(6)).total());
             }
         }
     }
@@ -189,6 +232,13 @@ class UdpTrackerProtocolTest {
         socket.receive(packet);
         return ByteBuffer.wrap(Arrays.copyOfRange(packet.getData(), 0, packet.getLength()))
                 .order(ByteOrder.BIG_ENDIAN);
+    }
+
+    /** error 包（action=3）在 8 字节头之后的 UTF-8 文案。 */
+    private static String errorText(ByteBuffer response) {
+        byte[] message = new byte[response.remaining() - 8];
+        response.position(8).get(message);
+        return new String(message, StandardCharsets.UTF_8);
     }
 
     /** 期待无应答（防放大语义）：收到包即失败。 */

@@ -136,9 +136,18 @@ public final class DownloadSession {
     private final LinkedBlockingQueue<InetSocketAddress> candidates = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, Integer> badPiecesByPeer = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, PieceAssembler> assemblers = new ConcurrentHashMap<>();
+    /**
+     * Peer 通道的在途件登记：选件器不排除其中的件（bestBusy 补块路径允许其他会话
+     * 合件收尾），持有语义归首个抢占会话。占用互斥见 {@link #claimPieceForPeer}：
+     * 与 verifyingPieces 是一对分工集合——Peer 抢占走本集合，WebSeed 认领与齐件
+     * 待校验走 verifyingPieces（对选件器完全隐藏）。
+     */
     private final Set<Integer> activePieces = ConcurrentHashMap.newKeySet();
     /**
-     * 齐件待校验：从选中器隐藏，防止本地位图落定前被重新选中（重复请求→丢弃→饥饿）。
+     * 隐藏带（对选件器完全排除）：两处写入——Peer 齐件待校验（本地位图落定前不可
+     * 再被选中，防重复请求→丢弃→饥饿）与 WebSeed 的独占认领位（见
+     * {@link #claimPieceForWebSeed}）。与 activePieces 的跨集合互斥由两侧对称核对
+     * 保证：Peer 占位后核对本集合让位，WebSeed 认领后核对 activePieces 让位。
      */
     private final Set<Integer> verifyingPieces = ConcurrentHashMap.newKeySet();
     /**
@@ -673,8 +682,13 @@ public final class DownloadSession {
                 if (piece < 0) {
                     break;
                 }
+                if (!claimPieceForPeer(piece)) {
+                    // 选件快照与占位间隙被并发方（另一 refill / WebSeed 认领）抢先：
+                    // 放弃该件重选。终止性见 claimPieceForPeer——非自旋，占满时 pick
+                    // 返回 -1 自然退出，循环边界（PIPELINE_DEPTH）不受影响。
+                    continue;
+                }
                 session.currentPiece = piece;
-                activePieces.add(piece);
                 PieceAssembler assembler = assemblers.get(piece);
                 for (BlockRequest block : scheduler.blocksOf(piece)) {
                     boolean alreadyReceived = assembler != null && assembler.received.contains(block);
@@ -699,6 +713,40 @@ public final class DownloadSession {
         if (!batch.isEmpty()) {
             session.channel.write(batch); // 单缓冲一次刷出
         }
+    }
+
+    /**
+     * Peer 侧条件占位（与 WebSeed 的 {@link #claimPieceForWebSeed} 对称的原子闭环）：
+     * 选件器对两个占用集合只有遍历瞬间的弱一致视图，选件与占位之间存在 TOCTOU
+     * 间隙——本方法把自由件的占位收敛为并发集合 add 的布尔返回（单键原子），
+     * 失败即并发方先到，调用方放弃该件重选。
+     *
+     * <p>跨集合互斥：占位成功后核对 verifyingPieces——WebSeed 认领（先抢
+     * verifying 再核对 activePieces 让位）可能在选件与占位的间隙抢先同件，查见
+     * 即撤回让给 WebSeed。两侧对称核对合起来覆盖全部交错序：任一件至多一个
+     * 抢占者（两侧都退让的交错只是本轮漏选，重选自愈，不违反互斥）。
+     *
+     * <p>在途件（选件器 bestBusy 补块路径返回的已占件）不抢占、直接加入合件：
+     * 占位仍归先到会话，块级去重由在途表与组装器收块集兜底。
+     *
+     * <p>重选终止性：占用失败意味着该件已在并发集合中可见，而选件器遍历读的正是
+     * 同一对 live 集合——重选要么跳过它、要么以补块语义合件成功；每次失败都由
+     * 其他线程的真实状态迁移引发（件数有限），不构成自旋。
+     *
+     * @return true = 占位成功（或补块合件），可指派该件；false = 并发方先到，放弃重选
+     */
+    boolean claimPieceForPeer(int piece) {
+        if (activePieces.contains(piece)) {
+            return true; // 补块路径：在途件多会话合件，占位归属先到者
+        }
+        if (!activePieces.add(piece)) {
+            return false; // 自由件被并发 refill 抢先
+        }
+        if (verifyingPieces.contains(piece)) {
+            activePieces.remove(piece);
+            return false; // WebSeed 在选件与占位间隙认领：让给 WebSeed
+        }
+        return true;
     }
 
     private boolean hasMissingBlock(int piece) {

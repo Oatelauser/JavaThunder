@@ -6,20 +6,33 @@ import org.junit.jupiter.api.Test;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** BEP 15 对拍：脚本化 UDP tracker 应答 connect/announce，验证两段事务与紧凑 peer 解析。 */
+/**
+ * BEP 15 对拍：脚本化 UDP tracker 应答 connect/announce，验证两段事务、紧凑 peer
+ * 解析、并发事务按 tid 分发路由、action=3 的重连语义与 close 生命周期。
+ */
 class UdpTrackerClientTest {
+
+    /** 模拟服务端已过期/新鲜的 connection_id（serveStaleThenFresh 等假 tracker 用）。 */
+    private static final long STALE_CONNECTION_ID = 0x1111111111111111L;
+    private static final long FRESH_CONNECTION_ID = 0x2222222222222222L;
 
     private final AtomicInteger connectCount = new AtomicInteger();
     private volatile boolean running = true;
@@ -141,44 +154,118 @@ class UdpTrackerClientTest {
              UdpTrackerClient client = new UdpTrackerClient()) {
             Thread.ofVirtual().start(() -> serveTruncatedConnect(server));
             assertThrows(TrackerException.class, () -> client.announce(
-                "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest()));
+                "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest(10)));
         }
     }
 
     /**
-     * 同一 client 的并发 announce 必须在共享 socket 上串行化：假 tracker 给每个
-     * 事务 300ms 应答延迟并统计在途数——串行化下客户端收到应答才会发下一事务，
-     * 服务端观测到的在途数恒为 1；修复前两事务并发在途（互相丢弃对方应答）。
+     * 并发两路 announce 应真并行且应答按事务 ID 正确路由：假 tracker 扣住先到的
+     * announce，直到两路 numwant 互异的请求同时在途才一并应答——若客户端仍在共享
+     * socket 上串行化（旧 synchronized exchange 语义），第二路永远无法在途，第一路
+     * 只会超时重传（numwant 不变，屏障永不满足）。应答的 peer 端口按 numwant 编码
+     * （20000+100n+i），两路各自拿到自己的数据证明应答无串扰。
      */
     @Test
-    void concurrentAnnouncesSerializeOnSharedSocket() throws Exception {
+    void concurrentAnnouncesRunInParallelAndRouteByTransactionId() throws Exception {
         try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
              UdpTrackerClient client = new UdpTrackerClient()) {
             AtomicInteger inFlight = new AtomicInteger();
             AtomicInteger maxInFlight = new AtomicInteger();
-            AtomicReference<RuntimeException> failure = new AtomicReference<>();
-            Thread.ofVirtual().start(() -> serveWithDelay(server, 300, inFlight, maxInFlight));
+            Thread.ofVirtual().start(() -> serveParallelAnnounces(server, inFlight, maxInFlight));
             String url = "udp://127.0.0.1:" + server.getLocalPort() + "/announce";
-            Runnable announce = () -> {
-                try {
-                    client.announce(url, sampleRequest());
-                } catch (RuntimeException e) {
-                    failure.compareAndSet(null, e);
-                }
-            };
-            Thread first = Thread.ofVirtual().start(announce);
-            Thread second = Thread.ofVirtual().start(announce);
-            first.join(15_000);
-            second.join(15_000);
-            assertNull(failure.get(), "串行化下并发 announce 应全部成功");
-            assertTrue(maxInFlight.get() <= 1,
-                "共享 socket 的事务应串行化，观测最大在途=" + maxInFlight.get());
+            AtomicReference<AnnounceResponse> first = new AtomicReference<>();
+            AtomicReference<AnnounceResponse> second = new AtomicReference<>();
+            AtomicReference<RuntimeException> failure = new AtomicReference<>();
+            Thread a = Thread.ofVirtual().start(() -> runAnnounce(client, url, 1, first, failure));
+            Thread b = Thread.ofVirtual().start(() -> runAnnounce(client, url, 2, second, failure));
+            a.join(20_000);
+            b.join(20_000);
+            assertNull(failure.get(), "并发 announce 应全部成功（观测最大在途=" + maxInFlight.get() + "）");
+            assertTrue(maxInFlight.get() >= 2,
+                "两路 announce 应同时在途（收发分离恢复并行），观测最大在途=" + maxInFlight.get());
+            assertEquals(1, first.get().peers().size(), "numwant=1 的一路应路由到自己的应答");
+            assertEquals(20100, first.get().peers().get(0).getPort());
+            assertEquals(2, second.get().peers().size(), "numwant=2 的一路应路由到自己的应答");
+            assertEquals(20200, second.get().peers().get(0).getPort());
+            assertEquals(20201, second.get().peers().get(1).getPort());
         }
     }
 
-    private static AnnounceRequest sampleRequest() {
+    /**
+     * action=3 对拍（与服务端新增的 connect 校验对齐）：首个 connection_id 被服务端
+     * 判过期，announce 回 error；客户端应清除该地址的连接缓存、重新 connect（换新
+     * id）并重发 announce 成功——整体重试恰好一次。
+     */
+    @Test
+    void staleConnectionIdErrorTriggersReconnectAndRetrySucceeds() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
+             UdpTrackerClient client = new UdpTrackerClient()) {
+            Thread.ofVirtual().start(() -> serveStaleThenFresh(server));
+            AnnounceResponse response = client.announce(
+                "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest(10));
+            assertEquals(1800, response.interval());
+            assertEquals(1, response.peers().size());
+            assertEquals(20001, response.peers().get(0).getPort());
+            assertEquals(2, connectCount.get(),
+                "收到 stale error 后应清除缓存整体重连一次（恰好两次 connect）");
+        }
+    }
+
+    /** tracker 对新旧 connection_id 一律回 error：客户端只允许重连一次，随后必须上抛。 */
+    @Test
+    void announceErrorRetriesOnlyOnceThenFails() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0));
+             UdpTrackerClient client = new UdpTrackerClient()) {
+            Thread.ofVirtual().start(() -> serveAlwaysErrorAnnounce(server));
+            TrackerException failure = assertThrows(TrackerException.class, () -> client.announce(
+                "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest(10)));
+            assertTrue(failure.getMessage().contains("connection still stale"),
+                "tracker 的 error 文本应透出给调用方: " + failure.getMessage());
+            assertEquals(2, connectCount.get(), "重连一次后仍报错必须上抛，不得循环重连");
+        }
+    }
+
+    /**
+     * close() 语义：在途 announce 应立即以异常返回（future 被异常完成）而非等满
+     * 5s 响应超时；close 可重复调用（幂等）。
+     */
+    @Test
+    void closeFailsInFlightAnnouncePromptlyAndIsIdempotent() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            CountDownLatch announceHeld = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> serveConnectOnly(server, announceHeld));
+            UdpTrackerClient client = new UdpTrackerClient();
+            AtomicReference<RuntimeException> failure = new AtomicReference<>();
+            Thread caller = Thread.ofVirtual().start(() -> {
+                try {
+                    client.announce(
+                        "udp://127.0.0.1:" + server.getLocalPort() + "/announce", sampleRequest(10));
+                } catch (RuntimeException e) {
+                    failure.compareAndSet(null, e);
+                }
+            });
+            assertTrue(announceHeld.await(5, TimeUnit.SECONDS), "假 tracker 应观测到在途 announce");
+            client.close();
+            client.close(); // 幂等：重复 close 不得抛异常
+            caller.join(3_000);
+            assertTrue(!caller.isAlive(), "close 后在途 announce 应立即以异常返回，不悬挂");
+            assertTrue(failure.get() instanceof TrackerException,
+                "在途事务应以 TrackerException 失败，实际=" + failure.get());
+        }
+    }
+
+    private static AnnounceRequest sampleRequest(int numwant) {
         return new AnnounceRequest(new byte[20], "-JT0001-udptest00001".getBytes(StandardCharsets.US_ASCII),
-            6881, 100, 200, 300, TrackerEvent.STARTED, 10);
+            6881, 100, 200, 300, TrackerEvent.STARTED, numwant);
+    }
+
+    private static void runAnnounce(UdpTrackerClient client, String url, int numwant,
+            AtomicReference<AnnounceResponse> into, AtomicReference<RuntimeException> failure) {
+        try {
+            into.set(client.announce(url, sampleRequest(numwant)));
+        } catch (RuntimeException e) {
+            failure.compareAndSet(null, e);
+        }
     }
 
     /** 只回 tid 匹配的 12 字节截短 connect 应答（connection_id 只带 4 字节）。 */
@@ -207,19 +294,34 @@ class UdpTrackerClientTest {
     }
 
     /**
-     * 延迟应答并统计在途事务数：应答线程先递减再发送——客户端下一事务必然
-     * 在收到应答（即发送）之后，串行化时服务端不会计到并发在途。
+     * 并行对拍的假 tracker：connect 即时应答；announce 扣住直到两路 numwant 互异的
+     * 请求都已在途（屏障）才应答。注意须把请求字节快照后再交给延迟应答线程——
+     * 接收缓冲区会被后续请求复用。
      */
-    private void serveWithDelay(DatagramSocket server, long delayMillis,
+    private void serveParallelAnnounces(DatagramSocket server,
             AtomicInteger inFlight, AtomicInteger maxInFlight) {
+        Set<Integer> numwantArrived = ConcurrentHashMap.newKeySet();
         byte[] buffer = new byte[2048];
         while (running) {
             try {
                 server.setSoTimeout(200);
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 server.receive(packet);
-                maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
-                Thread.ofVirtual().start(() -> respondSlowly(server, packet, delayMillis, inFlight));
+                ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+                    .order(ByteOrder.BIG_ENDIAN);
+                if (in.getInt(8) == 0) {
+                    byte[] wire = connectReply(in.getInt(12), FRESH_CONNECTION_ID);
+                    server.send(new DatagramPacket(wire, wire.length,
+                        packet.getAddress(), packet.getPort()));
+                } else {
+                    int numwant = in.getInt(92);
+                    numwantArrived.add(numwant);
+                    maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+                    byte[] request = Arrays.copyOf(packet.getData(), packet.getLength());
+                    SocketAddress replyTo = packet.getSocketAddress();
+                    Thread.ofVirtual().start(() ->
+                        respondBehindBarrier(server, request, replyTo, numwant, numwantArrived, inFlight));
+                }
             } catch (SocketTimeoutException ignored) {
                 // 检查 running
             } catch (Exception ignored) {
@@ -228,41 +330,129 @@ class UdpTrackerClientTest {
         }
     }
 
-    private static void respondSlowly(DatagramSocket server, DatagramPacket request,
-            long delayMillis, AtomicInteger inFlight) {
+    /** 屏障：等第二路 numwant 互异的 announce 在途后应答（10s 上限防测试挂死）。 */
+    private static void respondBehindBarrier(DatagramSocket server, byte[] request,
+            SocketAddress replyTo, int numwant, Set<Integer> numwantArrived, AtomicInteger inFlight) {
         try {
-            Thread.sleep(delayMillis);
-        } catch (InterruptedException ignored) {
-            inFlight.decrementAndGet();
-            return;
-        }
-        inFlight.decrementAndGet();
-        byte[] wire = replyFor(request);
-        if (wire == null) {
-            return;
-        }
-        try {
-            server.send(new DatagramPacket(wire, wire.length,
-                request.getAddress(), request.getPort()));
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (numwantArrived.size() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+            int transactionId = ByteBuffer.wrap(request).order(ByteOrder.BIG_ENDIAN).getInt(12);
+            byte[] peers = new byte[6 * numwant];
+            for (int i = 0; i < numwant; i++) {
+                int port = 20_000 + 100 * numwant + i;
+                peers[6 * i] = 127;
+                peers[6 * i + 4] = (byte) (port >> 8);
+                peers[6 * i + 5] = (byte) port;
+            }
+            byte[] wire = ByteBuffer.allocate(20 + peers.length).order(ByteOrder.BIG_ENDIAN)
+                .putInt(1).putInt(transactionId)
+                .putInt(1800).putInt(1).putInt(3)
+                .put(peers).array();
+            server.send(new DatagramPacket(wire, wire.length, replyTo));
         } catch (Exception ignored) {
             // 客户端已关闭等情形：忽略
+        } finally {
+            inFlight.decrementAndGet();
         }
     }
 
-    /** 按 action 回标准应答（connect/announce，tid 回显），其他动作不应出现。 */
-    private static byte[] replyFor(DatagramPacket packet) {
-        ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
-            .order(ByteOrder.BIG_ENDIAN);
-        int action = in.getInt(8);
-        int transactionId = in.getInt(12);
-        if (action == 0) {
-            return ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
-                .putInt(0).putInt(transactionId).putLong(0x1234567890ABCDEFL).array();
+    /** 首次 connect 发 STALE id，重连发 FRESH id；STALE id 的 announce 回 error，FRESH 正常。 */
+    private void serveStaleThenFresh(DatagramSocket server) {
+        byte[] buffer = new byte[2048];
+        while (running) {
+            try {
+                server.setSoTimeout(200);
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                server.receive(packet);
+                ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+                    .order(ByteOrder.BIG_ENDIAN);
+                int transactionId = in.getInt(12);
+                byte[] wire;
+                if (in.getInt(8) == 0) {
+                    long id = connectCount.incrementAndGet() == 1
+                        ? STALE_CONNECTION_ID : FRESH_CONNECTION_ID;
+                    wire = connectReply(transactionId, id);
+                } else if (in.getLong(0) == STALE_CONNECTION_ID) {
+                    wire = errorReply(transactionId, "connection id stale, reconnect please");
+                } else {
+                    byte[] peer = {127, 0, 0, 1, 0x4E, 0x21}; // 127.0.0.1:20001
+                    wire = ByteBuffer.allocate(20 + peer.length).order(ByteOrder.BIG_ENDIAN)
+                        .putInt(1).putInt(transactionId)
+                        .putInt(1800).putInt(1).putInt(3)
+                        .put(peer).array();
+                }
+                server.send(new DatagramPacket(wire, wire.length,
+                    packet.getAddress(), packet.getPort()));
+            } catch (SocketTimeoutException ignored) {
+                // 检查 running
+            } catch (Exception ignored) {
+                return;
+            }
         }
-        if (action == 1) {
-            return ByteBuffer.allocate(20).order(ByteOrder.BIG_ENDIAN)
-                .putInt(1).putInt(transactionId).putInt(1800).putInt(1).putInt(3).array();
+    }
+
+    /** connect 一律发 FRESH id；announce 一律回 error（对新旧 id 都拒绝）。 */
+    private void serveAlwaysErrorAnnounce(DatagramSocket server) {
+        byte[] buffer = new byte[2048];
+        while (running) {
+            try {
+                server.setSoTimeout(200);
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                server.receive(packet);
+                ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+                    .order(ByteOrder.BIG_ENDIAN);
+                byte[] wire;
+                if (in.getInt(8) == 0) {
+                    connectCount.incrementAndGet();
+                    wire = connectReply(in.getInt(12), FRESH_CONNECTION_ID);
+                } else {
+                    wire = errorReply(in.getInt(12), "connection still stale");
+                }
+                server.send(new DatagramPacket(wire, wire.length,
+                    packet.getAddress(), packet.getPort()));
+            } catch (SocketTimeoutException ignored) {
+                // 检查 running
+            } catch (Exception ignored) {
+                return;
+            }
         }
-        return null;
+    }
+
+    /** connect 正常应答；announce 只登记不应答（模拟无响应 tracker，把在途扣住）。 */
+    private void serveConnectOnly(DatagramSocket server, CountDownLatch announceHeld) {
+        byte[] buffer = new byte[2048];
+        while (running) {
+            try {
+                server.setSoTimeout(200);
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                server.receive(packet);
+                ByteBuffer in = ByteBuffer.wrap(packet.getData(), 0, packet.getLength())
+                    .order(ByteOrder.BIG_ENDIAN);
+                if (in.getInt(8) == 0) {
+                    byte[] wire = connectReply(in.getInt(12), FRESH_CONNECTION_ID);
+                    server.send(new DatagramPacket(wire, wire.length,
+                        packet.getAddress(), packet.getPort()));
+                } else {
+                    announceHeld.countDown();
+                }
+            } catch (SocketTimeoutException ignored) {
+                // 检查 running
+            } catch (Exception ignored) {
+                return;
+            }
+        }
+    }
+
+    private static byte[] connectReply(int transactionId, long connectionId) {
+        return ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+            .putInt(0).putInt(transactionId).putLong(connectionId).array();
+    }
+
+    private static byte[] errorReply(int transactionId, String message) {
+        byte[] text = message.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(8 + text.length).order(ByteOrder.BIG_ENDIAN)
+            .putInt(3).putInt(transactionId).put(text).array();
     }
 }
