@@ -19,10 +19,13 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * KRPC 传输层（BEP 5）：单 UDP socket + 接收线程 + 事务表。只负责报文收发与
  * 事务配对（roundTrip 阻塞等待 / sendQuery 发后不管），不含任何查找或路由语义——
- * 响应者观察（路由表登记）经构造器注入的 observer 回调交给上层。
+ * 响应者观察（路由表登记）经构造器注入的 observer 回调交给上层；他人发来的
+ * 查询（y=q）经 {@link #onQuery} 注入的 handler 交给服务侧（KrpcServer）应答。
  */
 final class KrpcRpc implements AutoCloseable {
 
@@ -50,6 +53,11 @@ final class KrpcRpc implements AutoCloseable {
      * 响应者观察（路由表登记等上层语义）：参数为来源地址与解析后的报文。
      */
     private final BiConsumer<InetSocketAddress, KrpcMessage.Parsed> responderObserver;
+    /**
+     * 服务侧查询处理（KrpcServer 注入；null 期间收到的查询被丢弃——纯客户端模式）。
+     * volatile：onQuery 可在接收线程启动后调用。
+     */
+    private volatile @Nullable BiConsumer<InetSocketAddress, KrpcMessage.Parsed> queryHandler;
 
     KrpcRpc(int port, BiConsumer<InetSocketAddress, KrpcMessage.Parsed> responderObserver)
             throws IOException {
@@ -61,6 +69,13 @@ final class KrpcRpc implements AutoCloseable {
 
     int port() {
         return socket.getLocalPort();
+    }
+
+    /**
+     * 注册服务侧查询处理（KrpcServer 构造时调用；回复经 {@link #sendQuery} 原路发回）。
+     */
+    void onQuery(BiConsumer<InetSocketAddress, KrpcMessage.Parsed> handler) {
+        this.queryHandler = handler;
     }
 
     /**
@@ -159,8 +174,17 @@ final class KrpcRpc implements AutoCloseable {
         } catch (IllegalArgumentException e) {
             return; // 非 KRPC 流量（同端口杂音），忽略
         }
+        if ("q".equals(message.type())) {
+            // 他人查询交服务侧应答（事务配对只针对我们发起的事务，其应答是 r/e）
+            BiConsumer<InetSocketAddress, KrpcMessage.Parsed> handler = queryHandler;
+            if (handler != null) {
+                handler.accept(
+                        new InetSocketAddress(packet.getAddress(), packet.getPort()), message);
+            }
+            return;
+        }
         if (!"r".equals(message.type()) && !"e".equals(message.type())) {
-            return; // 我们不响应他人查询（纯客户端模式；阶段后续可加服务侧）
+            return;
         }
         responderObserver.accept(
                 new InetSocketAddress(packet.getAddress(), packet.getPort()), message);

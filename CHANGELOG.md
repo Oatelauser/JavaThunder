@@ -2,7 +2,19 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
-## 1.0.1（待发布）
+## 1.1.0（待发布）
+
+### 新增
+
+- **DHT 响应式节点（BEP 5 全功能节点的应答面）**：`javathunder-dht` 此前是
+  query-only（只查不应）——现响应他人的 ping / find_node / get_peers /
+  announce_peer。网络公民义务（DHT 健壮性来自节点互相应答）之外的实际收益：
+  向我们 announce 的 peer 会被索引（info-hash → 对端，TTL 30 分钟），他人的
+  get_peers 命中时作为 values 返回；查询方同时被登记进路由表，表随查询活跃度
+  保持新鲜。announce_peer 的 token 校验为无状态方案（SHA-256(进程密钥 ‖ 来源
+  IP ‖ 5 分钟时段)，接受当前与上一时段），implied_port 按 BEP 5 语义取 UDP
+  源端口。无公共 API 变化（DhtPeerDiscovery 面不动），无新增线程（挂在既有
+  接收回调上）
 
 ### 修复与加固
 

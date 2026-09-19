@@ -57,6 +57,9 @@ public final class DhtClient implements AutoCloseable {
         this.selfId = randomId();
         this.table = new RoutingTable(selfId);
         this.rpc = new KrpcRpc(port, this::recordResponder);
+        // 服务侧：响应他人 ping/find_node/get_peers/announce_peer（全功能节点）。
+        // 无独立线程/资源——挂在 rpc 的接收回调上，生命周期随 rpc
+        new KrpcServer(selfId, table, rpc, System::currentTimeMillis);
     }
 
     /**
