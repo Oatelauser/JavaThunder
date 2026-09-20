@@ -5,7 +5,7 @@
 *An embeddable BitTorrent engine for JVM applications: feed it a torrent or magnet link, get back a verified file — while your process automatically becomes a seeding-capable peer.*
 
 ![CI](https://github.com/Oatelauser/JavaThunder/actions/workflows/ci.yml/badge.svg)
-![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-1.0.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
+![JDK](https://img.shields.io/badge/JDK-21%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green) ![Version](https://img.shields.io/badge/version-1.1.0-orange) ![Dependencies](https://img.shields.io/badge/runtime%20deps-slf4j--api%20only-success)
 
 ## 为什么是它
 
@@ -13,7 +13,7 @@
 - **零框架税** —— 运行时仅依赖 `slf4j-api`；没有 Netty/Guava，Bencode/协议/存储全部手写
 - **轻量与完整是同一套 API** —— 默认配置即轻量（少量连接、下完即停）；注入 DHT、开做种、放开连接数即完整形态，无模式切换
 - **P2P 天然可扩展** —— 每个下载节点既是客户端又是服务端：下载到的分片即刻可供他人拉取，**分发的机器越多、总吞吐越大**（对照 C/S：百台机器拉镜像不会挤垮源机）
-- **可验证的工程质量** —— 与 ttorrent 双向互操作 + 公网 Ubuntu ISO 实测；双传输差分验收；245 个测试；japicmp 守护 API 兼容性
+- **可验证的工程质量** —— 与 ttorrent 双向互操作 + 公网 Ubuntu ISO 实测；双传输差分验收；271 个测试；japicmp 守护 API 兼容性
 
 ## 30 秒上手
 
@@ -74,7 +74,7 @@ cd JavaThunder && mvn clean install
 <dependency>
   <groupId>io.github.oatelauser</groupId>
   <artifactId>javathunder-core</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
 </dependency>
 <!-- 运行时请自带 slf4j 后端（如 slf4j-simple / logback），否则日志静默 -->
 ```

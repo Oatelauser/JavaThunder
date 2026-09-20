@@ -2,7 +2,7 @@
 
 按版本记录**用户可见**的变更；纯内部重构详录于 git 历史。坐标：`io.github.oatelauser:javathunder-*`。
 
-## 1.1.0（待发布）
+## 1.1.0（2026-09-18）
 
 ### 新增
 
@@ -18,6 +18,13 @@
 
 ### 修复与加固
 
+- **阻塞传输死锁（ABBA 锁序反转）**：`BlockingChannel.closeWith` 持 channel 监视器
+  期间回调 closeListener（进入 `synchronized(session)`），与引擎"持 session 锁调
+  channel.close()"构成环形等待——多 Peer 下载收尾时永久挂死（虚拟线程参与，
+  jstack 不可见，需 jcmd 转储定位）。1.0.0 前窗口极小（close 不碰已建连接），
+  "close 关闭全部已建通道"修复将其放大成确定性死锁。修复：closeWith 幂等改
+  CAS，注册表摘除/连接关闭/监听器回调全部移出监视器。发布门禁（阻塞臂
+  MultiPeer）抓获，复现点 0.8s 通过（原挂死 16 分钟）
 - **内嵌 UDP tracker 的 connect 校验（BEP 15 合规，公网暴露前置条件）**：
   connection_id 现与来源地址绑定（60s TTL、成功 announce 滑动续期、惰性清理），
   id 未知/过期/来源不符一律回 error(action=3) 且不注册 peer——伪造源地址不再能

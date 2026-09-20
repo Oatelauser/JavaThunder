@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -171,7 +172,7 @@ public final class BlockingTransport implements PeerTransport {
         };
         private volatile Consumer<@Nullable Throwable> closeListener = t -> {
         };
-        private volatile boolean closed;
+        private final AtomicBoolean closed = new AtomicBoolean(false);
 
         BlockingChannel(PeerConnection connection) {
             this.connection = connection;
@@ -183,7 +184,7 @@ public final class BlockingTransport implements PeerTransport {
 
         private void readLoop() {
             try {
-                while (!closed) {
+                while (!closed.get()) {
                     PeerWireMessage message = connection.read();
                     messageListener.accept(List.of(message));
                 }
@@ -241,11 +242,18 @@ public final class BlockingTransport implements PeerTransport {
             this.closeListener = listener;
         }
 
-        private synchronized void closeWith(@Nullable Throwable cause) {
-            if (closed) {
+        /**
+         * 关闭通道（幂等，CAS 抢占）：注册表摘除、连接关闭与监听器回调全部在
+         * <b>不持任何监视器</b>下执行——closeListener 会进 DownloadSession 的
+         * {@code synchronized(session)}，而引擎侧存在持 session 锁调用
+         * {@code channel.close()} 的路径：若本方法 synchronized（持 channel 监视器
+         * 再等 session 监视器），两侧构成 ABBA 环形等待（MultiPeer 阻塞臂实测死锁，
+         * jcmd 虚拟线程转储定位）。并发竞争由 CAS 保证恰好一个线程执行关闭序列。
+         */
+        private void closeWith(@Nullable Throwable cause) {
+            if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            closed = true;
             channels.remove(this);
             try {
                 connection.close();
